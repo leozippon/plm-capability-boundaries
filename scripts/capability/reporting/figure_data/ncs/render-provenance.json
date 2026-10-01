@@ -1,0 +1,23 @@
+{
+  "csv_sha256": {
+    "local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
+    "external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
+    "native-fitness-source.csv": "0e1d390f75b310ea0c8a9df193ebd07bb6296426ae97a72339e3f2673b681201",
+    "text-aa-fitness-source.csv": "d53d70fd70726f69575a4e3b92eb8c6db50d4ca036f0c825279222da839fc7f4",
+    "readout-contrasts-source.csv": "b305746b992fe23977ec0eb15cc40d8f254e631c099024fb629c452708784c2d",
+    "controlled-gap-source.csv": "7dd38e3586ddabdc7a8c1b94ca2674e935ea05558eaae2a507681ce4d19f3326",
+    "depth-profile-source.csv": "bc94ac35b83f69e0c4375da8ed1270ec05b59c2531101f748ef37428598a3a0f",
+    "interaction-panel-source.csv": "3c5911e549bd41195dcca8ceb22d41ab5a55cd03cfb45d7e44a666766d7a371e",
+    "residual-full-panel-source.csv": "46ebddc06bc815d9ecc6f4c38ddf0d923da380604045911da9e9df2858dcedca",
+    "endpoint-boundaries-source.csv": "9d1a12047e51d82908581bbdf05b4af826d92674a2d7ee34997126b53356b085",
+    "contact-sensitivity-source.csv": "2a5917714d5ad046750a58d426a03e421d1ef33f96f2d93b8a02e6127e1ffc2f",
+    "context-ranking-source.csv": "a56873665077a3fc95caac0b4b96fa9c84e7a7dc1c3dbb8f803abe700c79822e",
+    "matched-generator-source.csv": "eaab928de49096baf53f6b89755306c5c1f49f88a5c5a2bd474f593520da5da5",
+    "generation-yield-source.csv": "512a013b47968e4c123ca5cbf265ab200bed0d581af37ef3de15e216478050bd",
+    "conditional-class-yield-source.csv": "a285f259f09561c6a99f978e7fe6926fd0192f4037b5317046d167e0d048f848"
+  },
+  "renderer_sha256": "acbc7dedeb092dcfa9c51b61444dc7fe98177381a0fdae983f08839738465256",
+  "figure_width_inches": 5.14,
+  "minimum_font_size_pt": 8.0,
+  "requires_private_result_tree": false
+}

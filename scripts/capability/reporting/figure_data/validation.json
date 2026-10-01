@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-01T17:45:06.596645+00:00",
+  "journal": "Nature Computational Science",
+  "article_type": "Analysis",
+  "status": "format_and_provenance_checks_pass",
+  "main_word_count": 2446,
+  "abstract_word_count": 150,
+  "count_convention": "Whitespace-separated prose after removing display environments, section headings and citation/reference commands; excludes abstract, Methods, references and legends. Hyphenated tokens count once; tildes and inline-math delimiters are normalized.",
+  "main_figures": 5,
+  "main_tables": 0,
+  "main_display_count": 5,
+  "supplementary_figures": 3,
+  "subsections_by_section": {
+    "Results": 5,
+    "Discussion": 0,
+    "Methods": 6
+  },
+  "references": 37,
+  "maximum_main_legend_words": 156,
+  "pdfs": {
+    "main": {
+      "pages": 25,
+      "sha256": "208b8c958d4d1477ce3da9aec478a99dbc74b377365da42f3c90c5ce225851d0"
+    },
+    "supplementary-information": {
+      "pages": 19,
+      "sha256": "34b71d46995aa05cbc01215bb144d672791f29850647d445a704bc485f15d16e"
+    }
+  },
+  "failures": [],
+  "files_sha256": {
+    "main.tex": "b820c53f467e54fc7ce414ada3b7769b2e5e3c86157a31186d06e218b3c1d44d",
+    "supplementary-information.tex": "c75a8e46a3c7229a455715bd7957596cad24a770b8ee9871823e23f7db4b1c65",
+    "references.bib": "559e3e7c365dcb01f5f01c2bdebea8de56b40d4ecdc9779463cf498679d377fb",
+    "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
+    "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",
+    "validate_manuscript.py": "37732563519de983fdaa343bdc85583fd49d821c81ed0fcf06f5aa0878d7bf3e"
+  },
+  "source_tables_sha256": {
+    "capability-map-source.csv": "5a349f70229b04618cb91bc638d8c71f145ddb0967e3235e437386306d236b67",
+    "conditional-class-yield-source.csv": "a285f259f09561c6a99f978e7fe6926fd0192f4037b5317046d167e0d048f848",
+    "contact-sensitivity-source.csv": "2a5917714d5ad046750a58d426a03e421d1ef33f96f2d93b8a02e6127e1ffc2f",
+    "context-ranking-source.csv": "a56873665077a3fc95caac0b4b96fa9c84e7a7dc1c3dbb8f803abe700c79822e",
+    "control-ladder-source.csv": "6d4d63eb3f2b23a1a03186e0881388fbe3076584157f1dc91f5bb075f52de8c4",
+    "controlled-gap-source.csv": "7dd38e3586ddabdc7a8c1b94ca2674e935ea05558eaae2a507681ce4d19f3326",
+    "depth-profile-source.csv": "bc94ac35b83f69e0c4375da8ed1270ec05b59c2531101f748ef37428598a3a0f",
+    "endpoint-boundaries-source.csv": "9d1a12047e51d82908581bbdf05b4af826d92674a2d7ee34997126b53356b085",
+    "external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
+    "gate-matrix-source.csv": "a921af87db8ae4b7b5b80227048d091ac7960f1a33a664882fe7297be62bcfbf",
+    "generation-yield-source.csv": "512a013b47968e4c123ca5cbf265ab200bed0d581af37ef3de15e216478050bd",
+    "higher-order-record-source.csv": "5c961c1760e64c0fe26303c9c7fe24463eb0f0bea2aa4a82aec6d0927ffa5056",
+    "homologue-context-source.csv": "430398c604d1b0f3aeaa4a5d739182bce025413ff30a23d90bae6acc32afe357",
+    "interaction-panel-source.csv": "3c5911e549bd41195dcca8ceb22d41ab5a55cd03cfb45d7e44a666766d7a371e",
+    "lineage-correlation-source.csv": "5b66ba163b1964ad9883f7702357da44af50df7b2c1265d600ca2edbdac71647",
+    "lineage-robustness-source.csv": "951e76c9a2f014e4978a9acc817ee90052d30270cdb215ba17f3f1171e950ca6",
+    "local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
+    "matched-generator-source.csv": "eaab928de49096baf53f6b89755306c5c1f49f88a5c5a2bd474f593520da5da5",
+    "native-fitness-source.csv": "0e1d390f75b310ea0c8a9df193ebd07bb6296426ae97a72339e3f2673b681201",
+    "nested-residual-source.csv": "503effd9df5af6db888cf7bc1e532742646945520ebcae8031aaa212cf892ede",
+    "paired-fitness-contrasts.csv": "c5a513818bc37e9b048fdbe912efd870b3c0310f229e01ea3dd4014a4f164eea",
+    "readout-contrasts-source.csv": "b305746b992fe23977ec0eb15cc40d8f254e631c099024fb629c452708784c2d",
+    "residual-full-panel-source.csv": "46ebddc06bc815d9ecc6f4c38ddf0d923da380604045911da9e9df2858dcedca",
+    "retrieval-strata-source.csv": "046d7dbf0ce9b9909372ebe28da2e620f59245c003d6d8cb09d36caf171fdc4c",
+    "stability-panel-source.csv": "54eb1e7c46670dd54c7bfbf4c87012713c0b9bbe479a7f6778faf0ef0d462a50",
+    "stability-support-source.csv": "97871e0345660dbf7099107c034e908c85e30c5cc6d2820f2873e459867b2505",
+    "text-aa-fitness-source.csv": "d53d70fd70726f69575a4e3b92eb8c6db50d4ca036f0c825279222da839fc7f4"
+  },
+  "source_provenance_sha256": "b3607f1b8965f5d37af5e65ae1ad87cf76e8d9083074b2a24c10979de38e1836",
+  "scientific_completeness_certified": false,
+  "evidence_boundary": "Structural predictor-confidence evidence is supplementary and calibration-limited; aggregate provenance is distinct from full raw-run replay.",
+  "author_and_access_requirements_remain": true,
+  "visual_pdf_review_required": true
+}

@@ -1,0 +1,2891 @@
+{
+  "analysis_sha256": "1993b8f73110686cc3a1e6937e5f18f8ed61c7344c4af7a98af4791e1271c030",
+  "arms": [
+    "bygpt5-base-en",
+    "bygpt5-medium-en",
+    "bygpt5-small-en",
+    "dialogpt-small",
+    "galactica-1.3b",
+    "galactica-125m",
+    "galactica-30b",
+    "galactica-6.7b",
+    "gpt2",
+    "gpt2-large",
+    "gpt2-medium",
+    "gpt2-xl",
+    "instructprotein",
+    "llama-2-7b",
+    "llama-3.2-3b",
+    "progen2-base",
+    "progen2-large",
+    "progen2-medium",
+    "progen2-small",
+    "progen2-xlarge",
+    "progen3-112m",
+    "prollama",
+    "prollama-stage-1",
+    "proteinglm-7b-clm",
+    "protgpt2",
+    "protgpt3-1.3b",
+    "qwen2.5-0.5b",
+    "qwen2.5-0.5b-instruct",
+    "qwen2.5-32b",
+    "qwen2.5-7b",
+    "qwen3-8b-base",
+    "rita-xl"
+  ],
+  "controls": {
+    "rf3": {
+      "conditional_on_fitted_predictions": true,
+      "contrasts": [
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.002211138713097469,
+            0.002198336431934561
+          ],
+          "key": "unique_own",
+          "point": -6.401140581454254e-06
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.000462539610375727,
+            0.0004542413214260981
+          ],
+          "key": "unique_downstream",
+          "point": -4.149144474814457e-06
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.002381569068886211,
+            0.002976988120390856
+          ],
+          "key": "joint_over_full",
+          "point": 0.00029770952575232265
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.001942360203467694,
+            0.0019378562112544147
+          ],
+          "key": "own_minus_downstream",
+          "point": -2.2519961066397604e-06
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.00344232458667921,
+            0.00329581561893974
+          ],
+          "key": "unique_own",
+          "point": -7.325448386973525e-05
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.0002126611766906776,
+            0.0002716414124651492
+          ],
+          "key": "unique_downstream",
+          "point": 2.9490117887235808e-05
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.0036348983795958315,
+            0.0025710116485211576
+          ],
+          "key": "joint_over_full",
+          "point": -0.0005319433655373367
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.003464159582533228,
+            0.0032586703790192847
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00010274460175697176
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.0012287074146454672,
+            0.0025646025857610916
+          ],
+          "key": "unique_own",
+          "point": 0.0006679475855578122
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.0026565775052170408,
+            0.0017841315412433754
+          ],
+          "key": "unique_downstream",
+          "point": -0.0004362229819868327
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.002108729303632703,
+            0.001510498479560816
+          ],
+          "key": "joint_over_full",
+          "point": -0.0002991154120359435
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.002207729753806815,
+            0.004416070888896105
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0011041705675446452
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0015397912556769664,
+            0.001580632140062534
+          ],
+          "key": "unique_own",
+          "point": 2.0420442192783815e-05
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0007923822053594689,
+            0.0006617788120790091
+          ],
+          "key": "unique_downstream",
+          "point": -6.530169664022995e-05
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0014486345968816583,
+            0.0018649085410781328
+          ],
+          "key": "joint_over_full",
+          "point": 0.0002081369720982372
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0015481777708977644,
+            0.0017196220485637924
+          ],
+          "key": "own_minus_downstream",
+          "point": 8.572213883301388e-05
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.004310323139073427,
+            0.013098664866898771
+          ],
+          "key": "unique_own",
+          "point": 0.0043941708639126725
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0024770646040476875,
+            0.0016966240472764758
+          ],
+          "key": "unique_downstream",
+          "point": -0.0003902202783856058
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.006457544968844509,
+            0.009585557103879141
+          ],
+          "key": "joint_over_full",
+          "point": 0.0015640060675173163
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.004126230593530878,
+            0.013695012878127438
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.004784391142298281
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.0007448992312017748,
+            0.000514666998676675
+          ],
+          "key": "unique_own",
+          "point": -0.00011511611626254987
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.005441759193116806,
+            0.010084691300125783
+          ],
+          "key": "unique_downstream",
+          "point": 0.002321466053504489
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.0010852459363312008,
+            0.000782154510477598
+          ],
+          "key": "joint_over_full",
+          "point": -0.00015154571292680136
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.010210240834562956,
+            0.005337076495028878
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0024365821697670386
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.003044521521645049,
+            0.002646668035061043
+          ],
+          "key": "unique_own",
+          "point": -0.00019892674329200283
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.019095139761306747,
+            0.006122694371760294
+          ],
+          "key": "unique_downstream",
+          "point": -0.006486222694773227
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.006006579900863007,
+            0.004784599186811346
+          ],
+          "key": "joint_over_full",
+          "point": -0.0006109903570258306
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.006228861555760551,
+            0.018803453458722995
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.006287295951481222
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.0019148206140594177,
+            0.009214838762364277
+          ],
+          "key": "unique_own",
+          "point": 0.0036500090741524295
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.011099391710032212,
+            0.007653951495193039
+          ],
+          "key": "unique_downstream",
+          "point": -0.0017227201074195865
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.0014448025354792345,
+            0.005730148301955337
+          ],
+          "key": "joint_over_full",
+          "point": 0.0021426728832380513
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.005074095333574974,
+            0.015819553696719002
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.005372729181572014
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0008344858066744144,
+            0.0024356615834365374
+          ],
+          "key": "unique_own",
+          "point": 0.0008005878883810616
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0003944647903638404,
+            0.0003960763212531119
+          ],
+          "key": "unique_downstream",
+          "point": 8.057654446357497e-07
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0013207605166784984,
+            0.0011346658065939708
+          ],
+          "key": "joint_over_full",
+          "point": -9.304735504226384e-05
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0007965231806521237,
+            0.002396087426524974
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0007997821229364252
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.002632556162705806,
+            0.0028804438493382355
+          ],
+          "key": "unique_own",
+          "point": 0.0001239438433162147
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0025119117611566346,
+            0.00044381790279419183
+          ],
+          "key": "unique_downstream",
+          "point": -0.0010340469291812214
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0024722292949592075,
+            0.0012473680657596577
+          ],
+          "key": "joint_over_full",
+          "point": -0.0006124306145997749
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0015444848621319336,
+            0.0038604664071268057
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.001157990772497436
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0014846537943641969,
+            0.0034296853546435194
+          ],
+          "key": "unique_own",
+          "point": 0.0009725157801396612
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0019118438274441695,
+            0.00116411656313354
+          ],
+          "key": "unique_downstream",
+          "point": -0.0003738636321553147
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.002632206880197127,
+            0.0027469828455189836
+          ],
+          "key": "joint_over_full",
+          "point": 5.7387982660928205e-05
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0008277290657328143,
+            0.003520487890322768
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0013463794122949768
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0009000527727613993,
+            0.000674596952279371
+          ],
+          "key": "unique_own",
+          "point": -0.00011272791024101416
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0009070641193946995,
+            0.0003984115619457433
+          ],
+          "key": "unique_downstream",
+          "point": -0.0002543262787244781
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0018080884261401603,
+            0.001068157033542392
+          ],
+          "key": "joint_over_full",
+          "point": -0.0003699656962988841
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0008688585521415674,
+            0.0011520552891084953
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0001415983684834639
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            0.0005500546918670796,
+            0.01443514932762794
+          ],
+          "key": "unique_own",
+          "point": 0.007492602009747509
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.001446532273299092,
+            0.012063993294586057
+          ],
+          "key": "unique_downstream",
+          "point": 0.005308730510643483
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.0024720021295858915,
+            0.007381448577351547
+          ],
+          "key": "joint_over_full",
+          "point": 0.002454723223882828
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.008908139354309536,
+            0.01327588235251759
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0021838714991040285
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.006485741955434682,
+            0.0036340750660742464
+          ],
+          "key": "unique_own",
+          "point": -0.0014258334446802176
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.002307819006313558,
+            0.0012821907316957594
+          ],
+          "key": "unique_downstream",
+          "point": -0.0005128141373088994
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.00673662354816951,
+            0.003910600094487763
+          ],
+          "key": "joint_over_full",
+          "point": -0.0014130117268408736
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.00628153246129248,
+            0.004455493846549845
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0009130193073713179
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0016123674281710147,
+            0.0005984378363486656
+          ],
+          "key": "unique_own",
+          "point": -0.0005069647959111745
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.000729696494325722,
+            0.0006811003222766425
+          ],
+          "key": "unique_downstream",
+          "point": -2.4298086024539736e-05
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0023383832009442247,
+            0.0010766725873724847
+          ],
+          "key": "joint_over_full",
+          "point": -0.0006308553067858699
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0016985663373046483,
+            0.0007332329175313791
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00048266670988663453
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            0.0034721898863754666,
+            0.03468665444861195
+          ],
+          "key": "unique_own",
+          "point": 0.01907942216749371
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.016276326755078997,
+            0.0263536387273523
+          ],
+          "key": "unique_downstream",
+          "point": 0.00503865598613665
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.002836733550651359,
+            0.012595796031260669
+          ],
+          "key": "joint_over_full",
+          "point": 0.004879531240304655
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.00880390714219449,
+            0.03688543950490862
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.014040766181357066
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            -0.0004033973891097546,
+            0.01749745268122298
+          ],
+          "key": "unique_own",
+          "point": 0.008547027646056613
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            0.0024934227385080693,
+            0.04394289893597951
+          ],
+          "key": "unique_downstream",
+          "point": 0.02321816083724379
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            -0.011260312218278133,
+            0.023827985630430863
+          ],
+          "key": "joint_over_full",
+          "point": 0.006283836706076366
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            -0.03507821333458301,
+            0.005735946952208625
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.014671133191187192
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            0.0035352771489784805,
+            0.025044180419451882
+          ],
+          "key": "unique_own",
+          "point": 0.014289728784215182
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            -0.003312380643606805,
+            0.02739168789726224
+          ],
+          "key": "unique_downstream",
+          "point": 0.012039653626827717
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            -0.006505951302445149,
+            0.015644935731423882
+          ],
+          "key": "joint_over_full",
+          "point": 0.004569492214489366
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            -0.017065644573947707,
+            0.021565794888722636
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0022500751573874653
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.007134756133392357,
+            0.011353611659239817
+          ],
+          "key": "unique_own",
+          "point": 0.0021094277629237304
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.004220774682370259,
+            0.026205024274274055
+          ],
+          "key": "unique_downstream",
+          "point": 0.010992124795951897
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.013335086304887582,
+            0.005839245995278837
+          ],
+          "key": "joint_over_full",
+          "point": -0.0037479201548043725
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.02175713380688854,
+            0.0039917397408322074
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.008882697033028167
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            0.004021912973282641,
+            0.041720176344204454
+          ],
+          "key": "unique_own",
+          "point": 0.02287104465874355
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            0.0010604281633014787,
+            0.02425609996403267
+          ],
+          "key": "unique_downstream",
+          "point": 0.012658264063667074
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            -0.004718942997301314,
+            0.013495673606875772
+          ],
+          "key": "joint_over_full",
+          "point": 0.004388365304787229
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            -0.012169875980792319,
+            0.0325954371709453
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.01021278059507649
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.007330047618716454,
+            0.011413293609605751
+          ],
+          "key": "unique_own",
+          "point": 0.0020416229954446485
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.00915243073026634,
+            0.022362354427549542
+          ],
+          "key": "unique_downstream",
+          "point": 0.0066049618486416
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.011013640136973958,
+            0.007017437229503216
+          ],
+          "key": "joint_over_full",
+          "point": -0.0019981014537353704
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.018487304361290376,
+            0.00936062665489647
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.004563338853196952
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.0014411496342915887,
+            0.0012768113986436978
+          ],
+          "key": "unique_own",
+          "point": -8.21691178239455e-05
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.004566160469444762,
+            0.010908144966154406
+          ],
+          "key": "unique_downstream",
+          "point": 0.003170992248354822
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.0033154728033748804,
+            0.003947452892292567
+          ],
+          "key": "joint_over_full",
+          "point": 0.00031599004445884333
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.011117259301489855,
+            0.004610936569132318
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.003253161366178768
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.0034686253918582584,
+            0.006518446183122549
+          ],
+          "key": "unique_own",
+          "point": 0.0015249103956321455
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.005033732126985836,
+            0.01642185895855719
+          ],
+          "key": "unique_downstream",
+          "point": 0.005694063415785676
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.00587161265885798,
+            0.010811327855976473
+          ],
+          "key": "joint_over_full",
+          "point": 0.0024698575985592467
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.01770330082403709,
+            0.00936499478373003
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00416915302015353
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            0.003888916186076879,
+            0.030062873892536552
+          ],
+          "key": "unique_own",
+          "point": 0.016975895039306715
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            0.0025262160089604257,
+            0.029504212883018854
+          ],
+          "key": "unique_downstream",
+          "point": 0.01601521444598964
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            -0.006537527039803129,
+            0.027421027794986987
+          ],
+          "key": "joint_over_full",
+          "point": 0.010441750377591928
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            -0.020304222800354727,
+            0.022225583986988855
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0009606805933170631
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            0.005532358319866966,
+            0.030982577173973923
+          ],
+          "key": "unique_own",
+          "point": 0.018257467746920445
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            0.0007083470032140451,
+            0.020025475957495962
+          ],
+          "key": "unique_downstream",
+          "point": 0.010366911480355004
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            -0.008580535482530316,
+            0.004971620045932197
+          ],
+          "key": "joint_over_full",
+          "point": -0.0018044577182990593
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            -0.005237778906511403,
+            0.021018891439642286
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.007890556266565442
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0013769128493132873,
+            0.016754694237320924
+          ],
+          "key": "unique_own",
+          "point": 0.007688890694003818
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.004122916097733109,
+            0.023327105317176848
+          ],
+          "key": "unique_downstream",
+          "point": 0.00960209460972187
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0035074038275438695,
+            0.014797677332303093
+          ],
+          "key": "joint_over_full",
+          "point": 0.005645136752379612
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.021680336442404732,
+            0.01785392861096865
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.001913203915718043
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.001136990266239078,
+            0.00043212284221972214
+          ],
+          "key": "unique_own",
+          "point": -0.0003524337120096779
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.0024655747620529562,
+            0.0017255257511026977
+          ],
+          "key": "unique_downstream",
+          "point": -0.0003700245054751292
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.004112605328597342,
+            0.004710253449893379
+          ],
+          "key": "joint_over_full",
+          "point": 0.0002988240606480188
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.002051570661696992,
+            0.0020867522486278938
+          ],
+          "key": "own_minus_downstream",
+          "point": 1.7590793465451142e-05
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0030911855103239135,
+            0.005039463989186731
+          ],
+          "key": "unique_own",
+          "point": 0.0009741392394314088
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0011146138997247066,
+            0.0007741923191740289
+          ],
+          "key": "unique_downstream",
+          "point": -0.00017021079027533883
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.00342250818427905,
+            0.004802319807041834
+          ],
+          "key": "joint_over_full",
+          "point": 0.000689905811381392
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.002968842317094589,
+            0.005257542376508084
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0011443500297067476
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0011131882938503188,
+            0.0015132521680919961
+          ],
+          "key": "unique_own",
+          "point": 0.00020003193712083854
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0025417359633090235,
+            0.005564281337541975
+          ],
+          "key": "unique_downstream",
+          "point": 0.0015112726871164758
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0027955830470403707,
+            0.005355862152780524
+          ],
+          "key": "joint_over_full",
+          "point": 0.0012801395528700766
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.005548723978471907,
+            0.0029262424784806318
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0013112407499956374
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0009970315299197075,
+            0.0014553058874838987
+          ],
+          "key": "unique_own",
+          "point": 0.00022913717878209557
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0031876246648333273,
+            0.005366601882466061
+          ],
+          "key": "unique_downstream",
+          "point": 0.0010894886088163667
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0030170527080196465,
+            0.005346278970270118
+          ],
+          "key": "joint_over_full",
+          "point": 0.0011646131311252358
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.005119166322508232,
+            0.003398463462439691
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0008603514300342704
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0020697815486844674,
+            0.0014632484380967053
+          ],
+          "key": "unique_own",
+          "point": -0.000303266555293881
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0012797031498813954,
+            0.0017258933412464727
+          ],
+          "key": "unique_downstream",
+          "point": 0.00022309509568253864
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0019672066730361533,
+            0.0010735975664743795
+          ],
+          "key": "joint_over_full",
+          "point": -0.00044680455328088695
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0027356570183504647,
+            0.001682933716397625
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0005263616509764197
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            0.0059576907687381424,
+            0.02495483727643026
+          ],
+          "key": "unique_own",
+          "point": 0.015456264022584203
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.010322156872296179,
+            0.02265103824183013
+          ],
+          "key": "unique_downstream",
+          "point": 0.006164440684766976
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.0012597401588795212,
+            0.01719047965127781
+          ],
+          "key": "joint_over_full",
+          "point": 0.007965369746199146
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.0074358336024575155,
+            0.02601948027809197
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.009291823337817228
+        }
+      ],
+      "critical_value": 3.5793661646948856,
+      "draws": 10000,
+      "family_size": 128,
+      "family_universe": 156,
+      "method": "shared-universe family multinomial bootstrap; available-family ratio mean; maximum absolute centered statistic/fixed SE",
+      "seed": 20260923
+    },
+    "wall": {
+      "conditional_on_fitted_predictions": true,
+      "contrasts": [
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.0011569353727069343,
+            0.0009408217286598059
+          ],
+          "key": "unique_own",
+          "point": -0.0001080568220235642
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.00024211487982081216,
+            0.00016427847000580702
+          ],
+          "key": "unique_downstream",
+          "point": -3.8918204907502576e-05
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.0008503803874159552,
+            0.00029167595941861224
+          ],
+          "key": "joint_over_full",
+          "point": -0.00027935221399867145
+        },
+        {
+          "arm": "bygpt5-base-en",
+          "families": 156,
+          "interval": [
+            -0.0011105481257345287,
+            0.0009722708915024055
+          ],
+          "key": "own_minus_downstream",
+          "point": -6.913861711606157e-05
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.0014065793844888564,
+            0.002647947863672574
+          ],
+          "key": "unique_own",
+          "point": 0.0006206842395918589
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.0018101491879849727,
+            0.0009744218165194992
+          ],
+          "key": "unique_downstream",
+          "point": -0.0004178636857327368
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.0015578349615293563,
+            0.0019641157148817473
+          ],
+          "key": "joint_over_full",
+          "point": 0.00020314037667619548
+        },
+        {
+          "arm": "bygpt5-medium-en",
+          "families": 156,
+          "interval": [
+            -0.001407658613198796,
+            0.003484754463847987
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0010385479253245955
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.0010446538033904117,
+            0.0007724529901010507
+          ],
+          "key": "unique_own",
+          "point": -0.0001361004066446805
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.001069566812099047,
+            0.0019412397809813868
+          ],
+          "key": "unique_downstream",
+          "point": 0.00043583648444116984
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.0007724263609886024,
+            0.0010996775763412597
+          ],
+          "key": "joint_over_full",
+          "point": 0.00016362560767632867
+        },
+        {
+          "arm": "bygpt5-small-en",
+          "families": 156,
+          "interval": [
+            -0.002331853356737435,
+            0.0011879795745657344
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0005719368910858504
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0017244145414995167,
+            0.0006601164404486805
+          ],
+          "key": "unique_own",
+          "point": -0.0005321490505254181
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0009700268490095373,
+            0.00028734238147585384
+          ],
+          "key": "unique_downstream",
+          "point": -0.0003413422337668417
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0014113252442570542,
+            0.0006557085003833683
+          ],
+          "key": "joint_over_full",
+          "point": -0.0003778083719368429
+        },
+        {
+          "arm": "dialogpt-small",
+          "families": 153,
+          "interval": [
+            -0.0013535652898813539,
+            0.0009719516563642004
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00019080681675857675
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0002252611302548594,
+            0.00031763977909996254
+          ],
+          "key": "unique_own",
+          "point": 4.6189324422551575e-05
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0010842985671143598,
+            0.0014052945580806447
+          ],
+          "key": "unique_downstream",
+          "point": 0.00016049799548314235
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0021039252689969636,
+            0.0016315452337018063
+          ],
+          "key": "joint_over_full",
+          "point": -0.0002361900176475786
+        },
+        {
+          "arm": "galactica-1.3b",
+          "families": 156,
+          "interval": [
+            -0.001409859599705253,
+            0.0011812422575840714
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00011430867106059089
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.0012345717385660233,
+            0.0020177439691138497
+          ],
+          "key": "unique_own",
+          "point": 0.0003915861152739131
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.001029570198985948,
+            0.0012823648729837333
+          ],
+          "key": "unique_downstream",
+          "point": 0.0001263973369988926
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.0015681091678629994,
+            0.003423451840851335
+          ],
+          "key": "joint_over_full",
+          "point": 0.0009276713364941677
+        },
+        {
+          "arm": "galactica-125m",
+          "families": 156,
+          "interval": [
+            -0.0016918571371111711,
+            0.0022222346936612127
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0002651887782750207
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.002105104320876648,
+            0.004144079746960911
+          ],
+          "key": "unique_own",
+          "point": 0.0010194877130421313
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.005847640450330036,
+            0.0065258599496430475
+          ],
+          "key": "unique_downstream",
+          "point": 0.0003391097496565061
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.005324506485918323,
+            0.006183116779985403
+          ],
+          "key": "joint_over_full",
+          "point": 0.0004293051470335399
+        },
+        {
+          "arm": "galactica-30b",
+          "families": 156,
+          "interval": [
+            -0.004785637911048054,
+            0.006146393837819304
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0006803779633856251
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.001269546220665938,
+            0.0012308480644433956
+          ],
+          "key": "unique_own",
+          "point": -1.934907811127127e-05
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.0024225185797188825,
+            0.0014739762222965567
+          ],
+          "key": "unique_downstream",
+          "point": -0.00047427117871116296
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.002293097107513835,
+            0.001477540250329942
+          ],
+          "key": "joint_over_full",
+          "point": -0.0004077784285919465
+        },
+        {
+          "arm": "galactica-6.7b",
+          "families": 156,
+          "interval": [
+            -0.0014838580822333842,
+            0.002393702283433167
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.00045492210059989145
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.001889932220173314,
+            0.0013110576814796748
+          ],
+          "key": "unique_own",
+          "point": -0.0002894372693468195
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0005545848051742546,
+            0.00019129638158242907
+          ],
+          "key": "unique_downstream",
+          "point": -0.00018164421179591277
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.0017467504834003719,
+            0.0006490016098815014
+          ],
+          "key": "joint_over_full",
+          "point": -0.0005488744367594352
+        },
+        {
+          "arm": "gpt2",
+          "families": 153,
+          "interval": [
+            -0.001720450369075001,
+            0.0015048642539731876
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00010779305755090671
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0030381508651586963,
+            0.0015175607913501183
+          ],
+          "key": "unique_own",
+          "point": -0.0007602950369042891
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0016402621819751005,
+            0.00012977827628588793
+          ],
+          "key": "unique_downstream",
+          "point": -0.0007552419528446063
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0025730526561523834,
+            0.0008335721648998274
+          ],
+          "key": "joint_over_full",
+          "point": -0.0008697402456262779
+        },
+        {
+          "arm": "gpt2-large",
+          "families": 153,
+          "interval": [
+            -0.0023889192484524945,
+            0.0023788130803331286
+          ],
+          "key": "own_minus_downstream",
+          "point": -5.0530840596829794e-06
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0017661618881037963,
+            0.003816014198881133
+          ],
+          "key": "unique_own",
+          "point": 0.0010249261553886683
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.001636220796573129,
+            0.0031644195506758455
+          ],
+          "key": "unique_downstream",
+          "point": 0.0007640993770513582
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0032871712990317657,
+            0.004037225457849769
+          ],
+          "key": "joint_over_full",
+          "point": 0.00037502707940900145
+        },
+        {
+          "arm": "gpt2-medium",
+          "families": 153,
+          "interval": [
+            -0.0015554955790565762,
+            0.0020771491357311957
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0002608267783373097
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0008534402788515641,
+            0.0008945654642462012
+          ],
+          "key": "unique_own",
+          "point": 2.056259269731854e-05
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0008903716890179654,
+            0.0004104543832339384
+          ],
+          "key": "unique_downstream",
+          "point": -0.0002399586528920135
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0019920707278263056,
+            0.0013858831237691562
+          ],
+          "key": "joint_over_full",
+          "point": -0.00030309380202857473
+        },
+        {
+          "arm": "gpt2-xl",
+          "families": 153,
+          "interval": [
+            -0.0008215575923094188,
+            0.0013426000834880828
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0002605212455893319
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.007839367222228161,
+            0.010386832088926061
+          ],
+          "key": "unique_own",
+          "point": 0.0012737324333489503
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.017728457168883514,
+            0.014215034027536868
+          ],
+          "key": "unique_downstream",
+          "point": -0.001756711570673324
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.001261476940115987,
+            0.003796612671965149
+          ],
+          "key": "joint_over_full",
+          "point": 0.0012675678659245808
+        },
+        {
+          "arm": "instructprotein",
+          "families": 156,
+          "interval": [
+            -0.00686498740180045,
+            0.012925875409844998
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0030304440040222736
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.0008351833235018897,
+            0.0020455520877392126
+          ],
+          "key": "unique_own",
+          "point": 0.0006051843821186615
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.0025337851792287176,
+            0.0007183564045407554
+          ],
+          "key": "unique_downstream",
+          "point": -0.0009077143873439811
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.003342126524994322,
+            0.002027993294936093
+          ],
+          "key": "joint_over_full",
+          "point": -0.0006570666150291143
+        },
+        {
+          "arm": "llama-2-7b",
+          "families": 154,
+          "interval": [
+            -0.0005838105848433508,
+            0.0036096081237686354
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0015128987694626422
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0010098021445032503,
+            0.0008332834501868703
+          ],
+          "key": "unique_own",
+          "point": -8.825934715819001e-05
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0006629939915468151,
+            0.0007494468001658639
+          ],
+          "key": "unique_downstream",
+          "point": 4.322640430952444e-05
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.001103391635600065,
+            0.0007489442885825375
+          ],
+          "key": "joint_over_full",
+          "point": -0.0001772236735087637
+        },
+        {
+          "arm": "llama-3.2-3b",
+          "families": 154,
+          "interval": [
+            -0.0011040716473065813,
+            0.0008411001443711522
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00013148575146771459
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            0.0026562609443358445,
+            0.023222604490681545
+          ],
+          "key": "unique_own",
+          "point": 0.012939432717508696
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.001487488933214473,
+            0.01976111810134802
+          ],
+          "key": "unique_downstream",
+          "point": 0.009136814584066774
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.004223387631808503,
+            0.013449694530937532
+          ],
+          "key": "joint_over_full",
+          "point": 0.004613153449564514
+        },
+        {
+          "arm": "progen2-base",
+          "families": 156,
+          "interval": [
+            -0.014072656825638215,
+            0.02167789309252208
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.003802618133441933
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            0.0005956425262338798,
+            0.014223174592393297
+          ],
+          "key": "unique_own",
+          "point": 0.007409408559313589
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            0.0019511139554055264,
+            0.028092204044370003
+          ],
+          "key": "unique_downstream",
+          "point": 0.015021658999887765
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            -0.0034640739129710805,
+            0.0154303099141291
+          ],
+          "key": "joint_over_full",
+          "point": 0.00598311800057901
+        },
+        {
+          "arm": "progen2-large",
+          "families": 156,
+          "interval": [
+            -0.022890678446388063,
+            0.0076661775652397245
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.007612250440574168
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            0.0013824130956143071,
+            0.015581514044480386
+          ],
+          "key": "unique_own",
+          "point": 0.008481963570047346
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            0.0034626836983513883,
+            0.022274166478945465
+          ],
+          "key": "unique_downstream",
+          "point": 0.012868425088648426
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            -0.007394369279348811,
+            0.02626416340908698
+          ],
+          "key": "joint_over_full",
+          "point": 0.009434897064869085
+        },
+        {
+          "arm": "progen2-medium",
+          "families": 156,
+          "interval": [
+            -0.014920397942287913,
+            0.0061474749050857815
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.004386461518601065
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.010246319278632685,
+            0.009613485195611842
+          ],
+          "key": "unique_own",
+          "point": -0.0003164170415104207
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.018106612925793367,
+            0.03032036641378808
+          ],
+          "key": "unique_downstream",
+          "point": 0.0061068767439973574
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.0023498164456501455,
+            0.0037567623468311336
+          ],
+          "key": "joint_over_full",
+          "point": 0.0007034729505904941
+        },
+        {
+          "arm": "progen2-small",
+          "families": 156,
+          "interval": [
+            -0.02436451739086861,
+            0.011517929819853057
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.006423293785507778
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            0.003042468726643854,
+            0.019192381958128946
+          ],
+          "key": "unique_own",
+          "point": 0.011117425342386399
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            0.0039164225791597325,
+            0.018227876120075658
+          ],
+          "key": "unique_downstream",
+          "point": 0.011072149349617696
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            -0.00019836114590199207,
+            0.0077656858220439785
+          ],
+          "key": "joint_over_full",
+          "point": 0.003783662338070993
+        },
+        {
+          "arm": "progen2-xlarge",
+          "families": 156,
+          "interval": [
+            -0.01009286658797323,
+            0.01018341857351065
+          ],
+          "key": "own_minus_downstream",
+          "point": 4.527599276870964e-05
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.008826296073985248,
+            0.00815114733288578
+          ],
+          "key": "unique_own",
+          "point": -0.00033757437054973417
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.0038256266252296757,
+            0.01866630090643185
+          ],
+          "key": "unique_downstream",
+          "point": 0.007420337140601087
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.00885394735870014,
+            0.00777473182834021
+          ],
+          "key": "joint_over_full",
+          "point": -0.0005396077651799649
+        },
+        {
+          "arm": "progen3-112m",
+          "families": 156,
+          "interval": [
+            -0.0165831708093741,
+            0.0010673477870724564
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0077579115111508215
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.0010352875647289656,
+            0.0010073876214508784
+          ],
+          "key": "unique_own",
+          "point": -1.3949971639043681e-05
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.0031893564981227878,
+            0.007678312960535126
+          ],
+          "key": "unique_downstream",
+          "point": 0.002244478231206169
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.002268978249789605,
+            0.004933846362885528
+          ],
+          "key": "joint_over_full",
+          "point": 0.0013324340565479612
+        },
+        {
+          "arm": "prollama",
+          "families": 154,
+          "interval": [
+            -0.007685762130956961,
+            0.0031689057252665353
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.002258428202845213
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.0019580731025660644,
+            0.001616233684357618
+          ],
+          "key": "unique_own",
+          "point": -0.00017091970910422313
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.0027194294965768246,
+            0.007942822936629384
+          ],
+          "key": "unique_downstream",
+          "point": 0.00261169672002628
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.0022266162282710165,
+            0.006349216780969576
+          ],
+          "key": "joint_over_full",
+          "point": 0.0020613002763492797
+        },
+        {
+          "arm": "prollama-stage-1",
+          "families": 154,
+          "interval": [
+            -0.008621295436497782,
+            0.00305606257823678
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.0027826164291305006
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            -0.0012510585462183338,
+            0.033667271334436054
+          ],
+          "key": "unique_own",
+          "point": 0.01620810639410886
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            0.003527011193739561,
+            0.021743865656533003
+          ],
+          "key": "unique_downstream",
+          "point": 0.012635438425136281
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            -0.012463325074975367,
+            0.03561955356052991
+          ],
+          "key": "joint_over_full",
+          "point": 0.011578114242777271
+        },
+        {
+          "arm": "proteinglm-7b-clm",
+          "families": 156,
+          "interval": [
+            -0.015499376894211781,
+            0.022644712832156935
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.003572667968972576
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            0.001943064365801243,
+            0.021119024130706487
+          ],
+          "key": "unique_own",
+          "point": 0.011531044248253864
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            0.0007285964163275841,
+            0.013652033399930565
+          ],
+          "key": "unique_downstream",
+          "point": 0.007190314908129075
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            -0.005662017931811865,
+            0.005487872820029857
+          ],
+          "key": "joint_over_full",
+          "point": -8.707255589100397e-05
+        },
+        {
+          "arm": "protgpt2",
+          "families": 154,
+          "interval": [
+            -0.00755979350220034,
+            0.016241252182449935
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.004340729340124797
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0005850981849339185,
+            0.0070004751917881365
+          ],
+          "key": "unique_own",
+          "point": 0.003207688503427109
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            0.0049725191850141974,
+            0.018398938120565325
+          ],
+          "key": "unique_downstream",
+          "point": 0.011685728652789761
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.0030040015561219983,
+            0.01494104428112326
+          ],
+          "key": "joint_over_full",
+          "point": 0.005968521362500631
+        },
+        {
+          "arm": "protgpt3-1.3b",
+          "families": 156,
+          "interval": [
+            -0.015261515766156811,
+            -0.0016945645325684884
+          ],
+          "key": "own_minus_downstream",
+          "point": -0.00847804014936265
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.000291819303195661,
+            0.0006046423114612067
+          ],
+          "key": "unique_own",
+          "point": 0.00015641150413277284
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.002100597967333882,
+            0.0010487537359182477
+          ],
+          "key": "unique_downstream",
+          "point": -0.0005259221157078171
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.0016429701501777453,
+            0.001092852389371291
+          ],
+          "key": "joint_over_full",
+          "point": -0.0002750588804032273
+        },
+        {
+          "arm": "qwen2.5-0.5b",
+          "families": 154,
+          "interval": [
+            -0.0009323647202290526,
+            0.0022970319599102326
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.0006823336198405899
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0007969221890982723,
+            0.0010250929475445394
+          ],
+          "key": "unique_own",
+          "point": 0.0001140853792231335
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0010224994377553208,
+            0.00030127055597545824
+          ],
+          "key": "unique_downstream",
+          "point": -0.0003606144408899313
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0012693040071638131,
+            0.0008601504915851967
+          ],
+          "key": "joint_over_full",
+          "point": -0.00020457675778930823
+        },
+        {
+          "arm": "qwen2.5-0.5b-instruct",
+          "families": 154,
+          "interval": [
+            -0.0005195931042708635,
+            0.001468992744496993
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.00047469982011306484
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0010716418751468037,
+            0.0007189982357935123
+          ],
+          "key": "unique_own",
+          "point": -0.0001763218196766457
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0012084765154289768,
+            0.0008025153445131921
+          ],
+          "key": "unique_downstream",
+          "point": -0.00020298058545789233
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0013646117158143544,
+            0.0011371604100701566
+          ],
+          "key": "joint_over_full",
+          "point": -0.00011372565287209893
+        },
+        {
+          "arm": "qwen2.5-32b",
+          "families": 154,
+          "interval": [
+            -0.0011352870165396178,
+            0.0011886045481021108
+          ],
+          "key": "own_minus_downstream",
+          "point": 2.6658765781246555e-05
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0008505403120993788,
+            0.0017673143304131706
+          ],
+          "key": "unique_own",
+          "point": 0.000458387009156896
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0005361506256606589,
+            0.0014573902595150683
+          ],
+          "key": "unique_downstream",
+          "point": 0.00046061981692720476
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0006020029842404007,
+            0.0021185207880894223
+          ],
+          "key": "joint_over_full",
+          "point": 0.0007582589019245109
+        },
+        {
+          "arm": "qwen2.5-7b",
+          "families": 154,
+          "interval": [
+            -0.0014297119429873605,
+            0.0014252463274467425
+          ],
+          "key": "own_minus_downstream",
+          "point": -2.2328077703089058e-06
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.000935180550377972,
+            0.0006802537777569184
+          ],
+          "key": "unique_own",
+          "point": -0.00012746338631052678
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0016294666687121785,
+            0.0008394261807362943
+          ],
+          "key": "unique_downstream",
+          "point": -0.00039502024398794204
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0005777424243528032,
+            0.0006216237309589714
+          ],
+          "key": "joint_over_full",
+          "point": 2.1940653303084106e-05
+        },
+        {
+          "arm": "qwen3-8b-base",
+          "families": 154,
+          "interval": [
+            -0.0010340153670834492,
+            0.0015691290824382796
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.00026755685767741505
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            0.0018778881499767926,
+            0.02256024463960987
+          ],
+          "key": "unique_own",
+          "point": 0.01221906639479333
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.0034070933529516236,
+            0.014683096439544699
+          ],
+          "key": "unique_downstream",
+          "point": 0.005638001543296537
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.0077042691249393155,
+            0.023903570551205698
+          ],
+          "key": "joint_over_full",
+          "point": 0.008099650713133191
+        },
+        {
+          "arm": "rita-xl",
+          "families": 156,
+          "interval": [
+            -0.007057286812444488,
+            0.020219416515438092
+          ],
+          "key": "own_minus_downstream",
+          "point": 0.006581064851496803
+        }
+      ],
+      "critical_value": 3.5915386972366234,
+      "draws": 10000,
+      "family_size": 128,
+      "family_universe": 156,
+      "method": "shared-universe family multinomial bootstrap; available-family ratio mean; maximum absolute centered statistic/fixed SE",
+      "seed": 20260923
+    }
+  },
+  "declaration": "Multiplicity follow-up declared after pointwise inspection; window control primary, rf3 separate sensitivity; ProGen3-3B excluded pending forward-layout stability",
+  "families": [
+    "0",
+    "1",
+    "10",
+    "100",
+    "102",
+    "104",
+    "105",
+    "106",
+    "107",
+    "109",
+    "11",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "12",
+    "120",
+    "121",
+    "122",
+    "123",
+    "124",
+    "125",
+    "126",
+    "128",
+    "13",
+    "131",
+    "132",
+    "134",
+    "135",
+    "136",
+    "137",
+    "138",
+    "139",
+    "14",
+    "140",
+    "141",
+    "142",
+    "143",
+    "144",
+    "145",
+    "146",
+    "147",
+    "148",
+    "149",
+    "15",
+    "150",
+    "151",
+    "152",
+    "153",
+    "154",
+    "155",
+    "156",
+    "157",
+    "158",
+    "159",
+    "16",
+    "160",
+    "161",
+    "162",
+    "163",
+    "164",
+    "165",
+    "166",
+    "167",
+    "168",
+    "169",
+    "17",
+    "170",
+    "171",
+    "172",
+    "173",
+    "18",
+    "19",
+    "2",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "3",
+    "30",
+    "31",
+    "32",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38",
+    "39",
+    "4",
+    "40",
+    "43",
+    "44",
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "5",
+    "50",
+    "52",
+    "55",
+    "56",
+    "57",
+    "58",
+    "59",
+    "6",
+    "61",
+    "62",
+    "63",
+    "64",
+    "65",
+    "67",
+    "68",
+    "69",
+    "7",
+    "70",
+    "71",
+    "74",
+    "75",
+    "76",
+    "77",
+    "78",
+    "79",
+    "8",
+    "80",
+    "81",
+    "82",
+    "83",
+    "84",
+    "85",
+    "86",
+    "87",
+    "88",
+    "89",
+    "9",
+    "90",
+    "91",
+    "92",
+    "93",
+    "94",
+    "95",
+    "96",
+    "97",
+    "98",
+    "99"
+  ],
+  "fold_seeds": [
+    20260923,
+    20260924,
+    20260925
+  ],
+  "interpretation": "Seeds averaged within biological families; shared draws preserve cross-arm dependence with each arm available-family denominator; no pooled effect across differing variant supports",
+  "keys": [
+    "unique_own",
+    "unique_downstream",
+    "joint_over_full",
+    "own_minus_downstream"
+  ],
+  "schema": "position_simultaneous",
+  "source_sha256": {
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-base-en/position_controlled_bygpt5-base-en_fold20260923.json": "355f9886c9f0ce75f807f14e39056496b83b87780d9e976344432e745399cf18",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-base-en/position_controlled_bygpt5-base-en_fold20260924.json": "8c3fa613c23c98e512d8d64ef79ae0ab743dffc460b91ece33a92bae60badbe9",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-base-en/position_controlled_bygpt5-base-en_fold20260925.json": "6b26886e21c6f747ee61a87ce8cbe628f4c7cc01b83484469a637462a3561617",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-medium-en/position_controlled_bygpt5-medium-en_fold20260923.json": "9ca78c6507d4482ca8dc679dcf421a5dd6cf1b141daa01a37aa8d1724a9d13d5",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-medium-en/position_controlled_bygpt5-medium-en_fold20260924.json": "82fadcab6424162878ebd25dfe950c6a8a061840be90f265a34af4d159eacb53",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-medium-en/position_controlled_bygpt5-medium-en_fold20260925.json": "17261ff5b80f3fb8f59608ce32f7de9bb64e0fb088b0cb4b8101ac3bead145f6",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-small-en/position_controlled_bygpt5-small-en_fold20260923.json": "ce78b738f0d7295c2de358c02c30e317646c1d58f7b7d13e0b6f8fb86fb425a5",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-small-en/position_controlled_bygpt5-small-en_fold20260924.json": "92952e3d2e2f036f602826fc2408e2f5dcb094fe139eaf4aa20700a4570bf1a5",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-small-en/position_controlled_bygpt5-small-en_fold20260925.json": "eb11cee49aa80bb87fb49159d228099cbdbe4a2b1a1b79d12ac38a1bb5443bec",
+    "results/R1/position_terms_20260926/receipts/fits/dialogpt-small/position_controlled_dialogpt-small_fold20260923.json": "7469df3081fb5c20d5b6b4a47aa7c4d211ec133e0d2dc4c2ed5979c4e2f526b9",
+    "results/R1/position_terms_20260926/receipts/fits/dialogpt-small/position_controlled_dialogpt-small_fold20260924.json": "e3512619ba5efcb72c349e1262e616f24ff3c42c56c6af3799eed00c245e81b8",
+    "results/R1/position_terms_20260926/receipts/fits/dialogpt-small/position_controlled_dialogpt-small_fold20260925.json": "a16b081e80f31da3997da830cf6c276a84c27bed8d6d1ce85b09c7e2acfd3467",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-1.3b/position_controlled_galactica-1.3b_fold20260923.json": "a732c07c216cdf8fd3efbfc1d29be5c7c3d5f31cd75bc9e409517986ebebc3f7",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-1.3b/position_controlled_galactica-1.3b_fold20260924.json": "35c0b93826593c7772b586105f5a67cc4191369689ae0a8b31339c8aa188e90d",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-1.3b/position_controlled_galactica-1.3b_fold20260925.json": "e07b96474cea08617326dbc0bbcde49e328dbb3a5c545e06f2260479706effb6",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-125m/position_controlled_galactica-125m_fold20260923.json": "037bfb781ffb20ca13971c85f02149487bf0b9f06a8275e79b7b9b932acf6239",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-125m/position_controlled_galactica-125m_fold20260924.json": "acc3fc93c0dd0de430d2927c97faddb838135b360e580bfbd88202cdba3cf8a9",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-125m/position_controlled_galactica-125m_fold20260925.json": "0b838b4fe1bf796ec63365075011aebc0d31a1c63b7e393a9183140d1c09061f",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-30b/position_controlled_galactica-30b_fold20260923.json": "e4cb1b1e26369fdcf214a5337339d9dfd159c1946ec778cd44672e87f74b2cac",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-30b/position_controlled_galactica-30b_fold20260924.json": "30fdcf3fd96fda978c05f729e28d1ae9f8565c36098df3792424b373e6750bad",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-30b/position_controlled_galactica-30b_fold20260925.json": "1f90df5e3d36ea76ca3a231f633a21631929de8e51917f7b1728837ad9c8bc92",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-6.7b/position_controlled_galactica-6.7b_fold20260923.json": "c98182f5a81e8cbc95d7f0f034f9dfcf062a9e1f45318fb3b595370602e5009d",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-6.7b/position_controlled_galactica-6.7b_fold20260924.json": "8dad3f1173e22f0c9fcaeb8308a7256ca6b428f93509cbc85d3f5844b15a028b",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-6.7b/position_controlled_galactica-6.7b_fold20260925.json": "a985c8f8b66bbb6aa879455dffe66c56c560b97e1c10e6f314e3a65e56ebb92f",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-large/position_controlled_gpt2-large_fold20260923.json": "a14a467482f57f4f73821d8b1d24fa2250cf48365335478219441a1cb988bd89",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-large/position_controlled_gpt2-large_fold20260924.json": "653eb272dccfca2ca652f7212f9e91600aa0074be62c6a09931a33a5b6e936e3",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-large/position_controlled_gpt2-large_fold20260925.json": "2d960d5df31b5a405ea6a9dcc8fd189444e01b89cc0a1a4ba868217c984be767",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-medium/position_controlled_gpt2-medium_fold20260923.json": "0daa0b89a12b29572e970fec742e1c148459c5be3aeb7cfe4f447137324d0b75",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-medium/position_controlled_gpt2-medium_fold20260924.json": "2cd7051639dc7e4ce478980c5555dbe4874bfebb0faac1b2364be16828ad83cf",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-medium/position_controlled_gpt2-medium_fold20260925.json": "1cf8fb6f554cab882451892baf3a78977940d4d36107dfcf0ad7501c580975d7",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-xl/position_controlled_gpt2-xl_fold20260923.json": "5b30e0e31a67ebe6ed51f04b5d4a4fd49bca46fcf5d0df0820236cf0151a900b",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-xl/position_controlled_gpt2-xl_fold20260924.json": "da149750b25a781c8c04fb700d5c494e9f6c9e5ec8ee19b2a8d6ace884bafb44",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-xl/position_controlled_gpt2-xl_fold20260925.json": "0ca67e9fcde490b8959566153b1a453e33023477931d15f7dc5e34ed8c2bd962",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2/position_controlled_gpt2_fold20260923.json": "6a1a446ccd5eb03fb9a07f62f654b442a0509f72af63531e3ad215e8aba3c71d",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2/position_controlled_gpt2_fold20260924.json": "762ca7a5160ba0f8add1e5742a8aeea569ab51cd4cddc4d4741509653508032b",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2/position_controlled_gpt2_fold20260925.json": "a8a092ea5ed29640dc4326d825c74f93748e768b78acdb5287b0f9ee7f2d436b",
+    "results/R1/position_terms_20260926/receipts/fits/instructprotein/position_controlled_instructprotein_fold20260923.json": "b137e7440bd43a83af04b4febb7ff46abd2a15ba26e6550c6eec577d4483e037",
+    "results/R1/position_terms_20260926/receipts/fits/instructprotein/position_controlled_instructprotein_fold20260924.json": "3401146486806852618d25c50407492f93ae526406b8c04af5b4fd6c16602776",
+    "results/R1/position_terms_20260926/receipts/fits/instructprotein/position_controlled_instructprotein_fold20260925.json": "5f118ad41a03d79b68098380d5fd07e28ed522f65775be98d09a05e63b57d029",
+    "results/R1/position_terms_20260926/receipts/fits/llama-2-7b/position_controlled_llama-2-7b_fold20260923.json": "d29ede142b582460850440582d987aab48779b1be9cd3c92d593ad93bfbe3e4a",
+    "results/R1/position_terms_20260926/receipts/fits/llama-2-7b/position_controlled_llama-2-7b_fold20260924.json": "ed954b9636ef62199de76e4dffb5955331422b5966f59d4a6a4eccecdb17ad8e",
+    "results/R1/position_terms_20260926/receipts/fits/llama-2-7b/position_controlled_llama-2-7b_fold20260925.json": "7d048b08effa9857e84ff31537e8bef5a7671f26267578fd45bc377945cb5a76",
+    "results/R1/position_terms_20260926/receipts/fits/llama-3.2-3b/position_controlled_llama-3.2-3b_fold20260923.json": "cf1f4cae45cb3877a2de2e64190a1b7b7871ae6776ab1d2d385697d548178089",
+    "results/R1/position_terms_20260926/receipts/fits/llama-3.2-3b/position_controlled_llama-3.2-3b_fold20260924.json": "42f004e1d58c304bb63740d7253dd5338f9d03615bff13b2fab0fad35b7343a0",
+    "results/R1/position_terms_20260926/receipts/fits/llama-3.2-3b/position_controlled_llama-3.2-3b_fold20260925.json": "08d22431858e353013d6a734e94e0a10a7406626ebb889844c9083485373d20f",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-base/position_controlled_progen2-base_fold20260923.json": "461a9e16bf016ef01305eac8e1a465b7efe78c152bc60702244ac44151e523a4",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-base/position_controlled_progen2-base_fold20260924.json": "349d312db15fdf9a5b1031fd3aaad3343f6d539db363a4503349e25c29ed9cba",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-base/position_controlled_progen2-base_fold20260925.json": "f1992e0f4fcf05b57d70e6f154e832ce5512aeb412970bf829c8313402d9d206",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-large/position_controlled_progen2-large_fold20260923.json": "dadcc2efde09f0a32dbaa159bb22002546c500257f1e243911ea399c7ec9dcf4",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-large/position_controlled_progen2-large_fold20260924.json": "9e6a3e7a5fa78f9b0cc3c25fc0e4011c3ab36ac62747cc0da4ff06c539bf1184",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-large/position_controlled_progen2-large_fold20260925.json": "10096ee29201dd6458cef2ae2ed074345c787b7a91216f961877dfb2f349447d",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-medium/position_controlled_progen2-medium_fold20260923.json": "ca9bd45e0dfad477c94e9a4387e4be4b0c3a813d887915f303c8e8afe9d3ab27",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-medium/position_controlled_progen2-medium_fold20260924.json": "760298ac51be63979eaab00f2167e44ebc1ca626bba0bff72747c00299ebc480",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-medium/position_controlled_progen2-medium_fold20260925.json": "387261c19ff820dedc3b2676571a3da81125249e0ea6761a0b8a3facb6561564",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-small/position_controlled_progen2-small_fold20260923.json": "bab8bae31495cd3586ecc61d1edaff409234a206dfc2cf2cd74cecb834e078e5",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-small/position_controlled_progen2-small_fold20260924.json": "d3d9c9deef346bbadf394ec112611ee6017f45d236e052d51a241e26bdde7eb4",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-small/position_controlled_progen2-small_fold20260925.json": "87fbbfb22670a4b137cc0f134522fe5b5edec1e9676488cfc93aac7e1f6e6d98",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-xlarge/position_controlled_progen2-xlarge_fold20260923.json": "fce25744bf074e329bd0dad7b128d13b038cfc789fdc0e32548e8a3f011100bb",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-xlarge/position_controlled_progen2-xlarge_fold20260924.json": "b80f65060841ade17512c6698066e5473d97152d96dc1c2b55c2c380bec2f51c",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-xlarge/position_controlled_progen2-xlarge_fold20260925.json": "09f03ad4bb48b37267efc4a82e22f2763e13509752c0e83f7d55c57dead47e52",
+    "results/R1/position_terms_20260926/receipts/fits/progen3-112m/position_controlled_progen3-112m_fold20260923.json": "4ce4e21481d736f19982287ed6e1860acef8ebc954012aee8fb05e5be96c99ba",
+    "results/R1/position_terms_20260926/receipts/fits/progen3-112m/position_controlled_progen3-112m_fold20260924.json": "3ad3b0e146d1653a7b7a94ad529aebda009bb9611c3eaeb4bd49b80b79b51eb0",
+    "results/R1/position_terms_20260926/receipts/fits/progen3-112m/position_controlled_progen3-112m_fold20260925.json": "5c64419e19e76bd7d2bc1355debac54d36c11f60af9a21f0e993e2a04d1ca5a9",
+    "results/R1/position_terms_20260926/receipts/fits/prollama-stage-1/position_controlled_prollama-stage-1_fold20260923.json": "d717d923d59ce07f14cac0f1cef1a60c8ae351902afd31f35c704a9c2d3a0481",
+    "results/R1/position_terms_20260926/receipts/fits/prollama-stage-1/position_controlled_prollama-stage-1_fold20260924.json": "ee4c300aecb0c095fefb1e858ca4cab6210d4c4ba68e5c7803f3c02bd051fe84",
+    "results/R1/position_terms_20260926/receipts/fits/prollama-stage-1/position_controlled_prollama-stage-1_fold20260925.json": "5abbbca7382da4bc50ffee8c429f86810c41ccc9970699386d7d14342bd5d580",
+    "results/R1/position_terms_20260926/receipts/fits/prollama/position_controlled_prollama_fold20260923.json": "67e5aa7bc3f2e5a00e6ec4241b3d166ce6c5d9a61f8a5da49869cc3907661bff",
+    "results/R1/position_terms_20260926/receipts/fits/prollama/position_controlled_prollama_fold20260924.json": "6122d5f9eb7e2b060f321664f993aa5e72fd268bee0647e334ef679014e6a1cf",
+    "results/R1/position_terms_20260926/receipts/fits/prollama/position_controlled_prollama_fold20260925.json": "3e837910608980e46b8c8a6167fc83a84419e108ccc6e5d79607e33f8239acf7",
+    "results/R1/position_terms_20260926/receipts/fits/proteinglm-7b-clm/position_controlled_proteinglm-7b-clm_fold20260923.json": "2298eb30c715d9327092989026369d2c1287070834163e5884bf407a16711ef4",
+    "results/R1/position_terms_20260926/receipts/fits/proteinglm-7b-clm/position_controlled_proteinglm-7b-clm_fold20260924.json": "bb8faaf2b9d7a804a74acf94c5fe4a17ba3378043626828596598ebda7b321bc",
+    "results/R1/position_terms_20260926/receipts/fits/proteinglm-7b-clm/position_controlled_proteinglm-7b-clm_fold20260925.json": "0bbe7ddf6d6e266465a621950616a55fef7658de59d6f593d824751f6fdb561a",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt2/position_controlled_protgpt2_fold20260923.json": "e8462c8210e3fb19128a829717415da2a5f8612f708cb29daa3d6c6dc87d4a1a",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt2/position_controlled_protgpt2_fold20260924.json": "1b91b651df6ddad7469d1bf9f6788465b793626de3d87a8bd7da1ee399de6198",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt2/position_controlled_protgpt2_fold20260925.json": "f46e274245ea97b9f74895f7af4a9ff24b29efa0fe2b35c7df88c4509103f6a8",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt3-1.3b/position_controlled_protgpt3-1.3b_fold20260923.json": "e31140e0e8fe61188d333e264bf9c9c534053fd327ad183756afb75a187c047e",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt3-1.3b/position_controlled_protgpt3-1.3b_fold20260924.json": "928dde366bb3afb6f16a11a8d477333283fe5f3a375e43c3df9e1e7e17ecc103",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt3-1.3b/position_controlled_protgpt3-1.3b_fold20260925.json": "182bd0d4435613b63d613b86e201c590c95c813a37081f0901e6649ad2d81b6f",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b-instruct/position_controlled_qwen2.5-0.5b-instruct_fold20260923.json": "2246d95b8198912d8b8d1c2377ad72e8e26a7d5c78681ad01d5bf5f9d019011d",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b-instruct/position_controlled_qwen2.5-0.5b-instruct_fold20260924.json": "082edcb15d0b5310d563620c046dd19daf40cc329d21b503b6e6c0a1d2d57468",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b-instruct/position_controlled_qwen2.5-0.5b-instruct_fold20260925.json": "90c97e621146dfe6519ada3b890648aa366c373509c47e995016e8a6ff8f43e7",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b/position_controlled_qwen2.5-0.5b_fold20260923.json": "e9eb7f6d938fe4a170706827ede5d314bc203a9e47ccac7c39c8239d562ca4d3",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b/position_controlled_qwen2.5-0.5b_fold20260924.json": "07be86c45d9d1f2ef61a646a377ebd0fb619a009c64cbf8ae2c3c3251250c569",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b/position_controlled_qwen2.5-0.5b_fold20260925.json": "1d6cdcc8216baf5f6f8038f7dbbfa95a9fe5b5ffc156f34125a3f59b63f52277",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-32b/position_controlled_qwen2.5-32b_fold20260923.json": "87604b1cb60a96c0e09b37b761b7267bb667d52bdea57b2337311cd873e3ff1f",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-32b/position_controlled_qwen2.5-32b_fold20260924.json": "063af4d23ff0a308863245393c7d76b094f96ef037b2c252e0d789bdb8636e17",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-32b/position_controlled_qwen2.5-32b_fold20260925.json": "02e587a95adefabe73fb78d11da49805f81a1f14aa50feccb9bc970aba27ccf5",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-7b/position_controlled_qwen2.5-7b_fold20260923.json": "571c78f9800b47fd7238a330070f7d30c6e974e6274673df4691d4b03fa74af4",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-7b/position_controlled_qwen2.5-7b_fold20260924.json": "050a18a5d489ec0c27c03c8cd49d9eea2d0dcc0fbb9a6d529249a9733312277c",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-7b/position_controlled_qwen2.5-7b_fold20260925.json": "f533524a8e71a419dcc37e1da19f62d508503f4ce55ff81b23e34bb8e78ef47c",
+    "results/R1/position_terms_20260926/receipts/fits/qwen3-8b-base/position_controlled_qwen3-8b-base_fold20260923.json": "96651cce445716dae0803bbeeab141195371911ff0e136b1774ee104504343f0",
+    "results/R1/position_terms_20260926/receipts/fits/qwen3-8b-base/position_controlled_qwen3-8b-base_fold20260924.json": "f77d90a6663a99007dc1478e996b15960c7111e9b3613ee420ae4806afb733e5",
+    "results/R1/position_terms_20260926/receipts/fits/qwen3-8b-base/position_controlled_qwen3-8b-base_fold20260925.json": "a30a1599f5fa748c04185f87d39fdb323f0721faa12d82011ca19c4006e7d091",
+    "results/R1/position_terms_20260926/receipts/fits/rita-xl/position_controlled_rita-xl_fold20260923.json": "0166dcf15dea41c099560384cd24c94e0a6a4e9aae715e105d761163e3e42104",
+    "results/R1/position_terms_20260926/receipts/fits/rita-xl/position_controlled_rita-xl_fold20260924.json": "c389a04078c96325030e1f6582de39c600e69f2cce36417aa462650a928887a5",
+    "results/R1/position_terms_20260926/receipts/fits/rita-xl/position_controlled_rita-xl_fold20260925.json": "09a8bf3b3de154a8319a3aade546bed9a25fc7f37a60e8ab5500e4ae698c7294"
+  }
+}

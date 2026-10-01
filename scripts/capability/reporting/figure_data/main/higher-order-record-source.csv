@@ -1,0 +1,16 @@
+deposition,property,satisfied,failure_label,source_document,source_document_sha256,source_pointer
+MegaScale,breadth,True,order,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+MegaScale,completeness,False,order,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+MegaScale,channel coverage,True,order,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+MGnify Stability,breadth,False,completeness,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+MGnify Stability,completeness,False,completeness,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+MGnify Stability,channel coverage,True,completeness,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+ProteinGym,breadth,True,channel coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+ProteinGym,completeness,True,channel coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+ProteinGym,channel coverage,False,channel coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+Escobedo 2025,breadth,False,breadth,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+Escobedo 2025,completeness,True,breadth,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+Escobedo 2025,channel coverage,True,breadth,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+SKEMPI v2,breadth,True,corner coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+SKEMPI v2,completeness,True,corner coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table
+SKEMPI v2,channel coverage,False,corner coverage,archive/docs/R3/higher-order-qualification-harness.md,191b293e11ffdfdd8c7bdd06187508540a0723d16d9e9eb1650832159402b84e,five-deposition specification table

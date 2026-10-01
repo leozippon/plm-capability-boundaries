@@ -1,0 +1,17 @@
+figure,panel,source,selection,statistical_unit,uncertainty
+Fig1,a,manuscript/main.tex; retained panel design,conceptual workflow,not a quantitative panel,none
+Fig1,b,lineage-robustness-source.csv,all 16 release families,163 biological groups,95% simultaneous; 10000 resamples
+Fig1,c,local-increments-source.csv; external-abundance-source.csv,primary split; likelihood ranking increments,163 mutation groups; 96 abundance groups,pointwise 95%; 2000 resamples; no across-model regression
+Fig1,d,local-increments-source.csv,shared baseline from progen3-3b record,163 biological groups,primary 95% intervals; other-split ticks
+Fig2,b/c,native-fitness-source.csv; text-aa-fitness-source.csv,all retained native and text-string records; missing raw ProteinGLM is NR,native supports vary; text 169 groups,pointwise 95%; heatmap dots only encode interval exclusion
+Fig2,d,position-terms-replot.csv,wall control; 32 checkpoints; four contrasts,156 families; 2991 variants,95% simultaneous over 128 contrasts; 10000 resamples
+Fig3,a,readout-contrasts-source.csv,all 33 checkpoint summaries; primary split,163 biological groups,point estimates connected by checkpoint; CI in source table
+Fig3,b,depth-profile-source.csv,native-protein records; both admitted summary axes,selected checkpoint-depth combinations,ranges over 3 split point estimates; not confidence intervals; post-selection
+Fig3,c,controlled-gap-source.csv,all 99 arm × split estimates,163 biological groups,"pointwise 95%; heatmap markers, complete CI in CSV"
+Fig3,d,context-ranking-source.csv,all 4 checkpoints × 2 contrasts,134 biological groups,pointwise 95%; 2000 resamples
+Fig4,b,nested-residual-source.csv; residual-full-panel-source.csv,3 historically positive arms; raw primary vs current seed-mean,64 biological groups,raw pointwise 95%; adjusted simultaneous 95% over all 33 arms; not a paired target-change test
+Fig4,c/d,residual-full-panel-source.csv; stability-panel-source.csv,all 33 checkpoints; fixed order,64 interaction groups; 101 stability groups,95% simultaneous across 33 arms; 10000 resamples
+Fig4,e/f,endpoint-boundaries-source.csv,four ratios; raw and adjusted primary contact enrichment,"units differ by endpoint, retained in CSV",pointwise 95%; 2000 resamples
+Fig5,b/c,matched-generator-source.csv,all 20 cells; both endpoints; six constructed controls; hatched order-0/order-2 controls fail qualification,frozen attempt groups; 800 attempts per cell,97.5% paired group intervals; complete differences in source; dots encode exclusion
+Fig5,d,matched-generator-source.csv; generation-streams-replot.csv,complete-domain model-minus-fragment; all 20 cells,attempt groups horizontally; 3 streams vertically,horizontal 97.5%; vertical 95% Student-t df=2; fixed checkpoints
+Fig5,e,conditional-class-yield-source.csv,"eligible classes only: 14 ZymCTRL,15 ProLLaMA",200 attempts per condition per class,saved-batch descriptive rates; not class-level prevalence estimates

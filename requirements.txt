@@ -1,0 +1,22 @@
+# Direct dependencies for the active transfer package, validated on Python 3.11.
+# Install the CUDA-enabled PyTorch build appropriate to the execution host.
+#
+# `tokenizers` reaches the environment through `transformers` and is pinned here
+# so the installed pair is reproducible. ProGen3 is not on PyPI: the scoring
+# entry points for those checkpoints import `progen3` from a local checkout,
+# whose location is read from TRANSFER_PROGEN3_SRC as `.env.example` describes.
+numpy==1.26.4
+pyarrow==22.0.0
+scipy==1.17.0
+scikit-learn==1.8.0
+threadpoolctl==3.6.0
+tokenizers==0.22.2
+torch==2.9.1
+transformers==4.57.3
+pandas==2.3.3
+matplotlib==3.10.8
+safetensors==0.7.0
+
+# Validation and linting
+pytest==9.0.2
+ruff==0.14.11

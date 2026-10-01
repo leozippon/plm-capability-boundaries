@@ -1,0 +1,113 @@
+# Datasets, run outputs, records and the manuscript are held locally and are
+# not distributed. They are not backed up by Git: never run `git clean -fdx` or
+# `git clean -fdX` in a working tree that holds them, and remove only paths
+# identified as disposable.
+/data/
+results/
+/archive/
+logs/
+**/logs/
+manuscript/
+external/
+runtimes/
+wandb/
+mlruns/
+next_phase_artifacts/
+
+# Host-local compute operations, explicitly included in runtime snapshots.
+/h200/
+# The orchestration suite exercises the host-local h200/ launch layer above.
+# It skips cleanly when that directory is absent, so a public checkout loses
+# no coverage, and shipping it would publish the cluster's operations
+# vocabulary without publishing what it operates.
+/tests/orchestration/test_h200_orchestration.py
+
+# Internal records and agent state, kept out of the distributed tree.
+/docs/
+/summary.md
+/AGENTS.md
+/CLAUDE.md
+/.mutagenignore
+.claude/
+.pi/
+
+# Credentials and this machine's path assignments. .env.example lists the
+# names; .env.local holds the values and is not distributed.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+.conda/
+*.egg-info/
+
+# LaTeX and build auxiliaries
+*.aux
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+*.log
+
+# Large model and array files
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.npy
+*.npz
+*.parquet
+*.feather
+*.arrow
+
+# Archives and generated documents
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Bioinformatics payloads
+*.vcf.gz
+*.vcf.bgz
+*.dat.gz
+*.tsv.gz
+*.bam
+*.bai
+*.fasta
+*.fastq
+*.fasta.gz
+*.fastq.gz
+*.fa.gz
+*.fq.gz
+
+# Editor and system noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Retired working-tree names, kept so that they are not resurrected by an add.
+Research1/
+Research2/
+ProteinInterpret/
+benchmark_encoder/
+paper_r2_nature_mi/
+r2_decoder_sparse_readout_audit/
+project_records/

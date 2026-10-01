@@ -1,0 +1,131 @@
+{
+  "schema": "text-aa-boundaries/v1",
+  "protocol_id": "text-aa-fp32-v1",
+  "research_role": "text-aa-string-control",
+  "order": [
+    "gpt2",
+    "gpt2-medium",
+    "gpt2-large",
+    "gpt2-xl",
+    "dialogpt-small",
+    "qwen2.5-0.5b",
+    "qwen2.5-7b",
+    "qwen2.5-32b",
+    "llama-3.2-3b",
+    "qwen3-8b-base",
+    "bygpt5-small-en",
+    "bygpt5-base-en",
+    "bygpt5-medium-en"
+  ],
+  "families": {
+    "gpt2": ["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"],
+    "qwen2.5": ["qwen2.5-0.5b", "qwen2.5-7b", "qwen2.5-32b"],
+    "bygpt5": ["bygpt5-small-en", "bygpt5-base-en", "bygpt5-medium-en"]
+  },
+  "family_notes": {
+    "gpt2": "DialoGPT-small shares the GPT-2 tokenizer but is not a fifth GPT-2 scale rung.",
+    "qwen2.5": "Qwen3-8B-Base is a Base checkpoint, not an Instruct sibling, and is not a Qwen2.5 scale rung.",
+    "bygpt5": "ByGPT5 has no absolute position table; the application window is the census max legal input length."
+  },
+  "text_aa_checkpoints": {
+    "gpt2": {
+      "model_type": "gpt2",
+      "tokenizer_class": "GPT2TokenizerFast",
+      "context": 1024,
+      "bos_token_id": 50256,
+      "eos_token_id": 50256,
+      "pad_token_id": null,
+      "unk_token_id": 50256,
+      "decoder_start_token_id": null,
+      "conditioning": {
+        "kind": "bos_same_id_as_eos",
+        "token": "<|endoftext|>",
+        "id": 50256
+      }
+    },
+    "gpt2-medium": {
+      "inherits_boundary_from": "gpt2",
+      "context": 1024
+    },
+    "gpt2-large": {
+      "inherits_boundary_from": "gpt2",
+      "context": 1024
+    },
+    "gpt2-xl": {
+      "inherits_boundary_from": "gpt2",
+      "context": 1024
+    },
+    "dialogpt-small": {
+      "inherits_boundary_from": "gpt2",
+      "context": 1024
+    },
+    "qwen2.5-0.5b": {
+      "model_type": "qwen2",
+      "tokenizer_class": "Qwen2TokenizerFast",
+      "context": 32768,
+      "bos_token_id_tokenizer": null,
+      "eos_token_id": 151643,
+      "pad_token_id": 151643,
+      "unk_token_id": null,
+      "decoder_start_token_id": null,
+      "conditioning": {
+        "kind": "eos_document_separator",
+        "token": "<|endoftext|>",
+        "id": 151643,
+        "do_not_use": [151644]
+      }
+    },
+    "qwen2.5-7b": {
+      "inherits_boundary_from": "qwen2.5-0.5b",
+      "context": 131072
+    },
+    "qwen2.5-32b": {
+      "inherits_boundary_from": "qwen2.5-0.5b",
+      "context": 131072
+    },
+    "llama-3.2-3b": {
+      "model_type": "llama",
+      "tokenizer_class": "PreTrainedTokenizerFast",
+      "context": 131072,
+      "bos_token_id": 128000,
+      "eos_token_id": 128001,
+      "pad_token_id": null,
+      "unk_token_id": null,
+      "decoder_start_token_id": null,
+      "conditioning": {
+        "kind": "true_bos",
+        "token": "<|begin_of_text|>",
+        "id": 128000
+      }
+    },
+    "qwen3-8b-base": {
+      "inherits_boundary_from": "qwen2.5-0.5b",
+      "model_type": "qwen3",
+      "context": 32768
+    },
+    "bygpt5-small-en": {
+      "model_type": "bygpt5",
+      "tokenizer_class": "ByGPT5Tokenizer",
+      "context": null,
+      "bos_token_id": null,
+      "eos_token_id": 1,
+      "pad_token_id": 0,
+      "unk_token_id": 2,
+      "decoder_start_token_id": 0,
+      "conditioning": {
+        "kind": "none_declared",
+        "token": null,
+        "id": null,
+        "evidence": "This rendering prefixes nothing, which is a measurement rather than a default. The config declares decoder_start_token_id 0, and an earlier declaration copied that key as the conditioning token; the config is ByGPT5Config(T5Config) with is_encoder_decoder false, so the key is T5Config's own default carried into a decoder-only config and not a document boundary the checkpoint was trained behind. Measured on the staged checkpoint over 200 OpenWebText documents of at least 800 characters at a 384-token window, draw seed 20260728, float32, on the byte targets both renderings score: the bare byte string assigns 0.88939 nats/token, the same string prefixed with id 0 assigns 0.90865 (+0.01926 for the prefix), and the string with a trailing <eos> id 1 assigns 0.95080. At position 0 after the id-0 prefix the checkpoint places 0.35119 of its next-token mass on ' ' (id 35) and assigns the first byte a mean NLL of 8.97205 +/- 0.08700 nats, and the trailing <eos> costs 25.63308 +/- 0.20677 nats. Because the scorer builds its targets from position -- every input token but the first -- a prefix would additionally make each document's first byte a scored target, and the prefixed rendering's reported figure would be 0.92965 nats/token against the bare rendering's 0.88939, +0.04025. decoder_start_token_id therefore stays declared as the config fact it is, checked against the loaded config, and the scored rendering is the byte string itself"
+      }
+    },
+    "bygpt5-base-en": {
+      "inherits_boundary_from": "bygpt5-small-en",
+      "context": null
+    },
+    "bygpt5-medium-en": {
+      "inherits_boundary_from": "bygpt5-small-en",
+      "context": null
+    }
+  }
+}

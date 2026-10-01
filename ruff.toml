@@ -1,0 +1,16 @@
+# Lint configuration for the capability measurement code.
+#
+# The default rule set applies, minus three rules that the entry-point scripts
+# violate by construction rather than by accident:
+#
+#   E402  Each script resolves the repository root and inserts it on sys.path
+#         before importing from `src`, so those imports cannot sit at the top
+#         of the file.
+#   E701  The analysis scripts are written in a deliberately dense statement
+#   E702  style, with short compound statements on one line. Rewriting them
+#         would produce a large diff with no change in behaviour.
+#
+# Everything else the default set reports is treated as a finding to fix.
+
+[lint]
+extend-ignore = ["E402", "E701", "E702"]

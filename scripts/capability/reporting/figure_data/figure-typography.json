@@ -1,0 +1,94 @@
+{
+  "status": "pass",
+  "method": "Live SVG font size scaled by exact 31-pc PDF insertion width; 8pt target with 0.1pt numeric tolerance. Label ink boxes measured with the layout metrics and required not to overlap by more than 0.25pt or to leave the canvas. Visual inspection remains necessary.",
+  "figures": [
+    {
+      "figure": "figures/Fig1_framework.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 71,
+      "label_layout_faults": [],
+      "svg_sha256": "f3c35ed35fcc1a4aa43a115b5e11eb10dedb22e4ce3c711c9053ab5c1ef985da",
+      "pdf_sha256": "b7c9ed93713c2b8c080530a1124c0b03296ce8c80fb66daf30ef79d6e9fa5a85"
+    },
+    {
+      "figure": "figures/Fig2_native_and_position.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 120,
+      "label_layout_faults": [],
+      "svg_sha256": "838a1acf4bb6b779927d155fd9006386b771d7ce1fe4e2caff3620355041eedd",
+      "pdf_sha256": "65177787a2322cac6073e20cf4a26662aa1f191957fee5f269a6df5034e3a7eb"
+    },
+    {
+      "figure": "figures/Fig3_readouts_and_context.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 84,
+      "label_layout_faults": [],
+      "svg_sha256": "65072429b65f5f0f2537bc7995cbcc5732c8e6839681d32780336a7d4d434f13",
+      "pdf_sha256": "a4497b4672031e3eabfedf1901c0104c99e050c3c5a5dc5fff088def1a6976f2"
+    },
+    {
+      "figure": "figures/Fig4_interactions_and_limits.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 75,
+      "label_layout_faults": [],
+      "svg_sha256": "a0ee48767f33a470ca26b34bc933ceeace7a97941e9c2a45c8c8d1d0f8d6593d",
+      "pdf_sha256": "a6a62a4900ea510d6292e576afbe582ae4ea1fff602e8781ae4c9e97a1a86381"
+    },
+    {
+      "figure": "figures/Fig5_generation.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 72,
+      "label_layout_faults": [],
+      "svg_sha256": "7236506ebf9ff1e6721614aee0ca2edc5914917762dcc9aa0e37eb876d2c334e",
+      "pdf_sha256": "23b01f2e0cda556cc0e072aaeacffd72909e84e3178a6c1d206f5f22584ad645"
+    },
+    {
+      "figure": "figures/ncs/conditional-class-yield.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 51,
+      "label_layout_faults": [],
+      "svg_sha256": "f9dca93d182e1cba009fca4a484a40ffc778856c60eb8d2651379b16c69a761f",
+      "pdf_sha256": "77d23d143eb5fb12bdd10db37bf1dfa0f4ef344c9feded6682be9275b1b00135"
+    },
+    {
+      "figure": "figures/ncs/generation-yield.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 34,
+      "label_layout_faults": [],
+      "svg_sha256": "603f72cf2c89e375ab0a4f2370129d579cd27008e8b90f25ac2eabf9b478aed9",
+      "pdf_sha256": "a70a5c953b43f48c31f8891f0bb71e7a8647aec4fdf5c757b8a7772d55b9df50"
+    },
+    {
+      "figure": "figures/ncs/matched-generators.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061021,
+      "minimum_source_font_points": 8.0,
+      "minimum_effective_font_points": 8.011461558713838,
+      "labels_measured": 39,
+      "label_layout_faults": [],
+      "svg_sha256": "069cfac0c6fede02e897eeb243038526801866fb3e51a2c6092cd12a8de9edfc",
+      "pdf_sha256": "6a6714e57f91a6ce50f2ecd9d7b361aabc2f6b79395c7bba4fef4f068589d84a"
+    }
+  ]
+}

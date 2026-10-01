@@ -1,0 +1,22 @@
+{
+  "date": "2026-09-21",
+  "operation": "Read-only recovery of completed result aggregates; no model run or reanalysis",
+  "access": "Read-only transfer of two completed result aggregates from the host-local cluster staging area. Each local copy was verified against its logged digest. The launch and transfer layer is host-local and is not distributed with this repository; no pod names are persisted.",
+  "resource_status": "Parent initial health probe reaches Health=ok; retrieval starts no GPU workloads.",
+  "files": [
+    {
+      "remote_file": "/gpfs/jiaotongdamoxing/zhk_zip/InterpretabilityTransfer/results/external_baseline/20260915134508_95c515bf6881/galactica_fp32_v2_group_analyse/native_dms_comparison.json",
+      "local_file": "results/transfer/ncs_source_recovery/galactica_native_dms_comparison.json",
+      "bytes": 214691,
+      "sha256": "38cb2b5dd549ef3e4b9f9fbb9e362a025c9a61f7ac94b1e9c204bc48b6ff7d84",
+      "matches_logged_digest": true
+    },
+    {
+      "remote_file": "/gpfs/jiaotongdamoxing/zhk_zip/InterpretabilityTransfer/results/external_baseline/20260916190252_930f1357f972/pgym_proteinglm-7b-clm_analyse/retrieval_bound.json",
+      "local_file": "results/transfer/ncs_source_recovery/proteinglm_retrieval_bound.json",
+      "bytes": 48389,
+      "sha256": "de08ee2921003c557659a33e9d305d897c0c0202b8106bc6826628fa45f1dc78",
+      "matches_logged_digest": true
+    }
+  ]
+}

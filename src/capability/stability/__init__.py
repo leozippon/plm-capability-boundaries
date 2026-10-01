@@ -1,0 +1,1 @@
+"""Single-substitution stability."""
