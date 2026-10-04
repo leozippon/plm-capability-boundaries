@@ -148,12 +148,18 @@ def _release_lineage(ledger, emit) -> None:
     support = ledger.declare_support(
         "lineage_release_families",
         "163 shared wild-type clusters at 50% identity, 33 checkpoints in 16 release families, "
-        "three split seeds averaged within cluster before resampling")
+        "three split seeds averaged within cluster before resampling; the frozen release grouping "
+        "is not protein-exposure status: InstructProtein is protein-adapted and Galactica is a "
+        "scientific language–protein release family")
+    contrast = ("the equally weighted release-family contrast: protein-specialized or "
+                "protein-adapted release families minus general-purpose text and scientific "
+                "language–protein release families")
+    # Legacy keys, quantity identifiers and source selectors remain for compatibility.
     for name, claim in (
             ("family_bootstrap", "the 16-release-family simultaneous panel"),
-            ("protein_minus_text_release_mean", "the equally weighted protein-minus-text contrast"),
+            ("protein_minus_text_release_mean", contrast),
             ("exclude_shared_llama2_prollama",
-             "the protein-minus-text contrast excluding the Llama2 and ProLLaMA release families")):
+             f"{contrast}, excluding the Llama2 and ProLLaMA release families")):
         block = payload[name]
         emit(path, (name, "draws"), identifier=f"lineage_robustness/{name}/draws",
              claim=f"paired group bootstrap draws behind {claim}", family="lineage_robustness",
@@ -519,17 +525,20 @@ def _position_simultaneous(ledger, emit) -> None:
             in_panel = {name_: [arm for arm in arms if arm in payload["arms"]]
                         for name_, (flag, arms) in families.items() if flag == "yes"}
             in_panel = {name_: arms for name_, arms in in_panel.items() if arms}
+            # Legacy identifiers/selectors retain the frozen release grouping, not exposure.
             for identifier, value, claim in (
                     ("protein_families_in_panel", len(in_panel),
-                     "protein-pretrained release families with an admitted arm in the position panel"),
+                     "protein-specialized or protein-adapted release families with an admitted "
+                     "arm in the position panel"),
                     ("protein_families_resolving",
                      sum(1 for arms in in_panel.values() if resolving & set(arms)),
-                     "protein-pretrained release families with an arm resolving a contrast under "
-                     "the window control"),
+                     "protein-specialized or protein-adapted release families with an arm "
+                     "resolving a contrast under the window control"),
                     ("text_arms_resolving",
                      sum(1 for name_, (flag, arms) in families.items() if flag == "no"
                          for arm in arms if arm in resolving),
-                     "text checkpoints resolving a contrast under the window control")):
+                     "general-purpose text and scientific language–protein checkpoints resolving "
+                     "a contrast under the window control")):
                 emit(LINEAGE_DECLARATION, ("families", f"<{identifier}>"),
                      identifier=f"{prefix}/{identifier}", claim=claim, family="position_terms",
                      support=support, unit="release families" if "families" in identifier
@@ -765,9 +774,15 @@ def _native_expression(ledger, emit) -> None:
                                ("protein", [a for a in hits if a in protein])):
             if group != "all" and label != "control_vs_increment_negative":
                 continue
+            # Legacy group identifiers/selectors remain for compatibility, not exposure.
+            group_label = {
+                "all": "all",
+                "text": "general-purpose text and scientific language–protein",
+                "protein": "protein-specialized or protein-adapted",
+            }[group]
             emit(NATIVE_EXPRESSION, ("arms", f"<{label}>"),
                  identifier=f"native_expression/{label}/{group}",
-                 claim=f"{group} {claim}", family="native_expression", support=support,
+                 claim=f"{group_label} {claim}", family="native_expression", support=support,
                  unit="checkpoints", kind="count", value=len(members))
 
 

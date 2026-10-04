@@ -15,6 +15,18 @@ from src.capability.core.io import sha256_file
 from src.capability.interactions.pairwise_epistasis import SPLIT_SEEDS, ROSTER
 
 # Release families derive from checkpoint identifiers, not any outcome label.
+# Frozen yes/no flags and legacy keys are retained for compatibility, not exposure.
+GROUPING = {
+    'labels': {
+        'yes': 'protein-specialized or protein-adapted release families',
+        'no': 'general-purpose text and scientific language–protein release families',
+    },
+    'interpretation': 'Frozen release grouping, not protein-exposure status.',
+    'joint_model_assignments': {'InstructProtein': 'yes', 'Galactica': 'no'},
+    'joint_model_note': 'InstructProtein is a joint language–protein model with protein adaptation in the first group; Galactica is a joint scientific language–protein model in the second group.',
+    'legacy_keys': ['protein_pretraining', 'protein_minus_text_release_mean'],
+    'contrast': 'Equal-weighted release-family mean of the yes group minus the no group.',
+}
 FAMILIES = {
     'ByGPT5': ('no', ('bygpt5-base-en','bygpt5-medium-en','bygpt5-small-en')),
     'DialoGPT': ('no', ('dialogpt-small',)),
@@ -44,7 +56,8 @@ def lineage(root, out):
     if roster != sorted(ROSTER) or len(roster) != len(set(roster)):
         raise ValueError('release-family mapping differs from the 33-arm roster')
     write(out/'lineage_declaration.json', {
-        'families': FAMILIES, 'mapping_basis': 'released checkpoint families, independent of outcomes',
+        'families': FAMILIES, 'grouping': GROUPING,
+        'mapping_basis': 'released checkpoint families, independent of outcomes',
         'admission_sha256': sha256_file(path), 'metric':'increment_M_C_P_wall',
         'statistic':'equal checkpoints within release family; equal seeds within biological group',
         'bootstrap':'10000 paired biological-group draws, max statistic across16 release means',
@@ -85,15 +98,17 @@ def lineage(root, out):
     family_values = {f:np.mean([arm_values[a] for a in arms],axis=0) for f,(_,arms) in FAMILIES.items()}
     panel = simultaneous_bands(np.column_stack([family_values[f] for f in labels]))
     def group_difference(excluded=()):
-        protein = [v for f,v in family_values.items() if f not in excluded and FAMILIES[f][0]=='yes']
-        text = [v for f,v in family_values.items() if f not in excluded and FAMILIES[f][0]=='no']
-        return simultaneous_bands((np.mean(protein,axis=0)-np.mean(text,axis=0))[:,None])
+        specialized_or_adapted = [v for f,v in family_values.items() if f not in excluded and FAMILIES[f][0]=='yes']
+        text_and_scientific = [v for f,v in family_values.items() if f not in excluded and FAMILIES[f][0]=='no']
+        return simultaneous_bands((np.mean(specialized_or_adapted,axis=0)-np.mean(text_and_scientific,axis=0))[:,None])
     checkpoint = {}
     for a in roster:
         estimates=[admission['summaries'][f'{a}/{s}']['increment_M_C_P_wall'] for s in SPLIT_SEEDS]
         checkpoint[a]={'resolved_positive_all_three':all(r['interval'][0]>0 for r in estimates),
                        'per_seed_point':[r['point'] for r in estimates]}
-    result={'schema':'local_context_release_family_robustness_v1',
+    # Legacy protein_pretraining and protein_minus_text_release_mean keys remain
+    # readable; GROUPING supplies their release-group semantics, not exposure.
+    result={'schema':'local_context_release_family_robustness_v1','grouping':GROUPING,
             'admission':{'path':str(path),'sha256':sha256_file(path)},'source_reports_sha256':sources,
             'declaration_sha256':sha256_file(out/'lineage_declaration.json'),'biological_groups':groups,
             'group_unit':'wild-type cluster at50%identity, shared paired across all arms and seeds',

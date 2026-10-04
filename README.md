@@ -4,18 +4,35 @@ Code accompanying a manuscript that compares released protein, text and joint la
 
 The design point is that these are different quantities rather than different scores on one quantity. A likelihood difference ranks supplied variants, a readout fitted on frozen hidden states predicts labels, and a generation procedure produces new sequences. A checkpoint can rank well and generate unremarkably without contradiction, so the code keeps the three apart instead of aggregating them into a single score.
 
-## What is measured
+## Scientific questions
 
-| Category | Quantity |
+The results are organised around six questions, not a single capability ranking:
+
+| Question | Evidence-led conclusion |
 |---|---|
-| `R1` | Held-family rank correlation between native likelihood and measured assay values, and a decomposition of that likelihood over sequence positions |
+| Do protein-specialized or protein-adapted checkpoints add mutation-effect prediction beyond local and profile controls? | Selected released checkpoints retain predictive increments beyond the qualified controls; this is not a universal contrast between protein-exposed and unexposed models. |
+| Where does useful signal enter mutation likelihood? | Mutation-spanning and downstream terms carry complementary predictive signals in some checkpoints, without identifying a training-objective mechanism. |
+| Does prediction extend to other phenotypes? | Abundance and single-substitution stability provide support, with gains depending on the endpoint, metric and qualified baseline. |
+| Do first-order gains reliably resolve double-mutant interactions? | Raw interaction signals are limited, and the cleaned, measured-singles-adjusted panel establishes no positive increment. |
+| Does homologous context establish remote generalization? | Context improves selected interfaces, but remote generalization remains unconfirmed because the required close-stratum positive control failed. |
+| Do predictive gains guarantee generative advantage? | No: generation must be compared directly with length-matched real fragments, and scoring gains can coexist with lower absolute generation yields. |
+
+These are checkpoint- and protocol-specific findings, not causal effects of protein exposure or model size. An unresolved interval does not establish equivalence or absent information; a failed endpoint qualification is not a model failure. Sequence recognition and predicted fold confidence do not establish measured folding or function.
+
+## Measurement lanes
+
+`R1`–`R6` are legacy storage and measurement labels retained for provenance and operational references, not the numbering of the six scientific sections. Frozen readouts (`R2`) support the mutation-prediction question; abundance (`R1`) and stability (`R4`) share the cross-phenotype question; contact qualification stays with interactions (`R3`). The code packages and retained result paths keep their existing names.
+
+| Legacy lane | Quantity |
+|---|---|
+| `R1` | Held-family rank correlation between native likelihood and measured assay values, a decomposition of that likelihood over sequence positions, and external abundance confirmation |
 | `R2` | Predictive accuracy of readouts fitted on frozen hidden states, compared across readout classes and layer depths against specified sequence controls |
 | `R3` | Pairwise interaction increments against a nested, measured-singles-adjusted residual target, plus a contact-structure qualification |
 | `R4` | Single-substitution stability association, keeping the support that qualifies an endpoint separate from the support that fits it |
 | `R5` | Contrasts between supplied homologous context and composition-matched controls, retrieval bounds, and remote-homology qualification |
 | `R6` | Recognition of generated sequences against length-matched corpus fragments, and structure prediction used as an instrument with its own calibration |
 
-Each category reports an interval. An interval containing zero is recorded as unresolved; it is not treated as evidence of equivalence, and an endpoint that fails to qualify is not treated as a model failure.
+Each lane keeps its endpoint, support, controls and interval procedure explicit. Raw-label, adjusted-target and generation comparisons remain separate rather than being pooled into one score.
 
 ## Repository contents
 
