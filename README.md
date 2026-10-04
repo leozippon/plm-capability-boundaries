@@ -4,18 +4,18 @@ Code accompanying a manuscript that compares released protein, text and joint la
 
 The design point is that these are different quantities rather than different scores on one quantity. A likelihood difference ranks supplied variants, a readout fitted on frozen hidden states predicts labels, and a generation procedure produces new sequences. A checkpoint can rank well and generate unremarkably without contradiction, so the code keeps the three apart instead of aggregating them into a single score.
 
-## Scientific questions
+## Results structure
 
-The results are organised around six questions, not a single capability ranking:
+The results are organised into six sections, not a single capability ranking:
 
-| Question | Evidence-led conclusion |
+| Result | Evidence-led conclusion |
 |---|---|
-| Do protein-specialized or protein-adapted checkpoints add mutation-effect prediction beyond local and profile controls? | Selected released checkpoints retain predictive increments beyond the qualified controls; this is not a universal contrast between protein-exposed and unexposed models. |
-| Where does useful signal enter mutation likelihood? | Mutation-spanning and downstream terms carry complementary predictive signals in some checkpoints, without identifying a training-objective mechanism. |
-| Does prediction extend to other phenotypes? | Abundance and single-substitution stability provide support, with gains depending on the endpoint, metric and qualified baseline. |
-| Do first-order gains reliably resolve double-mutant interactions? | Raw interaction signals are limited, and the cleaned, measured-singles-adjusted panel establishes no positive increment. |
-| Does homologous context establish remote generalization? | Context improves selected interfaces, but remote generalization remains unconfirmed because the required close-stratum positive control failed. |
-| Do predictive gains guarantee generative advantage? | No: generation must be compared directly with length-matched real fragments, and scoring gains can coexist with lower absolute generation yields. |
+| Protein-specialized or adapted models show mutation-effect gains beyond local and evolutionary controls | Selected released checkpoints retain predictive increments beyond the qualified position-profile and window controls; this is not a universal contrast between protein-exposed and unexposed models. |
+| Mutation-site and downstream likelihood terms carry complementary predictive signals | Mutation-spanning token terms (potentially spanning multiple residues) and downstream terms carry complementary predictive signals in some checkpoints, without identifying a training-objective mechanism. |
+| Predictive gains extend beyond mutation ranking to abundance and, more selectively, stability | Abundance and single-substitution stability provide support, with gains depending on the endpoint, metric and qualified baseline. |
+| Single-mutation signals do not reliably resolve double-mutant interactions | Raw interaction signals are limited, and the cleaned, measured-singles-adjusted panel establishes no positive increment. |
+| Homologous context improves prediction but does not establish remote generalization | Context improves selected interfaces, but remote generalization remains unconfirmed because the required close-stratum positive control failed. |
+| Predictive gains do not guarantee generative advantage over length-matched protein fragments | Generation must be compared directly with length-matched real fragments, and scoring gains can coexist with lower absolute generation yields. |
 
 These are checkpoint- and protocol-specific findings, not causal effects of protein exposure or model size. An unresolved interval does not establish equivalence or absent information; a failed endpoint qualification is not a model failure. Sequence recognition and predicted fold confidence do not establish measured folding or function.
 
