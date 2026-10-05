@@ -21,6 +21,10 @@ outputs, so a different projection or a different readout class can be refitted
 from the frozen states without a second forward pass. The projected 256-coordinate
 blocks the fit consumes are written either way.
 
+``--likelihood-only`` retains native likelihood and token/state provenance without
+representation hooks, hidden-state pooling, projections or position terms. Its
+separate archive schema binds each state to the exact sequence bytes.
+
 Batch size one is the panel setting. The 0.001-nat and 0.001-relative-L2 gates
 the Readout recipe fixes are therefore INAPPLICABLE rather than passed: at batch
 size one the repeat check re-runs the identical single-row computation, so its
@@ -52,11 +56,13 @@ from src.capability.position.position_terms import (
     PARTITION_SEMANTICS, ResidueCoverage, SEMANTICS as POSITION_SEMANTICS, blas_pinning,
     retention_residual)
 from src.capability.readouts.readout_extraction import (
-    extract_batch, feature_block_names, hooked_block_indices, load_readout_arm, pack_sequence,
+    extract_batch, feature_block_names, forward_readout_rows, hooked_block_indices,
+    load_readout_arm, pack_sequence,
     representation_blocks,
     representation_positions, text_boundary)
 
 SCHEMA = 'stability_singles_extraction_v1'
+LIKELIHOOD_SCHEMA = 'stability_singles_likelihood_extraction_v1'
 #: Sequences per background re-extracted in an independent forward. At batch size
 #: one this measures run-to-run reproducibility of the same computation, not
 #: batch-composition invariance and not accuracy against a higher precision.
@@ -88,6 +94,102 @@ def token_record(arm, sequence: str, budget: int) -> dict:
             'pooled_positions': [int(value) for value in positions]}
 
 
+def state_sequence_hashes(sequences) -> np.ndarray:
+    """Exact UTF-8 state bytes, in the plan's sequence order, never token hashes."""
+    return np.asarray([hashlib.sha256(sequence.encode('utf-8')).hexdigest()
+                       for sequence in sequences], dtype='<U64')
+
+
+def likelihood_score(arm, sequence: str, stage46, budget: int) -> float:
+    """The original native forward/reducer, with no representation hooks."""
+    ids, scored, _ = pack_sequence(arm, sequence)
+    if len(ids) > budget:
+        raise ValueError(f'packed target of {len(ids)} tokens exceeds the {budget}-position budget')
+    logits, packed_ids = forward_readout_rows(arm, [ids], stage46)
+    score = -stage46._target_nll(logits, packed_ids, *scored)['nll_sum']
+    if not np.isfinite(score):
+        raise ValueError('Nonfinite likelihood forward')
+    return float(score)
+
+
+def extract_likelihood_only(args, plan, identity, arm, stage46) -> None:
+    """Separate archive contract; no representation-only code runs on this path."""
+    selected = plan['backgrounds']
+    if args.background_limit:
+        selected = selected[:args.background_limit]
+    completed, began = [], time.monotonic()
+    for row in selected:
+        name = row['name']
+        filename = f"{args.arm}_{hashlib.sha256(name.encode()).hexdigest()[:20]}.npz"
+        path = args.out / filename
+        row_identity = {'identity': identity, 'background': name, 'group': row['group'],
+                        'sequences': len(row['sequences']), 'variants': len(row['variants'])}
+        sequence_hashes = state_sequence_hashes(row['sequences'])
+        if not path.exists():
+            tokens = [token_record(arm, sequence, args.budget) for sequence in row['sequences']]
+            likelihood = np.asarray([
+                likelihood_score(arm, sequence, stage46, args.budget)
+                for sequence in row['sequences']], dtype=np.float64)
+            repeat = min(REPEAT_SEQUENCES, len(row['sequences']))
+            repeated = np.asarray([
+                likelihood_score(arm, sequence, stage46, args.budget)
+                for sequence in row['sequences'][:repeat]], dtype=np.float64)
+            likelihood_repeat_nats = float(np.max(np.abs(repeated - likelihood[:repeat])))
+            payload = {
+                'likelihood': likelihood,
+                'pooled_token_counts': np.asarray([len(t['pooled_positions']) for t in tokens],
+                                                  dtype=np.int64),
+                'scored_token_counts': np.asarray(
+                    [t['scored_span'][1] - t['scored_span'][0] for t in tokens], dtype=np.int64),
+                'packed_token_counts': np.asarray([len(t['ids']) for t in tokens], dtype=np.int64),
+                'token_ids': np.asarray([i for t in tokens for i in t['ids']], dtype=np.int64),
+                'token_offsets': np.cumsum([0] + [len(t['ids']) for t in tokens]).astype(np.int64),
+                'variant_states': np.asarray([v['state'] for v in row['variants']], dtype=np.int64),
+                'variant_positions': np.asarray([v['position'] for v in row['variants']],
+                                                dtype=np.int64),
+                'state_sequence_sha256': sequence_hashes,
+                'repeat_likelihood_nats': np.asarray(likelihood_repeat_nats),
+                'metadata': json.dumps(row_identity),
+            }
+            temp = path.with_suffix('.tmp')
+            with temp.open('wb') as stream:
+                np.savez_compressed(stream, **payload)
+            temp.replace(path)
+            print(f'{args.arm} {name}: repeat_delta_M_nats={likelihood_repeat_nats}', flush=True)
+        with np.load(path, allow_pickle=False) as saved:
+            if json.loads(str(saved['metadata'])) != row_identity:
+                raise ValueError(f'resume artifact identity mismatch: {path}')
+            if (saved['state_sequence_sha256'].dtype != np.dtype('<U64')
+                    or not np.array_equal(saved['state_sequence_sha256'], sequence_hashes)):
+                raise ValueError(f'resume state sequence binding mismatch: {path}')
+            if saved['likelihood'].shape != (len(row['sequences']),) or not np.isfinite(saved['likelihood']).all():
+                raise ValueError(f'incomplete or nonfinite likelihood archive: {path}')
+            repeat_nats = float(saved['repeat_likelihood_nats'])
+        completed.append({'background': name, 'group': row['group'], 'file': filename,
+                          'sha256': sha(path), 'sequences': len(row['sequences']),
+                          'variants': len(row['variants']), 'repeat_likelihood_nats': repeat_nats})
+        complete = not args.background_limit and len(completed) == len(plan['backgrounds'])
+        record = {
+            'identity': identity, 'backgrounds': completed,
+            'status': 'complete' if complete else 'running',
+            'background_limit': args.background_limit,
+            'updated_utc': datetime.now(timezone.utc).isoformat(),
+            'elapsed_seconds': time.monotonic() - began,
+            'sequences_scored': sum(r['sequences'] for r in completed),
+            'gpu': (torch.cuda.get_device_name(arm.device)
+                    if str(arm.device).startswith('cuda') else 'cpu'),
+            'peak_allocated_bytes': (torch.cuda.max_memory_allocated(arm.device)
+                                     if str(arm.device).startswith('cuda') else 0),
+            'torch_version': torch.__version__, 'blas': None,
+        }
+        write_json(args.out / f'progress_{args.arm}.json', record)
+        if complete:
+            write_json(args.out / f'manifest_{args.arm}.json', record)
+        print(f"{args.arm}: {len(completed)}/{len(selected)} {name} "
+              f"({record['sequences_scored']} sequences, {record['elapsed_seconds']:.1f}s)",
+              flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, required=True)
@@ -114,12 +216,22 @@ def main() -> None:
     parser.add_argument('--blas-threads', type=int,
                         help='the declared BLAS thread pool; the run is refused unless the '
                              'environment and torch both report it')
+    parser.add_argument('--likelihood-only', action='store_true',
+                        help='retain native likelihood and token/state provenance only; no '
+                             'representations, projections or position terms')
     parser.add_argument('--keep-full-features', action='store_true',
                         help='also write the full-width per-state block outputs to a separate '
                              'file, so a different projection or readout class can be refitted '
                              'without model inference')
     args = parser.parse_args()
 
+    if args.likelihood_only:
+        if args.keep_full_features or args.keep_position_terms or args.extra_block_index or args.blas_threads is not None:
+            parser.error('--likelihood-only cannot retain features, extra blocks or position terms/BLAS pinning')
+        if args.budget != 1024:
+            parser.error('--likelihood-only requires the frozen 1024-position budget')
+        if args.background_limit < 0:
+            parser.error('--background-limit must be nonnegative')
     if args.arm not in ROSTER:
         raise SystemExit(f'{args.arm} is not on the frozen roster')
     if args.batch_size != PRODUCTION_BATCH_SIZE:
@@ -176,6 +288,12 @@ def main() -> None:
         'precision_gate': ('inapplicable at batch size one: the repeat forward is the identical '
                            'single-row computation, so a zero difference is structural'),
     }
+    if args.likelihood_only:
+        identity['schema'] = LIKELIHOOD_SCHEMA
+        for key in ('projection', 'block_semantics', 'representation_semantics'):
+            del identity[key]
+        identity['state_sequence_sha256_semantics'] = (
+            'SHA256 of exact UTF-8 sequence bytes, <U64 vector in plan sequence order')
     pinning = blas_pinning(args.blas_threads) if args.keep_position_terms else None
     if args.keep_position_terms:
         identity['position_terms'] = {'semantics': POSITION_SEMANTICS,
@@ -190,6 +308,21 @@ def main() -> None:
         prior = json.loads(resume_path.read_text())
         if prior['identity'] != identity:
             raise SystemExit('resume identity differs; use a fresh output directory')
+
+    if args.likelihood_only:
+        try:
+            arm = load_readout_arm(args.arm, stage46, device=args.device, dtype=dtype)
+            arm.model.eval().requires_grad_(False)
+            if text_boundary(arm) is None:
+                ch.require_position_budget(arm.model.config, arm=args.arm)
+            extract_likelihood_only(args, plan, identity, arm, stage46)
+        except Exception as error:
+            write_json(args.out / f'failure_{args.arm}.json', {
+                'identity': identity, 'status': 'failed',
+                'updated_utc': datetime.now(timezone.utc).isoformat(),
+                'error_type': type(error).__name__, 'error': str(error)})
+            raise
+        return
 
     arm = load_readout_arm(args.arm, stage46, device=args.device, dtype=dtype)
     arm.model.eval().requires_grad_(False)
