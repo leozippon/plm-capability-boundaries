@@ -56,6 +56,10 @@ This evaluates the same mixed-cohort-trained readouts within strata; it neither 
 
 The [cross-phenotype consistency analysis](phenotype-consistency.md) has been executed and independently reproduced from retained model-level results. Positive overall release-level associations persist under release deletion and shared-parent exclusion, but within-category associations are heterogeneous. This is descriptive fixed-panel evidence, not checkpoint-independent inference or a manuscript-placement decision.
 
+## Focused external remeasurement
+
+The [completed RHO remeasurement](rho-remeasurement.md) reuses fixed held-out predictions for 123 protein states measured by both new methods, without fitting or inference. Sixteen model point estimates are positive for both methods, thirteen negative for both and four change sign. This is descriptive sensitivity on one existing protein/family, not checkpoint-independent significance or a new-protein confirmation. Method-specific replication metadata and the corrected membrane preparation are hash-bound.
+
 ## Public-cohort qualification
 
 The [completed public discovery](public-phenotype-candidates.md) records 39 named candidates across direct activity, physical affinity/kinetics, endogenous fitness, ligand/PPI reporters, membrane trafficking, secretion/PTM and other cellular functions. The actual current ProteinGym metadata adds no experimental assay IDs to the old 217-assay reference, so broader coverage requires other sources rather than a version-number claim.
