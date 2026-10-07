@@ -34,6 +34,18 @@ Use retained predictions or scalar scores only after identity, scale, split and 
 
 All feasible annotation, acquisition, support construction, baseline work, CPU fitting and resampling may proceed locally with resource receipts. New substantial model inference waits for H200 access. Before requesting scoring, join existing coverage and list only genuinely missing model–state combinations, with native checkpoint/interface, sequence/window identity and output requirements. Scalar-phenotype work does not require token-level likelihood arrays unless a separately declared positional question is being tested.
 
+## Existing-support stratification protocol
+
+An immediate CPU sensitivity uses the completed local progression panel's fixed BPL/BMPL held-out predictions on its exact 25,728 rows, 201 assays and 163 families. These arrays are fitted predictions, not raw model features. Join assay metadata to form Activity, Binding, Expression, OrganismalFitness and Stability strata; these are coarse source labels, not yet adjudicated mechanistically pure task collections.
+
+The primary contrast is within-assay Spearman(BMPL) minus Spearman(BPL). Average split contrasts within assay and assays within family for each category. Use 10,000 shared draws of the original biological family IDs across categories and models, preserving dependence when a family spans categories. Declare one simultaneous Spearman family across the supported 33-model × five-category comparisons; do not infer a main-text task ranking from unadjusted per-category positives. Persist category-specific coverage and explicit treatment of a bootstrap draw with no contributing family. Any secondary rank-target squared error is not physical phenotype error.
+
+This evaluates the same mixed-cohort-trained readouts within strata; it neither refits on each phenotype nor establishes category-specific baseline qualification. It can guide which tasks need better controls or independent cohorts, while remaining separate from external confirmation and from the model-level cross-phenotype consistency analysis.
+
+## Completed model-level consistency
+
+The [cross-phenotype consistency analysis](phenotype-consistency.md) has been executed and independently reproduced from retained model-level results. Positive overall release-level associations persist under release deletion and shared-parent exclusion, but within-category associations are heterogeneous. This is descriptive fixed-panel evidence, not checkpoint-independent inference or a manuscript-placement decision.
+
 ## Work products
 
 New outputs live under `results/extensions/phenotype_followups_20261007/`, separated into stability, consistency, discovery and subsequent task-specific preparation/results. Public payloads, when needed, are staged separately under `data/phenotype_followups_20261007/`. These local data/results remain ignored; code, tests and operating documentation are committed normally. Frozen outputs and unrelated manuscript/reporting changes are outside the write scope.
