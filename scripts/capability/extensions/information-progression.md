@@ -1,6 +1,6 @@
 # Likelihood-first information progression
 
-This new Result 1 extension asks which declared feature blocks improve family-held-out mutation ranking after fitting retained scalar likelihood. The real-data smoke test passed and complete CPU fitting is running; no panel-level progression results are available yet. The frozen manuscript and historical artifacts remain untouched. The separate implementation is `src/capability/extensions/progression.py` and `scripts/capability/extensions/fit_information_progression.py`.
+This new Result 1 extension asks which declared feature blocks improve family-held-out mutation ranking after fitting retained scalar likelihood. The complete two-panel CPU fit and independent numerical acceptance have passed. Profile and local-window blocks retain predictive complementarity to likelihood across the full model panel; structural ranking increments remain unresolved under the declared simultaneous inference. The frozen manuscript and historical artifacts remain untouched. The separate implementation is `src/capability/extensions/progression.py` and `scripts/capability/extensions/fit_information_progression.py`.
 
 ## Supports and feature blocks
 
@@ -39,6 +39,26 @@ Primary Spearman simultaneous intervals cover all 33 models × two full-panel or
 
 Use 2,000 shared family-bootstrap draws for paired comparisons. Average seed-specific metrics within assay, then assays within biological family, giving each family equal weight. Intervals condition on fitted predictions: they do not include refitting or training-history uncertainty. Retain exact row identities, source hashes, projected and realized folds, tuning records, held-out predictions and the declared multiplicity families in new extension outputs, with CPU resource checks and runtime receipts.
 
+## Completed findings
+
+The table reports the range of mean Spearman increments across models and the number with a positive simultaneous 95% interval in the declared primary family. Ranges are point-estimate ranges, not confidence intervals.
+
+| Fixed panel | Added block | Increment range | Simultaneously positive |
+| --- | --- | ---: | ---: |
+| Full anchor | P given M | +0.05755 to +0.41656 | 33/33 |
+| Full anchor | L given MP | +0.04809 to +0.07214 | 33/33 |
+| Structural subset | P given M | +0.10216 to +0.45315 | 30/33 |
+| Structural subset | L given MP | +0.12782 to +0.16109 | 33/33 |
+| Structural subset | S given MPL | +0.03952 to +0.05140 | 0/33 |
+
+For example, ProteinGLM's full-anchor mean Spearman progresses from 0.38984 (M) to 0.44739 (MP) to 0.49576 (MPL); ProGen2-xlarge progresses from 0.39206 to 0.45036 to 0.49845. Thus even models with useful likelihood scores retain complementary profile and window predictors under the specified readout.
+
+In supplementary full-anchor contrasts, P remains positive for all 33 models given BML. L given BMP is positive for 24/33. The model increment given BPL is positive for ProGen2-xlarge and ProGen3-3B (2/33) under this extension's pooled-split supplementary simultaneous family. That count does not replace the frozen manuscript's differently defined splitwise criterion.
+
+On structural support, P remains positive for all 33 models given BMLS. L given BMP is positive for all 33, but L given BMPS is unresolved for all; this is consistent with order-dependent overlap under the tested basis, not proof that RSA contains all local information. S given BMPL and M given BPLS are likewise unresolved for all models. Primary S point estimates are positive throughout, and the secondary rank-MSE increment S given MPL is simultaneously positive for 30/33, so unresolved Spearman intervals must not be described as absence of structural information.
+
+The primary structural simultaneous band has a common half-width of 0.10826, whereas its S increments are about 0.04–0.05. This follows the predeclared joint maximum-absolute-deviation procedure across all primary model/contrast cells; higher-variance contrasts widen the common band. These counts therefore depend on the declared inference family and do not contradict the earlier, differently defined structural-overlap analysis.
+
 ## Execution and outputs
 
 From the repository root, use the validated Python environment:
@@ -51,7 +71,9 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 \
 
 The output directory must not exist. The runner tests the extension before fitting, then saves source/code contracts, named-column inventories and label-blind redundancy censuses, exact sample IDs, projected partitions, per-cell OOF predictions and realized fold/tuning audits. Each panel receives paired assay metrics and bootstrap contrasts. Only the final `completion.json` attests a complete run; `progress.json` or individual prediction files do not.
 
-The successful smoke used one lexicographically selected model and the first original split, all 11 structural designs and all 2,067 structural rows. It measured 8.94 seconds for that cell, approximately 1.35 GB peak RSS and 7.3 MB of artifacts. The approximately 2.47-hour combined-panel estimate is a rough row-scaled extrapolation (1.24–4.94-hour range), not a full-panel benchmark or a guarantee. Production uses two CPU threads and no model inference. The smoke is an interface/resource check, not scientific panel evidence.
+Production completed 198 panel/model/split cells and 1,881 design prediction vectors in 5,193.73 seconds (86.56 minutes), using two CPU threads and approximately 1.93 GB peak RSS. Independent acceptance checked all 2,293 receipted outputs, declared source/code hashes, identities and 9,405 outer-fold records; recomputed metric discrepancies were at most 1.60×10⁻¹⁴. Validation did not refit models or rerun bootstrap draws. A validator-only numeric-versus-string family-ordering assertion was corrected; production outputs were unchanged.
+
+Production artifacts are under `results/extensions/information_progression_20261006/`; the independent accepted summary is `results/extensions/information_progression_20261006_validation/result-summary.json`. These local, ignored outputs retain all model estimates and provenance; they are separate from frozen manuscript evidence.
 
 ## Interpretation and limitations
 
@@ -59,4 +81,4 @@ These are estimable predictive contrasts, not an identifiable decomposition into
 
 Collinearity, ridge regularization and progression order affect increments; held-out increments may be negative. A zero increment establishes neither that a model already knows the block nor that the block contains no information. Do not interpret increments as causal effects or knowledge fractions, and do not sum them into exclusive biological shares.
 
-All required scalar ranks, feature inputs, structural annotations and folds are available for CPU fitting. No native token-NLL recovery or H200 computation is expected for this extension. Expanded structural coverage, new features and positional likelihood interpretation are outside its scope.
+All declared fits were completed from existing scalar ranks, feature inputs, structural annotations and folds on CPU. No native token-NLL recovery, new model inference or H200 computation was needed for this extension. Expanded structural coverage, new features and positional likelihood interpretation are outside its scope.
