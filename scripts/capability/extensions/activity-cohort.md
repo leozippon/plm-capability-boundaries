@@ -18,7 +18,9 @@ Acquisition and identity preparation are complete for all 130 VenusMutHub single
 
 All 130 files reconstruct an internally consistent WT from their declared full mutant sequences and exactly match the author's dataset-summary WT. Identity substitutions, missing labels, ties, repeated variants and assay partitions are preserved explicitly. Seventy files have tied single-variant scores; 117 have the descriptive screen of at least five distinct finite single states and nonconstant scores. That screen is not a model-readiness or main-text gate.
 
-No WT has an exact or containment match to the old 217-assay ProteinGym reference or retained 201-assay anchor. Homology screening is a separate stage; absence of these exact matches does not establish family independence. Background variants and repeated assay conditions must not be counted as new proteins merely because their file names differ.
+No WT has an exact or containment match to the old 217-assay ProteinGym reference or retained 201-assay anchor. The completed exact CPU screen evaluated all 4,656 WT pairs and 67,415 development-reference pairs against 217 ProteinGym targets and 478 Tsuboyama backgrounds. Four admitted sequence links yield 93 operational components; there are no admitted 50%-identity/80%-query-coverage anchor hits or unresolved short-WT components. All 97 WTs remain candidates under that declared screen.
+
+Three lower-threshold overlap pairs affect two WTs (`P05150_activity`, `Q16774_kcat`) and remain flagged. Absence of a 50/80 hit is not absence of all homology; 93 sequence components are not proof of study or evolutionary independence. Repeated assay conditions and background variants must not become independent proteins because their filenames differ.
 
 ## Source interpretation
 
@@ -34,4 +36,6 @@ Use `scripts/capability/extensions/prepare_activity_cohort.py --out NEW_DIRECTOR
 
 Final preparation is `results/extensions/phenotype_followups_20261007/activity/final-20261007/`, with `activity/current-result.json` pointing to its receipt. Sources are under `data/phenotype_followups_20261007/activity/`. Acquisition transferred 767,484 score-file bytes. Fourteen tests passed; the parent offline execution reproduced all eight scientific outputs byte-for-byte, verified their hashes and current code bindings, and preserved the earlier execution separately.
 
-The state inventory is for qualification and future exact model-state coverage joins, not authorization to score every state. Source/condition/reliability adjudication, homolog grouping, independent support and phenotype-specific baseline qualification remain required. See the [multi-task program](phenotype-program.md) and [public discovery](public-phenotype-candidates.md) for the broader context.
+The completed screening adapter is `scripts/capability/extensions/qualify_activity_homology.py`; its exhaustive screen took 31.03 seconds with four CPU workers. Outputs under `activity/homology/` retain contracts, pair evidence, all membership/exclusion maps and source bindings. The parent reran all six adapter tests and checked exhaustive pair counts, six output hashes and five current code hashes. No labels were promoted by sequence screening.
+
+The state inventory is for qualification and future exact model-state coverage joins, not authorization to score every state. Source/condition/reliability adjudication, interpretation of family/study dependence and phenotype-specific baseline qualification remain required. See the [multi-task program](phenotype-program.md) and [public discovery](public-phenotype-candidates.md) for the broader context.
