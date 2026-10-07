@@ -56,6 +56,12 @@ This evaluates the same mixed-cohort-trained readouts within strata; it neither 
 
 The [cross-phenotype consistency analysis](phenotype-consistency.md) has been executed and independently reproduced from retained model-level results. Positive overall release-level associations persist under release deletion and shared-parent exclusion, but within-category associations are heterogeneous. This is descriptive fixed-panel evidence, not checkpoint-independent inference or a manuscript-placement decision.
 
+## Public-cohort qualification
+
+The [completed public discovery](public-phenotype-candidates.md) records 39 named candidates across direct activity, physical affinity/kinetics, endogenous fitness, ligand/PPI reporters, membrane trafficking, secretion/PTM and other cellular functions. The actual current ProteinGym metadata adds no experimental assay IDs to the old 217-assay reference, so broader coverage requires other sources rather than a version-number claim.
+
+Concrete preparation now proceeds in parallel for the 130 Venus single-mutant activity assay files, the selected endogenous-fitness maps, and a focused RHO/F9/SGCA multi-label panel. Existing local SKEMPI binding preparation has progressed through uncensored affinity admission and exact operational chain/state mapping. These tasks are not yet independent model-result panels: each must separately establish source semantics, exact WT/states, biological grouping, overlap and baseline qualification. Assay files, genes, conditions, PDB complexes and exact-sharing components must not be relabelled independent families.
+
 ## Work products
 
 New outputs live under `results/extensions/phenotype_followups_20261007/`, separated into stability, consistency, discovery and subsequent task-specific preparation/results. Public payloads, when needed, are staged separately under `data/phenotype_followups_20261007/`. These local data/results remain ignored; code, tests and operating documentation are committed normally. Frozen outputs and unrelated manuscript/reporting changes are outside the write scope.
