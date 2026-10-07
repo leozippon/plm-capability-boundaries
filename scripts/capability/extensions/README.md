@@ -4,7 +4,7 @@ These are new analyses, not revisions to the frozen manuscript evidence. Run the
 
 ## Available structural support
 
-The initial local coordinate join admits 30 of 201 anchor assays (30 of 163 families), containing 3,840 of the original 25,728 variants before strict-single selection. All admitted assays are Tsuboyama stability benchmarks: this is a selected stability subset, not representative coverage of the full mutation panel. The strict-single fitting intersection is reported separately by the overlap runner.
+The initial local coordinate join admits 30 of 201 anchor assays (30 of 163 families), containing 3,840 of the original 25,728 variants before strict-single selection. All admitted assays are Tsuboyama stability benchmarks: this is a selected stability subset, not representative coverage of the full mutation panel. The RSA-ready strict-single fitting intersection contains 2,067 variants across those 30 assays/families; all original outer and inner partitions remain feasible after projection.
 
 The annotation adapter is runnable as `python -m src.capability.extensions.structure --cohort COHORT --admission ADMISSION --structures COORDINATE_DIRECTORY --out NEW_OUTPUT_DIRECTORY`, with optional repeatable `--extra-structure PATH`. Use the validated Python environment and 1–4 CPU threads. It writes every WT position, explicit missingness, exact sequence/entity mappings, recomputed isolated-chain RSA, observed mapped-WT contact degree, source hashes and exclusions. Missing neighbors, omitted assemblies/partners and fragment boundaries limit structural interpretation; no secondary structure labels are claimed.
 
