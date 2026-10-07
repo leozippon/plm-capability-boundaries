@@ -40,6 +40,8 @@ An immediate CPU sensitivity uses the completed local progression panel's fixed 
 
 The primary contrast is within-assay Spearman(BMPL) minus Spearman(BPL). Average split contrasts within assay and assays within family for each category. Use 10,000 shared draws of the original biological family IDs across categories and models, preserving dependence when a family spans categories. Declare one simultaneous Spearman family across the supported 33-model × five-category comparisons; do not infer a main-text task ranking from unadjusted per-category positives. Persist category-specific coverage and explicit treatment of a bootstrap draw with no contributing family. Any secondary rank-target squared error is not physical phenotype error.
 
+The [completed stratification](phenotype-strata.md) resolves positive increments for 2/33 Activity, 1/33 Binding, 7/33 Expression, 10/33 OrganismalFitness and 0/33 Stability model/category cells under the joint 165-contrast procedure. These are metadata-stratum findings with unequal support and uncertainty, not a ranking of intrinsic task difficulty or new external confirmations.
+
 This evaluates the same mixed-cohort-trained readouts within strata; it neither refits on each phenotype nor establishes category-specific baseline qualification. It can guide which tasks need better controls or independent cohorts, while remaining separate from external confirmation and from the model-level cross-phenotype consistency analysis.
 
 ## Completed model-level consistency
