@@ -1,6 +1,6 @@
 # Likelihood-first information progression
 
-This new Result 1 extension asks which declared feature blocks improve family-held-out mutation ranking after fitting retained scalar likelihood. CPU fitting is pending; no progression results are available. The frozen manuscript and historical artifacts remain untouched. The separate implementation is `src/capability/extensions/progression.py` and `scripts/capability/extensions/fit_information_progression.py`; this protocol does not prescribe an unverified command-line interface.
+This new Result 1 extension asks which declared feature blocks improve family-held-out mutation ranking after fitting retained scalar likelihood. The real-data smoke test passed and complete CPU fitting is running; no panel-level progression results are available yet. The frozen manuscript and historical artifacts remain untouched. The separate implementation is `src/capability/extensions/progression.py` and `scripts/capability/extensions/fit_information_progression.py`.
 
 ## Supports and feature blocks
 
@@ -38,6 +38,20 @@ Project the original three seeded partitions, each with five outer and four inne
 Primary Spearman simultaneous intervals cover all 33 models × two full-panel or three structural-panel sequential contrasts, separately for each panel. Supplementary Spearman intervals use a separate multiplicity family containing every B-adjusted sequential, conditional drop-one and B-increment contrast across the 33 models within that panel. Secondary rank-MSE intervals cover all declared contrasts across the 33 models in another separate family per panel.
 
 Use 2,000 shared family-bootstrap draws for paired comparisons. Average seed-specific metrics within assay, then assays within biological family, giving each family equal weight. Intervals condition on fitted predictions: they do not include refitting or training-history uncertainty. Retain exact row identities, source hashes, projected and realized folds, tuning records, held-out predictions and the declared multiplicity families in new extension outputs, with CPU resource checks and runtime receipts.
+
+## Execution and outputs
+
+From the repository root, use the validated Python environment:
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 \
+/home/lzp/miniconda3/envs/ct/bin/python scripts/capability/extensions/fit_information_progression.py \
+  --authorize-full --threads 2 --out results/extensions/information_progression_20261006
+```
+
+The output directory must not exist. The runner tests the extension before fitting, then saves source/code contracts, named-column inventories and label-blind redundancy censuses, exact sample IDs, projected partitions, per-cell OOF predictions and realized fold/tuning audits. Each panel receives paired assay metrics and bootstrap contrasts. Only the final `completion.json` attests a complete run; `progress.json` or individual prediction files do not.
+
+The successful smoke used one lexicographically selected model and the first original split, all 11 structural designs and all 2,067 structural rows. It measured 8.94 seconds for that cell, approximately 1.35 GB peak RSS and 7.3 MB of artifacts. The approximately 2.47-hour combined-panel estimate is a rough row-scaled extrapolation (1.24–4.94-hour range), not a full-panel benchmark or a guarantee. Production uses two CPU threads and no model inference. The smoke is an interface/resource check, not scientific panel evidence.
 
 ## Interpretation and limitations
 
