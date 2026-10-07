@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source_sha256": "76f8e60d09eaa4f05fb265063886859a86895c0b2fb225e31fe82928a883972d",
+  "admission_sha256": "480865dccf24911059d51262ebc2864bc84353b18265baad0f0c61abb66f2ca3",
+  "distinct_notes": 110,
+  "sorted_notes_sha256": "6d8cfc8b846675396ecc770aa64773cab4edf62b05664bd180c4e2efbfa23df2",
+  "scope": "Manual review of every distinct Notes value on phase-one admitted records only. Note indexes are zero-based in sorted distinct admitted Notes; their canonical JSON list is hash-bound above. No literature search or inferred residue reconstruction. UNKNOWN_CONSTRUCT does not establish measured full-sequence equivalence.",
+  "review_groups": [
+    {"note_indexes": [3,9,10,11,12,33,86,87,88], "decision": "KNOWN_INCOMPATIBLE", "rationale": "Documented crystal background used in place of measurement WT, species difference, or additional omitted mutant substitutions. Affinity neutrality does not establish full-sequence equivalence. Conflict scopes and evidence below."},
+    {"note_indexes": [1,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31], "decision": "UNKNOWN_CONSTRUCT", "rationale": "Deposited mutant or matured variant explicitly taken as the measurement reference. Engineering alone is not a documented mismatch; whole-construct identity remains unverified."},
+    {"note_indexes": [5,6,7,13,14,32,39,40,41,64,84,95,96], "decision": "UNKNOWN_CONSTRUCT", "rationale": "Chemical modification, residue normalization, or derivative noted; this is not evidence of a different measured primary-sequence background. Existing canonical sequence gates remain unchanged; sequence-only chemistry equivalence is not established."},
+    {"note_indexes": [43,44,45,85], "decision": "UNKNOWN_CONSTRUCT", "rationale": "Similar antibodies or an engineered crystal are mentioned without explicitly establishing a distinct measurement background. In particular 3EQY engineering is not enough to infer measurement WT identity or to reverse-engineer a sequence."},
+    {"note_indexes": [0,2,4,8,34,35,36,37,38,42,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,89,90,91,92,93,94,97,98,99,100,101,102,103,104,105,106,107,108,109], "decision": "UNKNOWN_CONSTRUCT", "rationale": "Empty note, variant identifier, measurement conditions/provenance, reliability, or assembly information; no explicit primary-sequence background disagreement. Source censoring and temperature filters are not changed."}
+  ],
+  "conflicts": [
+    {
+      "complex_ids": ["1A22_A_B", "1BP3_A_B"],
+      "reason": "crystal_G120R_background_not_measurement_WT",
+      "evidence": [
+        {"source_row_id": "skempi2:001426", "note_sha256": "807ac4b0e410e72fafb67f68ea754cd543f526dea01930af0d2313bd169f7d64"},
+        {"source_row_id": "skempi2:001730", "note_sha256": "e030a8ef40a9fe261bde0b39bc15e4a783ff82ded6d9b59e72014c17f56905ac"}
+      ],
+      "rationale": "Source explicitly substitutes the G120R crystal background on the argument that it does not affect binding. That does not establish the measured full sequence for native scoring. All admitted records of these two complexes carry this background warning. Site-specific paper WT disagreements are also covered; do not guess repairs."
+    },
+    {
+      "complex_ids": ["3S9D_A_B"],
+      "reason": "crystal_HEQ_background_not_measurement_WT",
+      "evidence": [
+        {"source_row_id": "skempi2:005320", "note_sha256": "091623891d4801c29903c8a916548f86dc5ce3a5ce0d66342222de3522f1a1d3"},
+        {"source_row_id": "skempi2:005403", "note_sha256": "78674ec39a0b4823b8e8aa7875b43c1787d4328938712bef3d6a352bc9d5479d"}
+      ],
+      "rationale": "Source explicitly says crystal HEQ variant but measurements WT. Unchanged affinity at a remote interface does not make full model sequences equivalent. Block until actual measured background is recovered."
+    },
+    {
+      "complex_ids": ["1KBH_A_B"],
+      "reason": "murine_crystal_not_human_measurement",
+      "evidence": [{"source_row_id": "skempi2:006957", "note_sha256": "e7104a38b9f7940da0c5e8d171baf145e981643f56bd553edd069fb5db8a0b9d"}],
+      "rationale": "Human measured NCBD differs from murine deposited crystal. Agreement at the mutation site does not repair the remainder of the background; no inferred reverse mutation is admitted."
+    },
+    {
+      "complex_ids": ["1BJ1_HL_VW"],
+      "note_sha256": "8efac347574ce22d60e3273913ec23ca0b67531d5336849b8ef2aefa64f4b837",
+      "reason": "additional_mutant_substitutions_omitted_from_source_annotation",
+      "evidence": [{"source_row_id": "skempi2:004879", "note_sha256": "8efac347574ce22d60e3273913ec23ca0b67531d5336849b8ef2aefa64f4b837"}],
+      "rationale": "Five CDR-L1 substitutions were omitted on expression/solvent-exposure grounds. These annotated single substitutions do not establish the measured mutant sequence. Block only records carrying this note, not the other five labels on this complex."
+    }
+  ]
+}
