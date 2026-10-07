@@ -34,6 +34,14 @@ Use retained predictions or scalar scores only after identity, scale, split and 
 
 All feasible annotation, acquisition, support construction, baseline work, CPU fitting and resampling may proceed locally with resource receipts. New substantial model inference waits for H200 access. Before requesting scoring, join existing coverage and list only genuinely missing model–state combinations, with native checkpoint/interface, sequence/window identity and output requirements. Scalar-phenotype work does not require token-level likelihood arrays unless a separately declared positional question is being tested.
 
+## Stability and measurement-channel preparation
+
+The [stability/channel workflow](stability-followups.md) has prepared and checked the exact 25,856-single/101-family support, original outer partitions, static control inputs and combined/trypsin/chymotrypsin absolute WT and mutant label joins. Full three-channel baseline qualification is running on CPU without model scores. The fold-dependent nonlinear response block is not precomputed from all labels: its calibration must use training states only. Regenerated inner memberships remain distinct from recovered original serialized memberships.
+
+Full model-increment execution is blocked by 28 missing local scalar products and five unaccepted discrepant local replays. Baseline-only predictions and group MSE cannot substitute for paired predictions or native scores. The primary ranking comparison retains the historical correlation-qualified S2 controls; S supplies the same-MSE-prediction ranking sensitivity. Channel control qualification can run on CPU without M and therefore should not wait for missing model scores.
+
+Channel-trained fit receipts must bind their channel-specific qualification artifacts, exact control sets and label sources. A primary paired channel-robustness contrast requires identical qualified control-block sets across channels, while permitting separately trained parameters/calibration. If independent channel qualification chooses different block sets, block the purported matched contrast until an explicitly common baseline is qualified; otherwise measurement-channel and baseline changes would be conflated.
+
 ## Existing-support stratification protocol
 
 An immediate CPU sensitivity uses the completed local progression panel's fixed BPL/BMPL held-out predictions on its exact 25,728 rows, 201 assays and 163 families. These arrays are fitted predictions, not raw model features. Join assay metadata to form Activity, Binding, Expression, OrganismalFitness and Stability strata; these are coarse source labels, not yet adjudicated mechanistically pure task collections.
