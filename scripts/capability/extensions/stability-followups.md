@@ -1,12 +1,12 @@
 # Stability ranking and measurement-channel follow-ups
 
-The exact-support CPU preparation is complete and full channel-control qualification is running. Model-increment ranking and channel comparisons remain blocked at missing or unaccepted model outputs; no approximate reconstruction or new inference is used.
+The exact-support CPU preparation and full three-channel control qualification are complete. Model-increment ranking and channel comparisons remain blocked at missing or unaccepted model outputs; no approximate reconstruction or new inference is used.
 
 ## Prepared support and boundaries
 
 The registry contains 25,856 strict singles, 5,664 sites and 101 backgrounds/families, bound to the frozen cohort and exported sample IDs. Static control matrices, state features and original outer memberships are retained. Inner memberships are regenerated from the historical recipe and are not claimed to be recovered serialized originals.
 
-Combined, trypsin and chymotrypsin absolute WT/mutant measurements were joined from the original parquet data under frozen QC and median aggregation. All derived channel deltas reproduce retained labels within 1e-12. The nonlinear response control G is a fold-dependent source binding, not an all-label feature matrix; its calibration uses training states only. A three-channel pilot on the first original outer fold produced finite 25,856 × 4 G blocks. Mean family-level trypsin–chymotrypsin Spearman is 0.90435, a descriptive measurement statistic rather than independent replication or equivalence evidence.
+Combined, trypsin and chymotrypsin absolute WT/mutant measurements were joined from the original parquet data under frozen QC and median aggregation. All derived channel deltas reproduce retained labels within 1e-12. The nonlinear response control G is a fold-dependent source binding, not an all-label feature matrix; its calibration uses training states only. The full candidate-control ladder completed for all three channels on the same support and partitions. Mean family-level trypsin–chymotrypsin Spearman is 0.90435, a descriptive measurement statistic rather than independent replication or equivalence evidence.
 
 All 33 local baseline-only prediction sets passed sample/label/outer-fold alignment checks. Native scalar archives exist locally for five models, but their paired replays are still marked `reproduced_metric_mismatch` and lack independently accepted native-score provenance. The other 28 models have no local scalar product. Neither frozen stability-MSE-positive model is among the five. These facts are enumerated in the model-recovery manifest; group MSE vectors cannot supply missing prediction ranks.
 
@@ -21,11 +21,25 @@ Rank inference averages split contrasts within family and resamples families joi
 
 Channel-trained receipts bind the qualification file's path/hash, cohort and channel-label hashes, and exact S/S2 feature sets. The loader rejects missing/mismatched bindings. A primary matched-channel contrast additionally requires identical qualified S/S2 block sets across channels; channel-specific fitted G parameters are allowed. If the selected sets differ, a common baseline must be explicitly qualified before interpreting a channel difference. Channel-specific estimates alone cannot remove that confounding.
 
+## Completed channel qualification
+
+Separate qualification of the three channels selects the same block sets under the historical metric-specific rules:
+
+| Endpoint | MSE-qualified S | Correlation-qualified S2 |
+| --- | --- | --- |
+| Combined | ident, geom, chem, G | ident, geom, comp, chem, prof2, G |
+| Trypsin | ident, geom, chem, G | ident, geom, comp, chem, prof2, G |
+| Chymotrypsin | ident, geom, chem, G | ident, geom, comp, chem, prof2, G |
+
+Thus a later matched-channel model comparison need not change control-block composition. Channel-specific calibration parameters remain separately trained. The profile blocks fail the all-split MSE qualification in every channel but the declared ranking rule retains prof2; ranking and quantitative calibration still require distinct controls.
+
+CPU qualification completed in 518.69 seconds with four threads. Parent verification checked start-time code and input hashes, equality of the qualified sets across channels, and agreement of combined-channel qualification decisions with the historical record. The largest recomputed combined qualification point difference across MSE and Spearman summaries is approximately 9.88×10⁻⁷, so this is a separately identified CPU qualification, not byte-identical original prediction recovery. These are control-qualification results, not evidence that either frozen model-positive result is channel-robust.
+
 ## Executable workflow
 
 Use `scripts/capability/extensions/prepare_stability_followups.py` with the validated Python environment and bounded numerical threads. Operations are `prepare`, `calibration-pilot`, `qualify-channels`, `fit`, `rank-summary` and `matched-summary`. Fresh child output directories under the stability extension scope preserve earlier receipts. The generated `procedure.json` documents exact verified-input schemas; the current code also enforces the later qualification-binding repair.
 
-The active baseline-only qualification command is:
+The completed baseline-only qualification command was:
 
 ```bash
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 \
