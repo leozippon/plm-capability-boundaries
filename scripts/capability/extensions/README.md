@@ -30,6 +30,19 @@ Candidate downstream bins are 1–8, 9–32, 33–128 and ≥129 residues from t
 
 Retain unallocated multi-residue and formatting contributions as an explicit remainder; native-score closure and receiver coverage must be validated. A bin with no eligible receivers has a zero contribution, not a missing value; a wholly unsupported bin does not warrant an inferential contrast. Any interval-allocation sensitivity must be labelled as an allocation convention, not recovered per-residue likelihood.
 
+## Running the CPU extensions
+
+Use the validated Python environment with bounded CPU threads, for example `OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2`. All output paths must be new; historical artifacts are inputs only.
+
+- `fit_structural_overlap.py --sites SITES.json.gz --out NEW_DIRECTORY` reconstructs the admitted baseline and retained model ranks, projects original partitions and runs all four designs. It emits exact rows, OOF predictions, fold audits, paired bootstrap contrasts and the original-increment gate.
+- `analyse_residue_responses.py --mode prepare --input COHORT.json --structures SITES.json.gz --coverage COVERAGE.json --out NEW_PAIRS.json` constructs the geometry-only pair set. The paired coverage receipt binds experimental method, exact mapping and source provenance; the declared atom must be CB, or CA for glycine.
+- `analyse_residue_responses.py --mode census --input ADMITTED_COHORT.json --out NEW_CENSUS.json` counts potential residue-distance support independently of structure. Supply the explicitly admitted cohort: the larger source cohort has different support.
+- After original archives are recovered, `analyse_residue_responses.py --mode packing --arm ARM --input ARCHIVE_INPUT.json --out NEW_PACKING_INPUT.json` reconstructs and checks packing with the original tokenizer-only loader. It refuses a loaded model and performs no forward pass. Input assay rows identify their original archive, WT, ordered mutants and exact mutant sequences. ZymCTRL additionally requires the original EC-bound cohort and conditioning receipt.
+- Use the resulting input with `--mode contacts` (also supplying structures/coverage) or `--mode bins`. Bin inputs require the declared baseline matrix `B` and endpoint in original archive order. Full archive identity and native closure are checked before per-variant biological exclusions; retained singles, baseline rows and labels are projected together with original indices. Corruption fails explicitly rather than being treated as an exclusion. Bin fits declare new seeded subset partitions shared across designs, not historical-fold equivalence.
+- `--mode requirements --out NEW_REQUIREMENTS.json` emits the recovery contract. It is not evidence that the remote archives exist or have been recovered.
+
+Geometry preparation currently retains 22,207 matched receiver rows across 1,607 mutations and 30 families; the residual family-weighted distance imbalance is −1.559 residues. These are potential structural pairs, not response results, and must be rematched after token admission. The admitted anchor has 20,568 strict singles in 195 assays/160 families; potential nonempty distance-bin counts are 20,430, 19,306, 15,841 and 8,551. Neither census establishes native token support. No contact-response or distance-bin predictive result is available until original arrays are validated. Contact/bin simultaneous intervals currently cover supported contrasts within each supplied model input; they are not a cross-model panel confirmation.
+
 ## Inference and provenance
 
 Use the existing family-held-out nested ridge procedure and training-only feature standardization. Preserve historical partition membership when projecting to the subset is supported; otherwise declare new subset partitions and never claim original-fold equivalence. Each matched comparison must verify realized inner and outer membership equality.
