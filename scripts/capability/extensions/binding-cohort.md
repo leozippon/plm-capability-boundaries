@@ -1,6 +1,6 @@
 # Quantitative binding cohort preparation
 
-SKEMPI2 affinity-label preparation, operational sequence mapping and source-background adjudication are complete. Exhaustive CPU homology/development-overlap screening is running on the adjudicated support. No model inference, predictive fitting or main-text promotion has occurred.
+SKEMPI2 affinity-label preparation, operational sequence mapping and source-background adjudication are complete. Exhaustive CPU homology/development-overlap screening has completed and passed parent verification on the adjudicated support. No model inference, predictive fitting or main-text promotion has occurred.
 
 ## Labels and operational states
 
@@ -32,12 +32,20 @@ The label-blind screen uses 30% identity and 80% coverage of both sequences for 
 
 Conservative candidate exclusion propagates an admitted development overlap through its connected component. Direct versus propagated exclusions, mutated-chain versus any-partner component counts, preexclusion membership and study-closure sensitivities are retained. Shared partners can produce large connected networks: this affects available support and does not demonstrate absence of binding information. Source quality, construct equivalence, reliability and phenotype-specific baseline qualification remain separate gates.
 
+## Completed screen
+
+The exhaustive screen evaluated 148,785 chain-family pairs and 379,470 development-reference pairs in 89.48 seconds with four CPU workers. Homology plus any-partner sharing reduces the 153 exact-sharing components to 73 operational complex components. Direct anchor links occur in 66 complexes; component propagation excludes 177 complexes in total. After the declared anchor and unresolved-short-chain exclusions, **110 complexes in 57 candidate components retain 1,271 labels and 1,034 distinct variants**.
+
+Grouping choice matters: mutated-chain-only closure gives 117 complex components, whereas the conservative any-partner rule gives 73. Parsed-study closure reduces the preexclusion 73 to 72; unparsed references and dependence beyond shared study identifiers remain unresolved. These counts describe operational support under the declared screen, not 57 proven independent biological families or a qualified main-text result.
+
+Partner/reference states are retained for mapping, grouping and controls; they are not automatically requests for scalar model scoring. A later likelihood manifest must identify the exact required mutated-chain WT/mutant pairs and their qualified native interfaces. Known incompatible associations remain excluded, and no missing sequence or score was imputed.
+
 ## Execution and provenance
 
 - `prepare_binding_cohort.py --out NEW_DIRECTORY` performs source/label admission and refuses overwrites.
 - `map_binding_cohort.py` performs bounded or cache-only mapping; the accepted source-adjudicated artifacts are under `results/extensions/phenotype_followups_20261007/binding/mapping/adjudicated/`.
 - `qualify_binding_homology.py --mode pilot --out NEW_DIRECTORY` freezes adjudicated inputs/rules and measures CPU cost. `--mode full` requires the unchanged pilot contract and code. Legacy unadjudicated mappings are refused.
 
-The parent reran all 55 binding/mapping/homology tests. The adjudicated pilot verified 64 actual pairs; exhaustive screening was then launched with four CPU workers under `binding/homology/screen-20261007/`. No completed homology result is claimed until its terminal receipt is verified. The small `binding-construct-adjudication.json` is a scientific admission-control table with source/note hashes and evidence pointers, not a raw dataset dump.
+The parent reran all 55 binding/mapping/homology tests. The completed screen is under `binding/homology/screen-20261007/full/`. Parent verification checked the frozen contract, current code and evidence hashes, exhaustive pair census, and exact reconstruction of the saved component map from source inputs and saved edge evidence, without rerunning alignment. A separate verification receipt binds the derived output files. The small `binding-construct-adjudication.json` is a scientific admission-control table with source/note hashes and evidence pointers, not a raw dataset dump.
 
 Public cache files remain under `data/phenotype_followups_20261007/binding-structures/`; raw labels and generated artifacts are not committed. This preparation serves the [multi-task phenotype program](phenotype-program.md), and does not authorize a model-scoring campaign before the remaining gates are resolved.
