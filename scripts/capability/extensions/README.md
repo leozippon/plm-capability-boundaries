@@ -16,7 +16,15 @@ The initial structural block uses actual wild-type RSA and declared RSA × subst
 
 First report whether `rho(B+M)-rho(B)` remains supported on the restricted cohort. Then report the conditional increment `rho(B+M+X)-rho(B+X)` and their paired difference. A reduced increment measures predictive overlap under these readouts, not causal mediation or a fraction of structural knowledge. An unresolved original increment prevents an affirmative attenuation interpretation; do not select models or families by this check.
 
+### Completed RSA overlap result
+
+The 33-model, three-split panel completed all 99 cells on the same 2,067 variants. The RSA block raises mean held-out Spearman from 0.56911 to 0.61007 (increment 0.04096; simultaneous 95% band [0.02830, 0.05363]). Six models retain a positive original-increment pointwise interval in every split: ProGen2 small/medium/xlarge, ProGen3-3B, ProteinGLM and ProtGPT2. This gate allows assessment; it does not select models out of the panel or establish attenuation.
+
+ProGen3-3B and ProteinGLM have positive pointwise attenuation estimates of 0.00298 and 0.00341, respectively, but **all 33 simultaneous Spearman attenuation bands include zero**. Rank-MSE attenuation is likewise unresolved after simultaneous adjustment. Thus RSA is predictively useful on this selected stability subset, but the extension does not establish multiplicity-robust attenuation of model information. Intervals use 2,000 shared family draws over 33 models × two metrics × four contrasts and condition on fitted predictions. Contact degree was constructed but has not been fitted as an additional structural sensitivity.
+
 ## Contact response
+
+The primary native-response and distance panels retain the historical exclusion of ProGen3-3B because of unresolved layout dependence; its scalar-score overlap result above does not admit it to positional interpretation. Recovery must bind each arm to its original extraction/layout provenance before analysis.
 
 For unchanged downstream native-residue receivers, signed response is wild-type NLL minus mutant NLL. The primary endpoint is its absolute magnitude; signed disruption (negative signed response) is secondary. Primary residue-level interpretation requires strictly aligned, single-residue receiver tokens. Mutation-spanning, multi-residue, boundary and formatting tokens remain separately accounted for, not silently assigned to residues.
 
