@@ -2,6 +2,8 @@
 
 Assessment date: 2026-10-07. This is an evidence and feasibility review, not a new experiment or a change to frozen manuscript conclusions. The scientific question is which molecular phenotypes retain likelihood-based mutation-effect information, and whether ranking and quantitative prediction fail at different points.
 
+The subsequently authorized [multi-endpoint program](phenotype-program.md) broadens acquisition and implementation beyond this initial local-data assessment. The recommendations below are the historical assessment, not a restriction to one additional phenotype or a veto on new public datasets.
+
 ## Recommendation
 
 Prioritize a properly qualified, simultaneous stability-ranking analysis, followed by paired protease-channel robustness. Add a small lineage-aware cross-phenotype summary to the Supplement. Do not add an independent third-phenotype headline from the presently inspected local data: the strongest available activity/binding support is already part of ProteinGym. Endpoint-stratified sensitivity and limited same-variant activity–abundance comparisons are more economical alternatives.
