@@ -1,6 +1,6 @@
 # Mutation–structure extensions
 
-These are new analyses, not revisions to the frozen manuscript evidence. Run them in the order structural overlap → contact response → residue-distance prediction. Outputs, fitted predictions and provenance belong in a new extension result directory; never overwrite historical inputs or infer missing native likelihood arrays from rank scores.
+These are new analyses, not revisions to the frozen manuscript evidence. Run them in the order structural overlap → contact response → residue-distance prediction. A separate [likelihood-first information progression](information-progression.md) defines the subsequent Result 1 extension that adds biological feature blocks to likelihood. Outputs, fitted predictions and provenance belong in a new extension result directory; never overwrite historical inputs or infer missing native likelihood arrays from rank scores.
 
 ## Available structural support
 
