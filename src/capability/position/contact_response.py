@@ -240,6 +240,7 @@ def rebuild_states(payload: Mapping[str, Any], sequences: Sequence[str]) -> list
 
 def receiver_census(
     payload: Mapping[str, Any], index: int, *, site: int, paradigm: str,
+    upstream_tolerance: float = 0.0,
 ) -> dict[str, Any]:
     """The signed per-residue response of one single substitution, both directions.
 
@@ -250,12 +251,17 @@ def receiver_census(
     a position, because a byte-pair merge spanning three residues is not a
     measurement at any one of them.
 
-    The returned ``upstream_max_abs_nats`` is the invariant: zero is required of a
-    causal arm and recorded for a masked one.
+    The returned ``upstream_max_abs_nats`` is the invariant. For a causal arm it
+    must not exceed ``upstream_tolerance``, which the extraction already adjudicated
+    against the arm's own measured reproducibility and recorded; passing zero --
+    the default -- demands bit-identical upstream terms. For a masked arm the
+    upstream response is a measurement and is never gated.
     """
 
     if paradigm not in (CAUSAL, MASKED):
         raise ValueError(f"unknown paradigm {paradigm!r}")
+    if not np.isfinite(upstream_tolerance) or upstream_tolerance < 0:
+        raise ValueError("an upstream tolerance is a finite non-negative number of nats")
     wild_terms = state_terms(payload, 0).astype(np.float64)
     mutant_terms = state_terms(payload, index + 1).astype(np.float64)
     counts = state_counts(payload, 0)
@@ -286,11 +292,12 @@ def receiver_census(
             }
         )
     worst_upstream = float(np.max(np.abs(delta[upstream]))) if upstream.any() else 0.0
-    if paradigm == CAUSAL and worst_upstream != 0.0:
+    if paradigm == CAUSAL and worst_upstream > upstream_tolerance:
         raise ValueError(
             f"a causal arm's terms upstream of position {site} differ by "
-            f"{worst_upstream} nats; the prefix is identical, so this is a packing, "
-            "alignment or forward defect and not a measurement"
+            f"{worst_upstream} nats against an admitted tolerance of "
+            f"{upstream_tolerance}; the prefix is the same tokens in both states, so "
+            "this is a packing, alignment or forward defect and not a measurement"
         )
     return {
         "i": int(site),

@@ -75,14 +75,44 @@ def read_json(path: Path):
         return json.load(handle)
 
 
-def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, max_separation,
-                max_residues=None):
+
+def extraction_status(directory: Path) -> tuple[dict | None, str | None]:
+    """The completion record of one extraction cell, or why there is not one.
+
+    An arm whose extraction cell failed leaves either no directory or no
+    completion record, and the campaign is designed so that this happens: a cell
+    that refuses its own invariant must not take the rest of the panel with it.
+    The arm is therefore recorded as absent with the reason it is absent and
+    excluded from every estimate, which is not the same as being dropped -- a
+    reader of the panel sees the arm, sees that it is missing, and sees why.
+    """
+
+    if not Path(directory).is_dir():
+        return None, "no extraction directory; the cell did not run or was not pulled"
+    record = Path(directory) / "position_likelihood.json"
+    if not record.is_file():
+        return None, (
+            "no completion record; the cell ran and exited without admitting its own "
+            "output, which for this stage means it refused an invariant"
+        )
+    try:
+        payload = read_json(record)
+    except (OSError, ValueError) as error:
+        return None, f"completion record is unreadable: {error}"
+    if payload.get("status") != "complete":
+        return None, f"completion record status is {payload.get('status')!r}, not complete"
+    if not payload.get("assays"):
+        return None, "completion record carries no assay"
+    return payload, None
+
+def analyse_arm(completion, directory: Path, cohort_rows, geometry_source, *, min_support,
+                max_separation, max_residues=None):
     """One arm's profile, site summary and structural rows."""
 
-    completion = read_json(directory / "position_likelihood.json")
-    if completion.get("status") != "complete":
-        raise SystemExit(f"{directory}: the extraction did not complete")
     identity = completion["identity"]
+    tolerance = float(
+        completion.get("prefix_invariant", {}).get("admitted_tolerance_nats", 0.0)
+    )
     arm, paradigm = identity["arm"], identity["paradigm"]
     downstream = ProfileAccumulator(direction="downstream", min_support=min_support)
     upstream = ProfileAccumulator(direction="upstream", min_support=min_support)
@@ -90,19 +120,24 @@ def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, m
     structural: list[dict] = []
     per_assay, agreement = [], {"assays": 0, "receivers": 0, "max_abs_difference_nats": 0.0}
     worst_upstream = 0.0
-    skipped = []
+    skipped: list[str] = []
+    missing: list[dict] = []
     for receipt in completion["assays"]:
         assay = receipt["assay"]
         row = cohort_rows[assay]
         if max_residues is not None and len(row["wildtype"]) > max_residues:
             skipped.append(assay)
             continue
-        payload = read_archive(directory / "archives" / receipt["file"])
+        archive = directory / "archives" / receipt["file"]
+        if not archive.is_file():
+            missing.append({"assay": assay, "reason": "archive named by the receipt is absent"})
+            continue
+        payload = read_archive(archive)
         states = rebuild_states(payload, [row["wildtype"], *row["sequences"]])
         identity_block = {
             "wildtype": row["wildtype"], "mutants": row["mutants"], "sequences": row["sequences"],
         }
-        with np.load(directory / "archives" / receipt["file"], allow_pickle=False) as data:
+        with np.load(archive, allow_pickle=False) as data:
             retained = RetainedResponses(data, states, identity_block)
             frozen = {index: retained.response(index) for index in retained.selected_indices}
         geometry, pairs = geometry_source(assay, row)
@@ -110,7 +145,8 @@ def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, m
         structural_before = len(structural)
         for index, frozen_response in frozen.items():
             site = int(frozen_response["i"])
-            census = receiver_census(payload, index, site=site, paradigm=paradigm)
+            census = receiver_census(payload, index, site=site, paradigm=paradigm,
+                                     upstream_tolerance=tolerance)
             check = agrees_with_frozen(census, frozen_response)
             agreement["receivers"] += check["downstream_receivers"]
             agreement["max_abs_difference_nats"] = max(
@@ -144,9 +180,10 @@ def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, m
             "excluded_total": len(retained.exclusions),
             "structural_receivers": assay_structural,
         })
-    if paradigm == CAUSAL and worst_upstream != 0.0:
+    if paradigm == CAUSAL and worst_upstream > tolerance:
         raise SystemExit(
-            f"{arm}: upstream terms differ by {worst_upstream} nats on a causal arm"
+            f"{arm}: upstream terms differ by {worst_upstream} nats against the extraction's "
+            f"admitted tolerance of {tolerance}"
         )
     sites = np.asarray(site_values, dtype=np.float64) if site_values else np.zeros(0)
     return {
@@ -157,6 +194,9 @@ def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, m
                        "completion_sha256": sha256_file(directory / "position_likelihood.json")},
         "assays": per_assay,
         "assays_outside_length_cap": skipped,
+        "assays_missing_archive": missing,
+        "prefix_invariant": completion.get("prefix_invariant"),
+        "upstream_admitted_tolerance_nats": tolerance,
         "frozen_reader_agreement": agreement,
         "upstream_max_abs_nats": worst_upstream,
         "upstream_is_exactly_zero": bool(worst_upstream == 0.0),
@@ -220,10 +260,15 @@ def main() -> None:
             )
         return cache[assay]
 
-    arms, contrasts = [], []
+    arms, contrasts, absent = [], [], []
     for directory in args.extraction:
+        completion, reason = extraction_status(directory)
+        if completion is None:
+            absent.append({"extraction": str(directory), "arm": Path(directory).name,
+                           "reason": reason})
+            continue
         block, structural = analyse_arm(
-            directory, cohort_rows, geometry_source,
+            completion, directory, cohort_rows, geometry_source,
             min_support=args.min_support,
             max_separation=args.max_separation or None,
             max_residues=args.max_residues or None,
@@ -239,6 +284,11 @@ def main() -> None:
                 contrasts.append(contrast)
         arms.append(block)
         del structural
+    if not arms:
+        raise SystemExit(
+            "no extraction directory carried an admitted completion record; there is "
+            f"nothing to analyse. Absent: {absent}"
+        )
 
     write_json(args.out / COMPLETION, {
         "schema": SCHEMA,
@@ -277,6 +327,17 @@ def main() -> None:
                                ("coverage", args.coverage))
         },
         "arms": arms,
+        "absent_arms": absent,
+        "panel": {
+            "requested_extractions": len(args.extraction),
+            "analysed_arms": len(arms),
+            "absent_arms": len(absent),
+            "policy": (
+                "an arm whose extraction cell left no admitted completion record is "
+                "recorded here with its reason and excluded from every estimate; it is "
+                "neither silently dropped nor fatal to the rest of the panel"
+            ),
+        },
         "contact_contrasts": contrasts,
     })
 

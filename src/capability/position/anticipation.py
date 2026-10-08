@@ -75,7 +75,12 @@ IDENTIFIABILITY = (
 )
 
 #: The two statistics a record reports, in order.
-SOURCES = ("model_conditional", "pair_covariation")
+SOURCES = (
+    "model_conditional",
+    "pair_covariation",
+    "anchor_permuted_within_protein",
+    "anchor_permuted_across_family",
+)
 
 SOURCE_SEMANTICS = {
     "model_conditional": (
@@ -89,7 +94,32 @@ SOURCE_SEMANTICS = {
         "smoothing; the model-free control for covariation between contacting residues "
         "in natural sequences"
     ),
+    "anchor_permuted_within_protein": (
+        "the arm's conditional taken from a different anchor of the SAME protein, with "
+        "the family, the fold and the partner set unchanged; the fold control -- a "
+        "contrast that survives here is protein-level composition rather than anything "
+        "specific to the anchor"
+    ),
+    "anchor_permuted_across_family": (
+        "the arm's conditional taken from an anchor of a DIFFERENT family; a contrast "
+        "that survives here is generic amino-acid class statistics and carries no fold "
+        "information at all"
+    ),
 }
+
+SOURCE_READS_AS = {
+    "model_conditional": "the measurement",
+    "pair_covariation": "model-free covariation of contacting residue pairs",
+    "anchor_permuted_within_protein": "protein- and fold-level composition",
+    "anchor_permuted_across_family": "generic amino-acid class composition",
+}
+
+DEGENERATE_CONTROL = (
+    "a control matched on the partner's residue identity is identically zero, because "
+    "given the anchor, z(i, j) depends on j only through w_j. The statistic measures "
+    "alignment between the conditional and the COMPOSITION of contacting partners, not "
+    "position-specific prediction of which residue sits where"
+)
 
 #: Families a reported contrast needs. Five is the floor this project's own
 #: response-bin analysis already applies to a family-grouped estimate.
@@ -99,6 +129,15 @@ MIN_FAMILIES = 5
 #: residue pair unseen in the other families has a finite log probability rather
 #: than being dropped from one side of the contrast.
 PAIR_PSEUDOCOUNT = 1.0
+
+#: Draws of the contact-label permutation null, and its seed. Both fixed here.
+PERMUTATION_DRAWS = 2000
+PERMUTATION_SEED = 20261008
+
+#: Relative-accessibility bands are a median split of the admitted sites actually
+#: analysed, which is the rule ``interactions.contact_enrichment`` already declares
+#: for an RSA cell. Computed before any excess log probability is read.
+RSA_BAND_RULE = "median split of the partner relative accessibility over the analysed matched pairs"
 
 
 def anchor_partner_design(
@@ -143,6 +182,8 @@ def anchor_partner_design(
                     "structure_distance_angstrom": float(distance),
                     "anchor_residue": wildtype[anchor],
                     "partner_residue": wildtype[partner],
+                    "anchor_rsa": geometry[anchor].rsa,
+                    "partner_rsa": geometry[partner].rsa,
                 }
             )
     rows: list[dict[str, Any]] = []
@@ -199,6 +240,7 @@ def pair_conditional(
     return np.log(table / table.sum(axis=1, keepdims=True))
 
 
+
 def _nested_mean(entries: Sequence[tuple[Any, float]]) -> float | None:
     grouped: dict[Any, list[float]] = {}
     for key, value in entries:
@@ -208,14 +250,17 @@ def _nested_mean(entries: Sequence[tuple[Any, float]]) -> float | None:
     return float(np.mean([float(np.mean(values)) for values in grouped.values()]))
 
 
-def _collapse(
-    cells: Mapping[tuple[Any, Any, int, str], float]
-) -> dict[Any, float]:
-    """Average anchor-stratum cells up to one value per family, equally at each level."""
+def _collapse(cells: Mapping[tuple, float]) -> dict[Any, float]:
+    """Average cells up to one value per family, equally at each nesting level.
 
-    per_anchor: dict[tuple[Any, Any, int], list[tuple[str, float]]] = {}
-    for (family, assay, anchor, stratum), value in cells.items():
-        per_anchor.setdefault((family, assay, anchor), []).append((stratum, value))
+    A cell key is ``(family, assay, anchor, *extra)``; everything after the anchor
+    is averaged first, then anchors within assay, assays within family.
+    """
+
+    per_anchor: dict[tuple[Any, Any, int], list[tuple[tuple, float]]] = {}
+    for key, value in cells.items():
+        family, assay, anchor = key[0], key[1], key[2]
+        per_anchor.setdefault((family, assay, anchor), []).append((key[3:], value))
     per_assay: dict[tuple[Any, Any], list[tuple[int, float]]] = {}
     for (family, assay, anchor), entries in per_anchor.items():
         value = _nested_mean(entries)
@@ -233,25 +278,228 @@ def _collapse(
     }
 
 
+def _derangement(count: int) -> list[int]:
+    """A fixed-point-free index map, deterministic and seedless.
+
+    Rotating by ``max(1, n // 2)`` has no fixed point for any ``n >= 2`` and puts
+    the greatest distance between an anchor and its substitute, which is what a
+    control wants: the substituted conditional should be as unlike the anchor's own
+    as the protein allows.
+    """
+
+    if count < 2:
+        return []
+    shift = max(1, count // 2)
+    return [(index + shift) % count for index in range(count)]
+
+
+def permuted_anchor_maps(
+    rows: Sequence[Mapping[str, Any]]
+) -> tuple[dict[tuple[Any, int], tuple[Any, int]], dict[tuple[Any, int], tuple[Any, int]]]:
+    """Where each anchor's substitute conditional comes from, for both controls.
+
+    Within protein: a derangement of that protein's own anchors, so family, fold
+    and partner set are identical and only the anchor moves. Across family: a
+    derangement of the global anchor list ordered by family, which places most
+    anchors in another family; an anchor whose substitute lands in its own family
+    is left out of that control rather than counted as a cross-family draw.
+    """
+
+    by_assay: dict[Any, list[int]] = {}
+    family_of: dict[Any, Any] = {}
+    for row in rows:
+        by_assay.setdefault(row["assay"], []).append(int(row["i"]))
+        family_of[row["assay"]] = row["family"]
+    within: dict[tuple[Any, int], tuple[Any, int]] = {}
+    for assay, anchors in by_assay.items():
+        ordered = sorted(set(anchors))
+        for source, target in enumerate(_derangement(len(ordered))):
+            within[(assay, ordered[source])] = (assay, ordered[target])
+    allanchors = sorted(
+        {(row["assay"], int(row["i"])) for row in rows},
+        key=lambda item: (str(family_of[item[0]]), str(item[0]), item[1]),
+    )
+    across: dict[tuple[Any, int], tuple[Any, int]] = {}
+    for source, target in enumerate(_derangement(len(allanchors))):
+        origin, substitute = allanchors[source], allanchors[target]
+        if family_of[origin[0]] != family_of[substitute[0]]:
+            across[origin] = substitute
+    return within, across
+
+
+def _source_values(
+    rows: Sequence[Mapping[str, Any]], source: str, *, residues: Sequence[str],
+    conditionals: Mapping[tuple[Any, int], np.ndarray],
+    compositions: Mapping[Any, np.ndarray],
+    tables: Mapping[Any, np.ndarray],
+    within: Mapping[tuple[Any, int], tuple[Any, int]],
+    across: Mapping[tuple[Any, int], tuple[Any, int]],
+) -> list[tuple[Mapping[str, Any], float]]:
+    """``z`` for every row this source can be evaluated on, and the row beside it."""
+
+    column = {residue: position for position, residue in enumerate(residues)}
+    values = []
+    for row in rows:
+        anchor = (row["assay"], int(row["i"]))
+        weights = compositions[row["assay"]]
+        target = column[row["partner_residue"]]
+        if source == "model_conditional":
+            vector = conditionals.get(anchor)
+        elif source == "pair_covariation":
+            vector = tables[row["family"]][column[row["anchor_residue"]]]
+        elif source == "anchor_permuted_within_protein":
+            substitute = within.get(anchor)
+            vector = None if substitute is None else conditionals.get(substitute)
+        elif source == "anchor_permuted_across_family":
+            substitute = across.get(anchor)
+            vector = None if substitute is None else conditionals.get(substitute)
+        else:
+            raise ValueError(f"unknown source {source!r}")
+        if vector is None:
+            continue
+        values.append((row, excess_logprob(np.asarray(vector, dtype=np.float64), weights, target)))
+    return values
+
+
+def _cells(
+    values: Sequence[tuple[Mapping[str, Any], float]], *, rsa_matched: bool,
+    rsa_median: float | None,
+) -> tuple[dict[tuple, dict[str, list[float]]], int]:
+    """Group ``z`` into anchor-and-stratum cells, optionally matched on partner RSA."""
+
+    cells: dict[tuple, dict[str, list[float]]] = {}
+    dropped = 0
+    for row, value in values:
+        key = [row["family"], row["assay"], int(row["i"]), row["stratum"]]
+        if rsa_matched:
+            rsa = row.get("partner_rsa")
+            if rsa is None or rsa_median is None:
+                dropped += 1
+                continue
+            key.append("buried" if float(rsa) <= rsa_median else "exposed")
+        cells.setdefault(tuple(key), {"contact": [], "control": []})[
+            "contact" if row["contact"] else "control"
+        ].append(value)
+    return cells, dropped
+
+
+def _matched(cells: Mapping[tuple, Mapping[str, Sequence[float]]]) -> dict[tuple, dict[str, float]]:
+    return {
+        key: {
+            "contact": float(np.mean(sides["contact"])),
+            "control": float(np.mean(sides["control"])),
+            "difference": float(np.mean(sides["contact"])) - float(np.mean(sides["control"])),
+        }
+        for key, sides in cells.items()
+        if sides["contact"] and sides["control"]
+    }
+
+
+def _estimate(
+    matched: Mapping[tuple, Mapping[str, float]], *, draws: int, seed: int
+) -> dict[str, Any]:
+    per_family = _collapse({key: value["difference"] for key, value in matched.items()})
+    return {
+        "matched_cells": len(matched),
+        "families": sorted(str(family) for family in per_family),
+        "contrast_nats": interval(
+            [per_family[family] for family in sorted(per_family)], draws=draws, seed=seed
+        ),
+        "contact_excess_nats": interval(
+            [
+                value
+                for _, value in sorted(
+                    _collapse({k: v["contact"] for k, v in matched.items()}).items(),
+                    key=lambda item: str(item[0]),
+                )
+            ],
+            draws=draws, seed=seed,
+        ) if matched else None,
+        "control_excess_nats": interval(
+            [
+                value
+                for _, value in sorted(
+                    _collapse({k: v["control"] for k, v in matched.items()}).items(),
+                    key=lambda item: str(item[0]),
+                )
+            ],
+            draws=draws, seed=seed,
+        ) if matched else None,
+        "per_family_contrast": {str(family): per_family[family] for family in sorted(per_family)},
+    }
+
+
+def permutation_null(
+    cells: Mapping[tuple, Mapping[str, Sequence[float]]], observed: float | None, *,
+    draws: int = PERMUTATION_DRAWS, seed: int = PERMUTATION_SEED,
+) -> dict[str, Any]:
+    """The statistic's distribution when the contact label carries no information.
+
+    Within every cell the member values are held exactly as measured and only the
+    labels are permuted, so the cell's separation distribution, its composition and
+    the nesting are all untouched. This calibrates the group bootstrap -- it is the
+    answer to "could a contact assignment with these separations have produced this
+    contrast by itself" -- rather than replacing it.
+    """
+
+    usable = {
+        key: list(sides["contact"]) + list(sides["control"])
+        for key, sides in cells.items()
+        if sides["contact"] and sides["control"]
+    }
+    sizes = {
+        key: len(cells[key]["contact"]) for key in usable
+    }
+    if not usable or observed is None:
+        return {"draws": 0, "status": "no matched cell to permute"}
+    generator = np.random.default_rng(seed)
+    nulls = []
+    for _ in range(int(draws)):
+        drawn = {}
+        for key, members in usable.items():
+            values = np.asarray(members, dtype=np.float64)
+            order = generator.permutation(values.size)
+            take = sizes[key]
+            drawn[key] = float(values[order[:take]].mean()) - float(values[order[take:]].mean())
+        per_family = _collapse(drawn)
+        if per_family:
+            nulls.append(float(np.mean([per_family[f] for f in sorted(per_family)])))
+    if not nulls:
+        return {"draws": 0, "status": "the permutation produced no family value"}
+    array = np.asarray(nulls, dtype=np.float64)
+    extreme = int(np.sum(np.abs(array) >= abs(float(observed))))
+    return {
+        "draws": int(array.size),
+        "seed": int(seed),
+        "mean_nats": float(array.mean()),
+        "interval_nats": [float(np.percentile(array, 2.5)), float(np.percentile(array, 97.5))],
+        "observed_nats": float(observed),
+        "two_sided_p": float((1 + extreme) / (array.size + 1)),
+        "reads_as": (
+            "the contrast when which members of a cell are labelled contacting is "
+            "permuted, with every member value, the separation distribution and the "
+            "nesting untouched"
+        ),
+    }
+
+
 def anticipation_contrast(
     rows: Sequence[Mapping[str, Any]], *, residues: Sequence[str],
     conditionals: Mapping[tuple[Any, int], np.ndarray],
     compositions: Mapping[Any, np.ndarray],
     draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED,
+    permutation_draws: int = PERMUTATION_DRAWS,
 ) -> dict[str, Any]:
-    """The E02 endpoint: contacting minus matched non-contacting excess log probability.
+    """The E02 endpoint and the controls that decide what it can be attributed to."""
 
-    One value per anchor and separation stratum, averaged equally up through
-    anchor, assay and family, with families as the bootstrap units -- the nesting
-    this project already applies to its structural pair census. The per-side means
-    are reported beside the contrast so that a reader sees the levels and not only
-    their difference.
-    """
-
-    column = {residue: position for position, residue in enumerate(residues)}
     families = sorted({row["family"] for row in rows})
+    rsa_values = [
+        float(row["partner_rsa"]) for row in rows if row.get("partner_rsa") is not None
+    ]
+    rsa_median = float(np.median(rsa_values)) if rsa_values else None
     result: dict[str, Any] = {
         "identifiability": IDENTIFIABILITY,
+        "degenerate_control": DEGENERATE_CONTROL,
         "contact_pairs": sum(1 for row in rows if row["contact"]),
         "control_pairs": sum(1 for row in rows if not row["contact"]),
         "anchors": len({(row["assay"], row["i"]) for row in rows}),
@@ -263,6 +511,8 @@ def anticipation_contrast(
             "equal separation strata within anchor, equal anchors within assay, equal "
             "assays within family, equal families; families are the bootstrap units"
         ),
+        "rsa_band_rule": RSA_BAND_RULE,
+        "rsa_median": rsa_median,
         "sources": {},
     }
     if len(families) < MIN_FAMILIES:
@@ -273,48 +523,101 @@ def anticipation_contrast(
         return result
     result["status"] = "estimated"
     tables = {family: pair_conditional(rows, residues, holdout=family) for family in families}
+    within, across = permuted_anchor_maps(rows)
     for source in SOURCES:
-        cells: dict[tuple[Any, Any, int, str], dict[str, list[float]]] = {}
-        for row in rows:
-            weights = compositions[row["assay"]]
-            target = column[row["partner_residue"]]
-            if source == "model_conditional":
-                vector = np.asarray(conditionals[(row["assay"], int(row["i"]))], dtype=np.float64)
-            else:
-                vector = tables[row["family"]][column[row["anchor_residue"]]]
-            value = excess_logprob(vector, weights, target)
-            key = (row["family"], row["assay"], int(row["i"]), row["stratum"])
-            cells.setdefault(key, {"contact": [], "control": []})[
-                "contact" if row["contact"] else "control"
-            ].append(value)
-        differences, contacts, controls = {}, {}, {}
-        for key, sides in cells.items():
-            if not sides["contact"] or not sides["control"]:
-                continue
-            contacts[key] = float(np.mean(sides["contact"]))
-            controls[key] = float(np.mean(sides["control"]))
-            differences[key] = contacts[key] - controls[key]
-        per_family = _collapse(differences)
-        result["sources"][source] = {
+        values = _source_values(
+            rows, source, residues=residues, conditionals=conditionals,
+            compositions=compositions, tables=tables, within=within, across=across,
+        )
+        cells, _dropped = _cells(values, rsa_matched=False, rsa_median=None)
+        matched = _matched(cells)
+        block: dict[str, Any] = {
             "semantics": SOURCE_SEMANTICS[source],
-            "matched_cells": len(differences),
-            "families": sorted(str(family) for family in per_family),
-            "contrast_nats": interval(
-                [per_family[family] for family in sorted(per_family)], draws=draws, seed=seed
-            ),
-            "contact_excess_nats": interval(
-                [value for _, value in sorted(_collapse(contacts).items())],
-                draws=draws, seed=seed,
-            ),
-            "control_excess_nats": interval(
-                [value for _, value in sorted(_collapse(controls).items())],
-                draws=draws, seed=seed,
-            ),
-            "per_family_contrast": {
-                str(family): per_family[family] for family in sorted(per_family)
-            },
+            "reads_as": SOURCE_READS_AS[source],
+            "rows_evaluated": len(values),
+            **_estimate(matched, draws=draws, seed=seed),
         }
+        if source == "model_conditional":
+            block["permutation_null"] = permutation_null(
+                cells, block["contrast_nats"].get("point"),
+                draws=permutation_draws, seed=PERMUTATION_SEED,
+            )
+            banded, dropped = _cells(values, rsa_matched=True, rsa_median=rsa_median)
+            block["partner_rsa_matched"] = {
+                "rule": RSA_BAND_RULE,
+                "dropped_without_rsa": int(dropped),
+                **_estimate(_matched(banded), draws=draws, seed=seed),
+            }
+            strata = {}
+            for band in ("buried", "exposed"):
+                selected = [
+                    (row, value) for row, value in values
+                    if row.get("anchor_rsa") is not None and rsa_median is not None
+                    and (("buried" if float(row["anchor_rsa"]) <= rsa_median else "exposed") == band)
+                ]
+                subcells, _ = _cells(selected, rsa_matched=False, rsa_median=None)
+                strata[band] = {
+                    "rows_evaluated": len(selected),
+                    **_estimate(_matched(subcells), draws=draws, seed=seed),
+                }
+            block["anchor_rsa_strata"] = strata
+        result["sources"][source] = block
+    result["attribution"] = paired_attribution(result["sources"], draws=draws, seed=seed)
     return result
+
+
+def paired_attribution(
+    sources: Mapping[str, Mapping[str, Any]], *, draws: int = BOOTSTRAP_DRAWS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """How much of the measurement each control does not account for.
+
+    The measurement and every control are computed on the same cells and the same
+    families, so the quantity that decides attribution is the **paired** per-family
+    difference, not the overlap of two intervals. ``anchor_permuted_within_protein``
+    is the one that matters: its paired residual is the part of the contrast that a
+    different anchor of the same protein -- same family, same fold, same partner set
+    -- does not reproduce, which is the only part that can be called anticipation by
+    this anchor rather than composition of this protein.
+    """
+
+    measurement = sources.get("model_conditional", {}).get("per_family_contrast") or {}
+    if not measurement:
+        return {"status": "the measurement carried no family value"}
+    attribution: dict[str, Any] = {
+        "rule": (
+            "per-family difference between the measurement and the control, over the "
+            "families both carry; a residual whose interval excludes zero is the part "
+            "of the contrast that control does not explain"
+        ),
+        "controls": {},
+    }
+    for name, block in sources.items():
+        if name == "model_conditional":
+            continue
+        control = block.get("per_family_contrast") or {}
+        shared = sorted(set(measurement) & set(control))
+        if not shared:
+            attribution["controls"][name] = {"status": "no shared family"}
+            continue
+        differences = [measurement[family] - control[family] for family in shared]
+        residual = interval(differences, draws=draws, seed=seed)
+        point = measurement and float(
+            np.mean([measurement[family] for family in shared])
+        )
+        attribution["controls"][name] = {
+            "reads_as": SOURCE_READS_AS[name],
+            "families": len(shared),
+            "measurement_nats": point,
+            "control_nats": float(np.mean([control[family] for family in shared])),
+            "residual_nats": residual,
+            "share_explained": (
+                None if not point else float(
+                    np.mean([control[family] for family in shared]) / point
+                )
+            ),
+        }
+    return attribution
 
 
 def resolved_alphabet(residues: Sequence[str]) -> tuple[str, ...]:

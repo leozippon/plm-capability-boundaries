@@ -76,12 +76,39 @@ def read_json(path: Path):
         return json.load(handle)
 
 
-def arm_design(directory: Path, cohort_rows, geometry_source, *, forward_only):
+
+def extraction_status(directory: Path) -> tuple[dict | None, str | None]:
+    """The completion record of one extraction cell, or why there is not one.
+
+    An arm whose extraction cell failed leaves either no directory or no
+    completion record, and the campaign is designed so that this happens: a cell
+    that refuses its own invariant must not take the rest of the panel with it.
+    The arm is therefore recorded as absent with the reason it is absent and
+    excluded from every estimate, which is not the same as being dropped -- a
+    reader of the panel sees the arm, sees that it is missing, and sees why.
+    """
+
+    if not Path(directory).is_dir():
+        return None, "no extraction directory; the cell did not run or was not pulled"
+    record = Path(directory) / "position_likelihood.json"
+    if not record.is_file():
+        return None, (
+            "no completion record; the cell ran and exited without admitting its own "
+            "output, which for this stage means it refused an invariant"
+        )
+    try:
+        payload = read_json(record)
+    except (OSError, ValueError) as error:
+        return None, f"completion record is unreadable: {error}"
+    if payload.get("status") != "complete":
+        return None, f"completion record status is {payload.get('status')!r}, not complete"
+    if not payload.get("assays"):
+        return None, "completion record carries no assay"
+    return payload, None
+
+def arm_design(completion, directory: Path, cohort_rows, geometry_source, *, forward_only):
     """One arm's matched anchor/partner rows and its conditional table."""
 
-    completion = read_json(directory / "position_likelihood.json")
-    if completion.get("status") != "complete":
-        raise SystemExit(f"{directory}: the extraction did not complete")
     identity = completion["identity"]
     blocks, per_assay = [], []
     for receipt in completion["assays"]:
@@ -90,7 +117,11 @@ def arm_design(directory: Path, cohort_rows, geometry_source, *, forward_only):
         geometry, pairs = geometry_source(assay, row)
         if geometry is None:
             continue
-        payload = read_archive(directory / "archives" / receipt["file"])
+        archive = directory / "archives" / receipt["file"]
+        if not archive.is_file():
+            per_assay.append({"assay": assay, "status": "archive named by the receipt is absent"})
+            continue
+        payload = read_archive(archive)
         if "wt_conditional_logprobs" not in payload:
             per_assay.append({"assay": assay, "status": "no residue conditional retained"})
             continue
@@ -189,10 +220,15 @@ def main() -> None:
             )
         return cache[assay]
 
-    arms = []
+    arms, absent = [], []
     for directory in args.extraction:
+        completion, reason = extraction_status(directory)
+        if completion is None:
+            absent.append({"extraction": str(directory), "arm": Path(directory).name,
+                           "reason": reason})
+            continue
         identity, rows, shared, conditionals, compositions, per_assay = arm_design(
-            directory, cohort_rows, geometry_source,
+            completion, directory, cohort_rows, geometry_source,
             forward_only=not args.both_directions,
         )
         block = {
@@ -222,6 +258,11 @@ def main() -> None:
             )
         arms.append(block)
         del rows, conditionals, compositions
+    if not arms:
+        raise SystemExit(
+            "no extraction directory carried an admitted completion record; there is "
+            f"nothing to analyse. Absent: {absent}"
+        )
 
     write_json(args.out / COMPLETION, {
         "schema": SCHEMA,
@@ -253,6 +294,17 @@ def main() -> None:
                                ("coverage", args.coverage))
         },
         "arms": arms,
+        "absent_arms": absent,
+        "panel": {
+            "requested_extractions": len(args.extraction),
+            "analysed_arms": len(arms),
+            "absent_arms": len(absent),
+            "policy": (
+                "an arm whose extraction cell left no admitted completion record is "
+                "recorded here with its reason and excluded from every estimate; it is "
+                "neither silently dropped nor fatal to the rest of the panel"
+            ),
+        },
     })
 
 

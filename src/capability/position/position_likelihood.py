@@ -129,7 +129,51 @@ REFUSED_ARMS: dict[str, str] = {
         "arm in the panel carries and the per-position comparison would not be "
         "between the same quantities"
     ),
+    "progen3-3b": (
+        "its expert mixture reduces over the flattened token axis, so a single "
+        "substitution changes the expert gather for the whole sequence including the "
+        "tokens before it: the shared prefix is not the same computation in the two "
+        "states and the per-position terms shift by about half a nat. This is the "
+        "layout sensitivity the project already measured and already acted on -- "
+        "results/R1/position_terms_20260926/receipts/layout/layout_assessment.json "
+        "records a panel-mean wild-type-state shift of 0.5317 nats over 191 assays "
+        "(median 0.4000, max 2.7940) and a downstream-term shift of 0.5149 nats, with "
+        "bit-identical repeats of the same layout, which is why this arm is outside "
+        "the position-term panel. It is excluded here for the same measured reason "
+        "rather than admitted under a tolerance two orders of magnitude above every "
+        "quantity a position-resolved analysis reports"
+    ),
 }
+
+#: Pre-registered admission of a per-position residual, reused verbatim from this
+#: lane's own declaration in ``scripts/capability/position/analyse_position_terms.py``
+#: (``TIER2_NATS``, ``TIER2_REPEAT_MULTIPLE``), which fixed both before any residual
+#: had been seen. ``tests/position`` asserts the two declarations agree, because a
+#: second tolerance that drifted from the first would be a second standard.
+TIER2_NATS = 1.0e-4
+TIER2_REPEAT_MULTIPLE = 3.0
+
+PREFIX_INVARIANT_RULE = (
+    "the terms upstream of a substitution must be bit-identical between the two "
+    "states (tier 1). A nonzero residual is admitted only as tier 2: at or below "
+    "1.0e-4 nats AND at or below three times the arm's own measured repeat maximum "
+    "on this same cohort, where the repeat maximum is the largest difference between "
+    "two identical forwards of a wild-type row. An arm whose forward reproduces "
+    "bit-for-bit has a repeat maximum of zero and therefore no tier-2 room at all, "
+    "so the exact-zero property -- and with it the invariant's ability to catch a "
+    "packing, alignment or batch-composition defect -- is preserved by construction "
+    "rather than by an arm allow-list"
+)
+
+
+def residual_tier(worst: float, repeat_max: float) -> int:
+    """Which admission tier a prefix residual falls in: 1 exact, 2 admitted, 3 refused."""
+
+    if worst == 0.0:
+        return 1
+    if worst <= TIER2_NATS and worst <= TIER2_REPEAT_MULTIPLE * float(repeat_max):
+        return 2
+    return 3
 
 
 def available_arms() -> tuple[str, ...]:
@@ -609,6 +653,29 @@ def upstream_invariance(
     if not mask.any():
         return 0.0
     return float(np.max(np.abs(score_wild.terms[mask] - score_mutant.terms[mask])))
+
+
+def repeat_residual(first: PositionScore, second: PositionScore) -> float:
+    """Largest term difference between two identical forwards of the same row.
+
+    This is the arm's own nondeterminism, measured on the cohort being scored
+    rather than assumed. Some serving paths in this panel are not
+    bit-reproducible: ``rita-xl`` in float32 under eager attention differs between
+    two identical forwards by 2.5e-6 nats on a 37-residue row, 2.7e-6 on 41 and
+    5.0e-6 on 87, while ``progen2-small`` differs by exactly zero on the same rows
+    including one of 505 residues. Measuring it is what lets the prefix invariant
+    distinguish "this arm's arithmetic wobbles" from "this packing is wrong":
+    on ``rita-xl`` the wild-type-versus-mutant prefix difference equalled the
+    repeat difference to the last digit on every row tested, a ratio of 1.00,
+    which is what nondeterminism looks like and is not what a layout defect looks
+    like.
+    """
+
+    if first.terms.shape != second.terms.shape:
+        raise ValueError("a repeat check compares two forwards of the same row")
+    return float(
+        np.max(np.abs(first.terms.astype(np.float64) - second.terms.astype(np.float64)))
+    )
 
 
 def masked_site_response(

@@ -381,3 +381,117 @@ def test_the_covariation_control_never_sees_its_own_family():
     assert held_two[0].argmax() == residues.index("A")
     with pytest.raises(ValueError, match="only family"):
         pair_conditional(rows[:2], residues, holdout=1)
+
+
+# ------------------------------- the admitted upstream tolerance
+
+
+def test_the_census_admits_only_the_tolerance_the_extraction_recorded():
+    wild = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    drifted = [1.0, 1.0, 1.000004, 1.0, 2.0, 2.0, 2.0, 2.0]
+    payload = archive(wild, drifted)
+    with pytest.raises(ValueError, match="admitted tolerance of 0.0"):
+        receiver_census(payload, 0, site=4, paradigm=CAUSAL)
+    census = receiver_census(payload, 0, site=4, paradigm=CAUSAL, upstream_tolerance=1e-5)
+    assert census["upstream_max_abs_nats"] == pytest.approx(4e-6, rel=5e-2)
+    # A tolerance never turns a half-nat layout shift into a measurement.
+    gross = archive(wild, [1.0, 1.0, 1.5, 1.0, 2.0, 2.0, 2.0, 2.0])
+    with pytest.raises(ValueError, match="packing, alignment or forward defect"):
+        receiver_census(gross, 0, site=4, paradigm=CAUSAL, upstream_tolerance=1e-4)
+    for bad in (-1e-9, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite non-negative"):
+            receiver_census(payload, 0, site=4, paradigm=CAUSAL, upstream_tolerance=bad)
+
+
+# ------------------------------- the E02 attribution controls
+
+
+def anticipation_rows(n_families=8, *, contact_shift=0.0):
+    """Matched cells across several families, with a tunable contact signal."""
+
+    rows = []
+    for family in range(n_families):
+        for anchor in (0, 10):
+            for offset, contact in ((7, True), (8, False), (9, False)):
+                rows.append({
+                    "assay": f"A{family}", "family": family, "i": anchor,
+                    "j": anchor + offset, "separation": offset, "stratum": "3-8",
+                    "contact": contact, "structure_distance_angstrom": 5.0 if contact else 15.0,
+                    "anchor_residue": "A", "partner_residue": "L" if contact else "D",
+                    "anchor_rsa": 0.1 if anchor == 0 else 0.6,
+                    "partner_rsa": 0.2 if contact else 0.5,
+                })
+    return rows
+
+
+def test_the_within_protein_anchor_control_is_a_derangement_of_its_own_protein():
+    from src.capability.position.anticipation import permuted_anchor_maps
+
+    rows = anticipation_rows()
+    within, across = permuted_anchor_maps(rows)
+    assert within
+    for (assay, anchor), (other_assay, other_anchor) in within.items():
+        assert other_assay == assay            # same protein, same family, same fold
+        assert other_anchor != anchor          # and never the anchor itself
+    for (assay, _anchor), (other_assay, _other) in across.items():
+        assert other_assay != assay            # a different protein in a different family
+
+
+def test_a_single_anchor_protein_contributes_no_within_protein_control():
+    from src.capability.position.anticipation import permuted_anchor_maps
+
+    rows = [row for row in anticipation_rows() if row["i"] == 0]
+    within, _across = permuted_anchor_maps(rows)
+    assert within == {}
+
+
+def test_the_contact_label_permutation_null_is_centred_on_zero():
+    from src.capability.position.anticipation import permutation_null
+
+    cells = {
+        (family, f"A{family}", 0, "3-8"): {"contact": [1.0], "control": [0.0, 0.2]}
+        for family in range(8)
+    }
+    null = permutation_null(cells, 0.9, draws=400, seed=7)
+    assert null["draws"] == 400
+    assert abs(null["mean_nats"]) < 0.2
+    assert null["interval_nats"][0] < 0 < null["interval_nats"][1]
+    assert null["two_sided_p"] < 0.05
+    # An observed value inside the null is not significant.
+    assert permutation_null(cells, 0.0, draws=400, seed=7)["two_sided_p"] > 0.2
+    assert permutation_null({}, 0.9)["draws"] == 0
+
+
+def test_the_attribution_pairs_the_measurement_against_each_control():
+    from src.capability.position.anticipation import paired_attribution
+
+    sources = {
+        "model_conditional": {"per_family_contrast": {str(f): 0.20 for f in range(10)}},
+        "anchor_permuted_within_protein": {
+            "per_family_contrast": {str(f): 0.12 for f in range(10)}
+        },
+        "pair_covariation": {"per_family_contrast": {}},
+    }
+    result = paired_attribution(sources)
+    fold = result["controls"]["anchor_permuted_within_protein"]
+    assert fold["families"] == 10
+    assert fold["control_nats"] == pytest.approx(0.12)
+    assert fold["share_explained"] == pytest.approx(0.6)
+    assert fold["residual_nats"]["point"] == pytest.approx(0.08)
+    assert result["controls"]["pair_covariation"]["status"] == "no shared family"
+    assert paired_attribution({})["status"]
+
+
+def test_a_control_that_fully_explains_the_measurement_leaves_no_residual():
+    from src.capability.position.anticipation import paired_attribution
+
+    sources = {
+        "model_conditional": {"per_family_contrast": {str(f): 0.2 + 0.01 * f for f in range(10)}},
+        "anchor_permuted_within_protein": {
+            "per_family_contrast": {str(f): 0.2 + 0.01 * f for f in range(10)}
+        },
+    }
+    residual = paired_attribution(sources)["controls"]["anchor_permuted_within_protein"]
+    assert residual["residual_nats"]["point"] == pytest.approx(0.0)
+    assert residual["residual_nats"]["excludes_zero"] is False
+    assert residual["share_explained"] == pytest.approx(1.0)

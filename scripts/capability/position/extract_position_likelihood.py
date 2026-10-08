@@ -58,13 +58,19 @@ from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.position.position_likelihood import (  # noqa: E402
     CAUSAL,
     MASKED,
+    PREFIX_INVARIANT_RULE,
+    REFUSED_ARMS,
     SCHEMA,
     TERM_SEMANTICS,
+    TIER2_NATS,
+    TIER2_REPEAT_MULTIPLE,
     PositionArchive,
     available_arms,
     default_dtype,
     load_position_scorer,
     paradigm_of,
+    repeat_residual,
+    residual_tier,
     upstream_invariance,
 )
 from src.capability.position.position_terms import (  # noqa: E402
@@ -215,6 +221,8 @@ def main() -> None:
         parser.error("--mask-batch-size, --max-tokens and --min-residues are positive")
     if args.structure_only and args.structures is None:
         parser.error("--structure-only needs --structures")
+    if args.arm in REFUSED_ARMS:
+        parser.error(f"{args.arm} is excluded from position-resolved work: {REFUSED_ARMS[args.arm]}")
     paradigm = paradigm_of(args.arm)
     if paradigm == MASKED and args.model_root is None:
         parser.error(f"{args.arm} is a bidirectional arm and needs --model-root")
@@ -262,6 +270,7 @@ def main() -> None:
         "mask_batch_size": mask_batch,
         "term_semantics": TERM_SEMANTICS[paradigm],
         "alignment_rule": ALIGNMENT,
+        "prefix_invariant_rule": PREFIX_INVARIANT_RULE,
         "provenance": scorer.provenance,
         "blas": blas,
         "max_residues": args.max_residues,
@@ -308,10 +317,16 @@ def main() -> None:
         gather = [slots[residue] for residue in AA20 if residue in slots] if slots else None
         if paradigm == MASKED:
             wild_score = scorer.score(states[:1], batch_size=mask_batch, gather_ids=gather)[0]
+            repeat = scorer.score(states[:1], batch_size=mask_batch)[0]
             mutant_scores = scorer.score(states[1:], batch_size=mask_batch)
         else:
             wild_score = scorer.score(states[:1], gather_ids=gather)[0]
+            # One extra forward of the row just scored, so this arm's own
+            # nondeterminism is measured on the cohort being checked rather than
+            # assumed. Costs one row in a hundred and twenty-nine.
+            repeat = scorer.score(states[:1])[0]
             mutant_scores = scorer.score(states[1:])
+        assay_repeat = repeat_residual(wild_score, repeat)
 
         archive = PositionArchive(assay=assay, paradigm=paradigm)
         archive.add_wildtype(states[0], wild_score)
@@ -335,11 +350,6 @@ def main() -> None:
                     states[0], states[index + 1], wild_score, mutant_scores[index], sites[0]
                 ),
             )
-        if paradigm == CAUSAL and worst_upstream != 0.0:
-            raise SystemExit(
-                f"{assay}: terms upstream of a substitution differ by {worst_upstream} nats on a "
-                "causal arm; the prefix is identical, so this is a defect and not a measurement"
-            )
 
         block = conditional_block(states[0], wild_score, slots)
         extras = {}
@@ -362,6 +372,7 @@ def main() -> None:
             "scored_tokens": int(states[0].scored_tokens),
             "retention_max_abs_nats": archive.retention_max_abs_nats,
             "upstream_max_abs_nats": worst_upstream,
+            "repeat_max_abs_nats": assay_repeat,
             "aligned_single_substitutions": aligned,
             "misaligned_single_substitutions": misaligned,
             "conditional": {key: value for key, value in block.items()
@@ -369,7 +380,51 @@ def main() -> None:
         })
         print(json.dumps({"assay": assay, "states": len(states),
                           "retention": archive.retention_max_abs_nats,
-                          "upstream": worst_upstream}), flush=True)
+                          "upstream": worst_upstream, "repeat": assay_repeat}), flush=True)
+
+    # The prefix invariant is adjudicated once, at run level, against this arm's own
+    # repeat maximum over the same cohort. Doing it per assay in scoring order would
+    # make the verdict depend on which assay happened to be measured first, because
+    # the repeat estimate only improves as assays accumulate; doing it here compares
+    # a maximum over N assays against a maximum over the same N assays. A refusal
+    # stops the run before the completion record is written, so the cell fails.
+    measured = [item for item in receipts if "upstream_max_abs_nats" in item]
+    repeat_max = max((float(item["repeat_max_abs_nats"]) for item in measured), default=0.0)
+    invariant = {
+        "rule": PREFIX_INVARIANT_RULE,
+        "tier2_nats": TIER2_NATS,
+        "tier2_repeat_multiple": TIER2_REPEAT_MULTIPLE,
+        "repeat_max_abs_nats": repeat_max,
+        "admitted_tolerance_nats": (
+            0.0 if repeat_max == 0.0 else min(TIER2_NATS, TIER2_REPEAT_MULTIPLE * repeat_max)
+        ),
+        "upstream_max_abs_nats": max(
+            (float(item["upstream_max_abs_nats"]) for item in measured), default=0.0
+        ),
+    }
+    invariant["tier"] = residual_tier(invariant["upstream_max_abs_nats"], repeat_max)
+    invariant["exactly_zero"] = bool(invariant["upstream_max_abs_nats"] == 0.0)
+    refused = [
+        {
+            "assay": item["assay"],
+            "upstream_max_abs_nats": float(item["upstream_max_abs_nats"]),
+            "repeat_max_abs_nats": float(item["repeat_max_abs_nats"]),
+        }
+        for item in measured
+        if residual_tier(float(item["upstream_max_abs_nats"]), repeat_max) == 3
+    ]
+    for item in measured:
+        item["upstream_tier"] = residual_tier(float(item["upstream_max_abs_nats"]), repeat_max)
+    if paradigm == CAUSAL and refused:
+        worst = max(entry["upstream_max_abs_nats"] for entry in refused)
+        raise SystemExit(
+            f"{args.arm}: {len(refused)} assay(s) carry a prefix residual the pre-registered "
+            f"rule refuses, worst {worst} nats against a measured repeat maximum of "
+            f"{repeat_max} nats over {len(measured)} assays. The prefix is the same tokens in "
+            "both states, so a residual this far above the arm's own reproducibility is a "
+            "packing, alignment or layout property of the arm and not a measurement. "
+            f"Refused assays: {[entry['assay'] for entry in refused][:5]}"
+        )
 
     # Every archive present in this cell enters the handoff, resumed ones included:
     # a resumed cell that described only its fresh assays would hand the frozen CPU
@@ -397,6 +452,7 @@ def main() -> None:
     write_json(args.out / COMPLETION, {
         "status": "complete",
         "identity": identity,
+        "prefix_invariant": invariant,
         "created_utc": _now(),
         "shard": args.shard,
         "shards": args.shards,
@@ -411,9 +467,9 @@ def main() -> None:
             "retention_max_abs_nats": max(
                 (float(item["retention_max_abs_nats"]) for item in scored), default=0.0
             ),
-            "upstream_max_abs_nats": max(
-                (float(item["upstream_max_abs_nats"]) for item in scored), default=0.0
-            ),
+            "upstream_max_abs_nats": invariant["upstream_max_abs_nats"],
+            "repeat_max_abs_nats": repeat_max,
+            "upstream_tier": invariant["tier"],
             "conditionals_available": sum(
                 1 for item in scored if item["conditional"]["available"]
             ),

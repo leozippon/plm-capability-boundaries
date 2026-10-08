@@ -156,7 +156,7 @@ def test_the_conditioned_arm_and_an_unknown_name_are_refused_by_name():
         paradigm_of("not-an-arm")
     assert paradigm_of("progen2-small") == CAUSAL
     assert paradigm_of("esm2-650m") == MASKED
-    assert default_dtype("progen3-3b") == "bfloat16"
+    assert default_dtype("progen3-112m") == "bfloat16"
     assert default_dtype("galactica-1.3b") == "float32"
     assert "progen2-xlarge" in available_arms() and "prollama" in available_arms()
 
@@ -199,3 +199,91 @@ def test_a_real_arm_reduces_its_retained_vector_to_its_published_scalar(arm):
     assert score.terms.shape == (state.scored_tokens,)
     assert float(torch.as_tensor(score.terms).sum()) == score.nll_sum
     assert int(state.counts.sum()) + state.offset == len(state.sequence)
+
+
+# ------------------------------- the tiered prefix invariant
+
+
+def test_the_prefix_tolerance_agrees_with_the_lanes_own_declaration():
+    """A second tolerance that drifted from the first would be a second standard."""
+
+    from src.capability.position.position_likelihood import (
+        TIER2_NATS, TIER2_REPEAT_MULTIPLE,
+    )
+
+    path = ROOT / "scripts/capability/position/analyse_position_terms.py"
+    spec = import_util.spec_from_file_location("position_terms_analysis_source", path)
+    assert spec is not None and spec.loader is not None
+    module = import_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert TIER2_NATS == module.TIER2_NATS
+    assert TIER2_REPEAT_MULTIPLE == module.TIER2_REPEAT_MULTIPLE
+
+
+def test_a_deterministic_arm_has_no_room_above_exact_zero():
+    """Repeat maximum zero means tier 2 is unreachable, so the invariant stays exact."""
+
+    from src.capability.position.position_likelihood import residual_tier
+
+    assert residual_tier(0.0, 0.0) == 1
+    # The batch-composition drift this work measured on progen2-small, whose forward
+    # reproduces bit-for-bit: it must stay detectable.
+    assert residual_tier(3.24e-5, 0.0) == 3
+    assert residual_tier(1e-12, 0.0) == 3
+
+
+def test_a_nondeterministic_arm_is_admitted_only_within_its_own_reproducibility():
+    """The rita-xl case, and why the repeat probe has to span the scored cohort.
+
+    Measured end to end on ``rita-xl`` over the thirty structure-mapped assays, the
+    arm-level worst upstream residual and the arm-level worst repeat difference are
+    the *same number*, 8.702e-06 nats: 27 assays are exactly zero and the three that
+    are not have ratios of 0.76, 1.00 and 1.00. That equality is what makes a
+    three-fold multiple an adequate margin -- but only when the repeat maximum is a
+    maximum over the same assays as the residual. A repeat estimate taken from a
+    smaller or shorter population does not license a residual drawn from a larger
+    one, and the rule refuses rather than guesses.
+    """
+
+    from src.capability.position.position_likelihood import TIER2_NATS, residual_tier
+
+    # Measured on the same population: the residual and the repeat coincide.
+    assert residual_tier(8.702e-06, 8.702e-06) == 2
+    assert residual_tier(1.8e-5, 1.8e-5) == 2
+    assert residual_tier(1.8e-5, 6.1e-6) == 2
+    # An under-powered repeat estimate does not admit a larger residual.
+    assert residual_tier(1.8e-5, 5.0e-6) == 3
+    assert residual_tier(2.0e-5, 5.0e-6) == 3
+    # The hard cap binds however large the measured repeat is.
+    assert residual_tier(TIER2_NATS, 1.0) == 2
+    assert residual_tier(TIER2_NATS * 1.001, 1.0) == 3
+    # The ProGen3 layout shift is refused at any plausible reproducibility.
+    assert residual_tier(0.5664, 5.0e-6) == 3
+    assert residual_tier(0.5664, 0.01) == 3
+
+
+def test_the_repeat_residual_measures_two_forwards_of_one_row():
+    first = scored([1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0])
+    same = scored([1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0])
+    jittered = scored([1.0, 2.0, 3.0, 1.0, 2.000004, 3.0, 1.0, 2.0, 3.0, 1.0])
+    from src.capability.position.position_likelihood import repeat_residual
+
+    assert repeat_residual(first, same) == 0.0
+    assert repeat_residual(first, jittered) == pytest.approx(4e-6, rel=5e-2)
+    with pytest.raises(ValueError, match="same row"):
+        repeat_residual(first, scored([1.0, 2.0]))
+
+
+def test_the_layout_sensitive_mixture_arm_is_refused_by_name_with_its_measurement():
+    from src.capability.position.position_likelihood import REFUSED_ARMS
+
+    assert "progen3-3b" in REFUSED_ARMS
+    reason = REFUSED_ARMS["progen3-3b"]
+    assert "0.5317" in reason and "layout_assessment.json" in reason
+    with pytest.raises(ValueError, match="expert mixture"):
+        paradigm_of("progen3-3b")
+    # progen3-112m is not refused: its prefix residual was exactly zero on the whole
+    # scored cohort, which is a measurement on that checkpoint rather than a guarantee
+    # from the architecture, and the invariant is what would catch it if it changed.
+    assert "progen3-112m" not in REFUSED_ARMS
+    assert paradigm_of("progen3-112m") == CAUSAL
