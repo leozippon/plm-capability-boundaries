@@ -405,3 +405,163 @@ def test_the_ceiling_states_why_unconditional_cells_have_no_family_matched_arm()
         "family_matching_needs_a_request"
     ]
     assert "one decoding configuration" in gcx.CEILING["gate_support_is_one_stream"]
+
+
+# ------------------------------ the family-matched join defect (2026-10-08)
+
+
+def test_the_draw_completion_json_alone_cannot_price_the_ceiling():
+    """The defect that failed `condgen_controls_table_cpu`.
+
+    `run_draw` writes the accounting to the completion JSON and the sequences to a
+    sibling JSONL, so a caller that reads only the JSON has no records. That must
+    be a named refusal, not a KeyError and not a ceiling computed over nothing.
+    """
+
+    accounting_only = {"per_class": {"c1": {"referent": ["PF00001"]}}, "n_drawn": 3}
+    with pytest.raises(ValueError, match="keeps only the accounting"):
+        gcx.natural_recognition_rates(accounting_only, {"n1": {"families": ["PF00001"]}})
+
+
+def test_records_may_be_supplied_separately_from_the_draw():
+    draw = {"per_class": {"c1": {"referent": ["PF00001"]}}}
+    records = [{"id": "n1", "class_key": "c1", "length": 150}]
+    recognition = {"n1": {"pfam_families": ["PF00001"], "any_profile_hit": True,
+                          "complete_domain": True}}
+    rates = gcx.natural_recognition_rates(draw, recognition, records=records)
+    assert rates["per_class"]["c1"]["complete_domain_rate"] == pytest.approx(1.0)
+
+
+def test_both_recognition_spellings_are_accepted():
+    """The oracle sidecar and the in-memory result spell the same fields differently.
+
+    Reading one and being handed the other yields all-zero rates: a comparator
+    that looks measured and is not.
+    """
+
+    sidecar = [{"id": "a", "pfam_families": ["PF1"], "any_profile_hit": True,
+                "complete_domain": True, "best_profile_coverage": 0.9}]
+    in_memory = [{"id": "a", "families": ["PF1"], "any_family": True,
+                  "complete_domain": True, "best_profile_coverage": 0.9}]
+    assert gcx.normalise_recognition(sidecar) == gcx.normalise_recognition(in_memory)
+    assert gcx.normalise_recognition(sidecar)["a"]["any_family"] is True
+
+
+def test_a_row_carrying_neither_spelling_is_refused():
+    with pytest.raises(ValueError, match="not a recognition record"):
+        gcx.normalise_recognition([{"id": "a", "complete_domain": True}])
+
+
+def test_an_empty_recognition_set_is_refused():
+    with pytest.raises(ValueError, match="no recognition record"):
+        gcx.normalise_recognition([])
+
+
+def test_a_sidecar_shaped_recognition_prices_the_ceiling_correctly():
+    draw = {"per_class": {"c1": {"referent": ["PF00001"]}}}
+    records = [{"id": f"n{index}", "class_key": "c1", "length": 150} for index in range(4)]
+    recognition = {
+        "n0": {"id": "n0", "pfam_families": ["PF00001"], "any_profile_hit": True,
+               "complete_domain": True},
+        "n1": {"id": "n1", "pfam_families": ["PF00001"], "any_profile_hit": True,
+               "complete_domain": False},
+        "n2": {"id": "n2", "pfam_families": ["PF00002"], "any_profile_hit": True,
+               "complete_domain": True},
+        "n3": {"id": "n3", "pfam_families": [], "any_profile_hit": False,
+               "complete_domain": False},
+    }
+    rates = gcx.natural_recognition_rates(draw, recognition, records=records)
+    block = rates["per_class"]["c1"]
+    assert block["any_family_rate"] == pytest.approx(0.75)
+    assert block["complete_domain_rate"] == pytest.approx(0.5)
+    assert block["target_family_rate"] == pytest.approx(0.5)
+
+
+# ------------------------------------- termination accounting (2026-10-08)
+
+
+def test_censoring_is_classified_on_the_stop_accounting_not_on_composition():
+    """A censored attempt carrying a non-canonical residue is still censored."""
+
+    rows = [
+        _attempt("MKV", generated_tokens=400, effective_max_new_tokens=400,
+                 decoder_stop="max_new_tokens"),
+        _attempt("MKV", generated_tokens=50, effective_max_new_tokens=400,
+                 decoder_stop="eos"),
+    ]
+    block = gcx.cell_census(rows)["termination"]
+    assert block["n_at_token_budget"] == 1
+    assert block["n_natively_terminated"] == 1
+    assert "never consulted" in block["classification_rule"]
+
+
+def test_termination_falls_back_to_the_stop_reason_when_tokens_are_absent():
+    rows = [
+        _attempt("MKV", generated_tokens=None, decoder_stop="max_new_tokens"),
+        _attempt("MKA", generated_tokens=None, decoder_stop="native_terminal"),
+        _attempt("MKC", generated_tokens=None, decoder_stop=None),
+    ]
+    block = gcx.cell_census(rows)["termination"]
+    assert block["n_at_token_budget"] == 1
+    assert block["n_natively_terminated"] == 1
+    assert block["n_termination_unknown"] == 1
+
+
+def test_an_immediate_native_stop_is_not_counted_as_a_product():
+    rows = [
+        _attempt("M", generated_tokens=1, effective_max_new_tokens=400, decoder_stop="eos"),
+        _attempt("MK" + "A" * 30, generated_tokens=40, effective_max_new_tokens=400,
+                 decoder_stop="eos"),
+        _attempt("MK" + "A" * 160, generated_tokens=200, effective_max_new_tokens=400,
+                 decoder_stop="eos"),
+    ]
+    native = gcx.cell_census(rows)["termination"]["native_products"]
+    assert native["n_immediate_stop"] == 1
+    assert native["n_below_short_threshold"] == 2
+    assert "refused to start" in native["note"]
+
+
+def test_the_native_versus_censored_length_contrast_is_declared_unsupported():
+    block = gcx.cell_census([_attempt("MKV")])["termination"]
+    contrast = block["length_matched_native_versus_censored"]
+    assert contrast["supported"] is False
+    assert "barely overlap in length" in contrast["reason"]
+
+
+def test_the_across_cell_census_reports_both_censoring_scopes():
+    ledgers = {
+        "small": [
+            _attempt("MK" + "A" * 10, generated_tokens=400, effective_max_new_tokens=400,
+                     decoder_stop="max_new_tokens")
+            for _ in range(8)
+        ]
+        + [_attempt("MK" + "C" * 10, generated_tokens=5, effective_max_new_tokens=400,
+                    decoder_stop="eos")
+           for _ in range(2)],
+        "large": [
+            _attempt("MK" + "D" * (index + 1), generated_tokens=5,
+                     effective_max_new_tokens=400, decoder_stop="eos")
+            for index in range(20)
+        ],
+    }
+    block = gcx.census_over_cells(ledgers)["across_cells"]["token_budget_censoring"]
+    assert block["mean_attempts_per_cell"] == pytest.approx(4.0)
+    assert block["mean_share_per_cell"] == pytest.approx(0.4)
+    assert block["share_of_attempts_pooled"] == pytest.approx(8 / 30)
+    assert "dominated by the conditional cells" in block["scope_note"]
+
+
+def test_a_checkpoint_whose_native_stops_are_all_immediate_is_named():
+    ledgers = {
+        "degenerate": [
+            _attempt("M", generated_tokens=1, effective_max_new_tokens=400, decoder_stop="eos")
+            for _ in range(3)
+        ],
+        "healthy": [
+            _attempt("MK" + "A" * (100 + index), generated_tokens=120,
+                     effective_max_new_tokens=400, decoder_stop="eos")
+            for index in range(3)
+        ],
+    }
+    block = gcx.census_over_cells(ledgers)["across_cells"]["native_products"]
+    assert block["cells_whose_native_terminations_are_all_immediate"] == ["degenerate"]

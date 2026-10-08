@@ -226,6 +226,12 @@ def cell_rates(
     if not rows:
         raise ValueError("a rate needs at least one attempt")
     hits = _hit_vector(rows, hit_field)
+    # Which grouping the collapsed estimator actually used. The 2026-09-05 stream
+    # carries a near-duplicate group per attempt; the replication ledgers carry only
+    # an exact-duplicate group, so there the collapsed rate is an exact-duplicate
+    # rate. That is a difference between streams, not a correction of one, and it is
+    # recorded rather than left for a reader to infer from equal numbers.
+    declared_groups = sum(1 for row in rows if row.get("near_duplicate_group"))
     groups = [row.get("near_duplicate_group") or row["sequence_sha256"] for row in rows]
     digests = [row["sequence_sha256"] for row in rows]
     hit_digests = {digest for digest, hit in zip(digests, hits) if hit}
@@ -243,8 +249,11 @@ def cell_rates(
         "duplication_rate": 1.0 - len(counts) / len(rows),
         "largest_exact_duplicate_share": max(counts.values()) / len(rows),
         "n_empty_or_noncanonical": sum(1 for row in rows if not row.get("sequence")),
-        "near_duplicate_groups_declared": sum(
-            1 for row in rows if row.get("near_duplicate_group")
+        "near_duplicate_groups_declared": declared_groups,
+        "grouping_source": (
+            "near_duplicate_group"
+            if declared_groups == len(rows)
+            else ("exact_sequence_digest" if declared_groups == 0 else "mixed")
         ),
     }
 
@@ -276,12 +285,58 @@ def _complete_cells(
     complete = [cls for cls in classes if all((cls, cond) in cells for cond in CONDITIONS)]
     incomplete = sorted(set(classes) - set(complete))
     if incomplete:
+        present = sorted({cond for _, cond in cells})
         raise ValueError(
             f"these classes carry only one of the two conditions: {incomplete}. The "
             "endpoint is a within-class paired difference and a class measured under "
-            "one condition only cannot enter it"
+            "one condition only cannot enter it. The conditions supplied for this "
+            f"stream were {present}: a stream is the set of ledgers that together "
+            "carry both sides of the difference, so the requested and the mismatched "
+            "cells of one sampling stream must be supplied under one stream label"
         )
     return complete
+
+
+def derive_target_hits(
+    rows: Sequence[Mapping[str, Any]], referents: Mapping[str, Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fill ``target_profile_hit`` from a recognition block that only carries families.
+
+    The replication campaign's annotated ledgers carry
+    ``profile.generated.families`` -- the oracle output of a campaign that had no
+    class request to score against -- but no ``target_profile_hit``, because that
+    campaign only ever sampled the requested condition and never formed the
+    difference. The frozen class-to-Pfam referent supplies the missing step, and
+    the empty-referent convention comes from
+    :func:`src.capability.generation.family_oracle.target_hit_for_class` so that a
+    rate derived here and a rate written by the oracle stage mean the same thing.
+    """
+
+    from .family_oracle import target_hit_for_class
+
+    filled: list[dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        if record.get("target_profile_hit") is not None:
+            filled.append(record)
+            continue
+        families = record.get("pfam_families")
+        if families is None:
+            profile = record.get("profile")
+            if isinstance(profile, Mapping) and isinstance(profile.get("generated"), Mapping):
+                families = profile["generated"].get("families")
+        class_key = str(record.get("class_key") or "")
+        entry = referents.get(class_key)
+        if families is None or entry is None:
+            filled.append(record)
+            continue
+        hit, empty = target_hit_for_class(families, entry["referent"])
+        record["target_profile_hit"] = hit
+        record["target_referent_empty"] = empty
+        record["target_referent"] = list(entry["referent"])
+        record["target_profile_hit_derived"] = True
+        filled.append(record)
+    return filled
 
 
 # ------------------------------------------------------------------ the endpoint

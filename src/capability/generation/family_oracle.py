@@ -424,6 +424,26 @@ def run_positive_control(
     return result
 
 
+def target_hit_for_class(
+    families: Iterable[str], referent: Iterable[str]
+) -> tuple[bool, bool]:
+    """``(hit, referent_is_empty)`` for one sequence against one class.
+
+    The single definition of what an **empty referent** means, shared by every
+    consumer. A class whose referent draw carried no Pfam family at the declared
+    share has no profile set the oracle could assign to, so nothing can be
+    recognised as it. The frozen 2026-09-05 run recorded such a class as a
+    non-hit rather than as unscored; that convention is reproduced here, and the
+    second element of the tuple is what lets a caller drop the class from the
+    admitted support instead of crediting it with a structural zero.
+    """
+
+    wanted = {str(value).split(".", 1)[0] for value in referent}
+    if not wanted:
+        return False, True
+    return target_hit(families, referent), False
+
+
 def target_hit(families: Iterable[str], referent: Iterable[str]) -> bool:
     """Whether a recognised family set intersects a class's declared referent.
 

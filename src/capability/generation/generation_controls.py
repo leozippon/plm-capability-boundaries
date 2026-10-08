@@ -197,6 +197,100 @@ def comparator_table(
 # ------------------------------------------------- duplication, termination, novelty
 
 
+#: An attempt this short is an immediate stop, not a product. Declared because a
+#: native termination at zero or one residue is a decoder that refused to start,
+#: and pooling it with finished products makes truncation look like the only way
+#: generation fails.
+IMMEDIATE_STOP_RESIDUES: int = 1
+
+#: Below this a natively terminated attempt is a finished *fragment* rather than a
+#: domain-sized product. Reported, never used to drop an attempt.
+SHORT_NATIVE_PRODUCT_RESIDUES: int = 50
+
+
+def _censored(row: Mapping[str, Any]) -> bool | None:
+    """Whether one attempt hit the token budget, from the stop accounting alone.
+
+    Deliberately blind to composition. Classifying an attempt by its residues
+    first files a censored attempt that happens to carry a non-canonical residue
+    under its composition instead, which undercounts censoring; the stop reason
+    and the token count are the only evidence about termination.
+    """
+
+    tokens = row.get("generated_tokens")
+    budget = row.get("effective_max_new_tokens")
+    if tokens is not None and budget is not None:
+        return int(tokens) >= int(budget)
+    stop = row.get("decoder_stop")
+    if stop is None:
+        return None
+    return str(stop) not in ("eos", "native_terminal", "stop_string")
+
+
+def _termination(rows: Sequence[Mapping[str, Any]], stops: Counter) -> dict[str, Any]:
+    """Termination behaviour, counted on the stop reason and never on composition."""
+
+    flags = [_censored(row) for row in rows]
+    censored = [row for row, flag in zip(rows, flags) if flag is True]
+    native = [row for row, flag in zip(rows, flags) if flag is False]
+    unknown = sum(1 for flag in flags if flag is None)
+    native_lengths = [int(row["length"]) for row in native]
+    censored_lengths = [int(row["length"]) for row in censored]
+    return {
+        "decoder_stop_counts": dict(sorted(stops.items())),
+        "n_native_delimiter_observed": sum(
+            1 for row in rows if row.get("native_delimiter_observed")
+        ),
+        "n_at_token_budget": len(censored),
+        "n_natively_terminated": len(native),
+        "n_termination_unknown": unknown,
+        "classification_rule": (
+            "an attempt is censored when its generated token count reaches the "
+            "effective budget, otherwise when its stop reason is not a native stop. "
+            "Composition is never consulted: classifying by residues first files a "
+            "censored attempt carrying a non-canonical residue under its composition "
+            "and undercounts censoring"
+        ),
+        "native_products": {
+            "n_immediate_stop_at_or_below": IMMEDIATE_STOP_RESIDUES,
+            "n_immediate_stop": sum(
+                1 for value in native_lengths if value <= IMMEDIATE_STOP_RESIDUES
+            ),
+            "n_below_short_threshold": sum(
+                1 for value in native_lengths if value < SHORT_NATIVE_PRODUCT_RESIDUES
+            ),
+            "short_threshold_residues": SHORT_NATIVE_PRODUCT_RESIDUES,
+            "median_length_residues": (
+                float(np.median(native_lengths)) if native_lengths else None
+            ),
+            "note": (
+                "a native termination at or below one residue is a decoder that "
+                "refused to start, not a product; pooling it with finished products "
+                "makes truncation look like the only failure mode"
+            ),
+        },
+        "censored_products": {
+            "median_length_residues": (
+                float(np.median(censored_lengths)) if censored_lengths else None
+            ),
+        },
+        "length_matched_native_versus_censored": {
+            "supported": False,
+            "reason": (
+                "for pure-protein arms a natively finished product has median length "
+                "about 150-230 residues while a censored one sits at the token budget, "
+                "so the two strata barely overlap in length and a length-matched "
+                "native-versus-censored contrast has essentially no support. No "
+                "endpoint here is stratified that way, and none may be"
+            ),
+        },
+        "note": (
+            "a native end delimiter in the decoded text is not the same event as the "
+            "decoder stopping on its end token; both are counted"
+        ),
+    }
+
+
 def cell_census(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Duplication, termination and novelty of one annotated attempt ledger.
 
@@ -228,23 +322,7 @@ def cell_census(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "largest_exact_duplicate_share": max(counts.values()) / len(rows),
             "n_sequences_seen_more_than_once": sum(1 for value in counts.values() if value > 1),
         },
-        "termination": {
-            "decoder_stop_counts": dict(sorted(stops.items())),
-            "n_native_delimiter_observed": sum(
-                1 for row in rows if row.get("native_delimiter_observed")
-            ),
-            "n_at_token_budget": sum(
-                1
-                for row in rows
-                if row.get("generated_tokens") is not None
-                and row.get("effective_max_new_tokens") is not None
-                and int(row["generated_tokens"]) >= int(row["effective_max_new_tokens"])
-            ),
-            "note": (
-                "a native end delimiter in the decoded text is not the same event as "
-                "the decoder stopping on its end token; both are counted"
-            ),
-        },
+        "termination": _termination(rows, stops),
         "length_residues": {
             "mean": float(lengths.mean()),
             "median": float(np.median(lengths)),
@@ -288,6 +366,10 @@ def census_over_cells(ledgers: Mapping[str, Sequence[Mapping[str, Any]]]) -> dic
         [block["duplication"]["exact_duplication_rate"] for block in per_cell.values()],
         dtype=float,
     )
+    censored = np.asarray(
+        [block["termination"]["n_at_token_budget"] for block in per_cell.values()], dtype=float
+    )
+    attempts = np.asarray([block["n_attempts"] for block in per_cell.values()], dtype=float)
     return {
         "n_cells": len(per_cell),
         "per_cell": per_cell,
@@ -300,7 +382,41 @@ def census_over_cells(ledgers: Mapping[str, Sequence[Mapping[str, Any]]]) -> dic
                     for name, block in per_cell.items()
                     if block["duplication"]["exact_duplication_rate"] > 0.10
                 ),
-            }
+            },
+            "token_budget_censoring": {
+                "mean_attempts_per_cell": float(censored.mean()),
+                "mean_share_per_cell": float((censored / attempts).mean()),
+                "share_of_attempts_pooled": float(censored.sum() / attempts.sum()),
+                "n_cells": len(per_cell),
+                "n_attempts": int(attempts.sum()),
+                "scope_note": (
+                    "the pooled share is dominated by the conditional cells, which "
+                    "carry 3,200 attempts against 800 for an unconditioned cell, so "
+                    "the mean per-cell share is the comparable figure and the cell "
+                    "set is named with it"
+                ),
+                "reading": (
+                    "the share of the published yield's denominator that consists of "
+                    "budget-censored continuations rather than finished products"
+                ),
+            },
+            "native_products": {
+                "n_immediate_stop": sum(
+                    block["termination"]["native_products"]["n_immediate_stop"]
+                    for block in per_cell.values()
+                ),
+                "n_below_short_threshold": sum(
+                    block["termination"]["native_products"]["n_below_short_threshold"]
+                    for block in per_cell.values()
+                ),
+                "cells_whose_native_terminations_are_all_immediate": sorted(
+                    name
+                    for name, block in per_cell.items()
+                    if block["termination"]["n_natively_terminated"] > 0
+                    and block["termination"]["native_products"]["n_immediate_stop"]
+                    == block["termination"]["n_natively_terminated"]
+                ),
+            },
         },
     }
 
@@ -488,18 +604,76 @@ def length_band(
     return low, high
 
 
+def normalise_recognition(
+    rows: Iterable[Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """One recognition shape, whatever spelling the producer used.
+
+    The oracle stage's sidecar writes ``pfam_families`` / ``any_profile_hit``,
+    while the in-memory result of ``family_oracle.recognise`` uses ``families`` /
+    ``any_family``. Reading one shape and being handed the other silently yields
+    all-zero rates -- a comparator that looks measured and is not -- so the two
+    are reconciled in one place and a row carrying neither is refused.
+    """
+
+    normalised: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identifier = str(row["id"])
+        if "families" in row:
+            families = row["families"]
+        elif "pfam_families" in row:
+            families = row["pfam_families"]
+        else:
+            raise ValueError(
+                f"recognition record {identifier!r} carries neither 'families' nor "
+                "'pfam_families'; it is not a recognition record"
+            )
+        families = list(families or ())
+        normalised[identifier] = {
+            "families": families,
+            "any_family": bool(
+                row.get("any_family", row.get("any_profile_hit", bool(families)))
+            ),
+            "complete_domain": bool(row.get("complete_domain", False)),
+            "best_profile_coverage": row.get("best_profile_coverage"),
+        }
+    if not normalised:
+        raise ValueError("no recognition record was supplied")
+    return normalised
+
+
 def natural_recognition_rates(
-    draw: Mapping[str, Any], recognition: Mapping[str, Mapping[str, Any]]
+    draw: Mapping[str, Any],
+    recognition: Mapping[str, Mapping[str, Any]],
+    *,
+    records: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The family-matched ceiling: per class, the rate on real full-length proteins.
 
+    ``records`` carries the drawn sequences. The draw's completion JSON keeps only
+    their accounting -- the records themselves live in the sibling
+    ``natural_family_matched.jsonl`` -- so a caller that has read the JSON must
+    pass them, and a call with neither is refused rather than reporting a ceiling
+    over nothing.
+
     A drawn record the oracle never searched is a defect, not a non-hit, and is
-    refused: the whole point of the arm is that these sequences are real proteins
+    reported: the whole point of the arm is that these sequences are real proteins
     of the requested family, so an unexplained miss means the recognition run and
     the draw are not the same set.
     """
 
-    records = draw["records"]
+    if records is None:
+        records = draw.get("records")
+    if not records:
+        raise ValueError(
+            "the family-matched draw carried no records. The draw's completion JSON "
+            "keeps only the accounting; pass the records from the sibling "
+            "natural_family_matched.jsonl"
+        )
+    # The caller keys by identifier; the record itself need not repeat it.
+    recognition = normalise_recognition(
+        {**row, "id": key} for key, row in recognition.items()
+    )
     unscored = sorted(
         record["id"] for record in records if record["id"] not in recognition
     )

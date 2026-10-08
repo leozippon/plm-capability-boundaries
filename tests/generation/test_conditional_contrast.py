@@ -335,3 +335,119 @@ def test_read_attempts_refuses_duplicate_identifiers(tmp_path):
     )
     with pytest.raises(ValueError, match="duplicate attempt identifiers"):
         cc.read_attempts(path)
+
+
+# ------------------------------------------- the one-sided-stream defect (2026-10-08)
+
+
+def test_a_one_sided_stream_is_refused_and_says_what_to_supply():
+    """The defect that failed `condgen_conditional_endpoint_cpu`.
+
+    Each fresh generation cell carries only the mismatched condition, so a stream
+    label that collects one cell cannot form the paired difference. The refusal
+    must name the conditions it did receive and say that a stream is the set of
+    ledgers carrying both sides, or the next caller repeats the same wiring error.
+    """
+
+    classes = [f"c{index}" for index in range(8)]
+    pairing = {cls: classes[(index + 1) % 8] for index, cls in enumerate(classes)}
+    rows = [
+        row
+        for row in _cells(classes, requested_hits=0, mismatched_hits=3, pairing=pairing)
+        if row["condition"] == "mismatched"
+    ]
+    with pytest.raises(ValueError) as error:
+        cc.arm_contrast(rows, arm="zymctrl", pairing=pairing)
+    message = str(error.value)
+    assert "only one of the two conditions" in message
+    assert "['mismatched']" in message
+    assert "set of ledgers" in message
+
+
+def test_the_two_sides_of_a_stream_may_arrive_in_separate_ledgers():
+    classes = [f"c{index}" for index in range(8)]
+    pairing = {cls: classes[(index + 1) % 8] for index, cls in enumerate(classes)}
+    both = _cells(classes, requested_hits=7, mismatched_hits=1, pairing=pairing)
+    requested = [row for row in both if row["condition"] == "requested"]
+    mismatched = [row for row in both if row["condition"] == "mismatched"]
+    contrast = cc.arm_contrast(requested + mismatched, arm="zymctrl",
+                               pairing=pairing, resamples=200)
+    assert contrast["primary"]["mean"] == pytest.approx(0.6)
+
+
+# ------------------------------------------------- deriving the target hit (2026-10-08)
+
+
+def _profile_row(class_key, families, **overrides):
+    sequence = f"MK{class_key}{families}"
+    row = {
+        "id": f"ge_{class_key}_{families}",
+        "arm": "zymctrl",
+        "class_key": class_key,
+        "condition": "requested",
+        "sequence": sequence,
+        "sequence_sha256": hashlib.sha256(sequence.encode()).hexdigest(),
+        "length": len(sequence),
+        "near_duplicate_group": None,
+        "profile": {"generated": {"families": list(families), "any_family": bool(families)}},
+    }
+    row.update(overrides)
+    return row
+
+
+def test_a_family_only_ledger_gets_its_target_hit_derived():
+    referents = {
+        "c0": {"referent": ("PF00001",), "admitted": True, "label": "c0"},
+        "c1": {"referent": ("PF00002", "PF00003"), "admitted": True, "label": "c1"},
+    }
+    rows = [
+        _profile_row("c0", ["PF00001"]),
+        _profile_row("c0", ["PF09999"]),
+        _profile_row("c1", ["PF00003.7"]),
+    ]
+    filled = cc.derive_target_hits(rows, referents)
+    assert [row["target_profile_hit"] for row in filled] == [True, False, True]
+    assert all(row["target_profile_hit_derived"] for row in filled)
+    assert filled[0]["target_referent"] == ["PF00001"]
+
+
+def test_an_existing_target_hit_is_never_overwritten():
+    referents = {"c0": {"referent": ("PF00001",), "admitted": True, "label": "c0"}}
+    row = _profile_row("c0", ["PF09999"], target_profile_hit=True)
+    filled = cc.derive_target_hits([row], referents)
+    assert filled[0]["target_profile_hit"] is True
+    assert "target_profile_hit_derived" not in filled[0]
+
+
+def test_an_empty_referent_derives_a_non_hit_and_is_marked():
+    referents = {"c0": {"referent": (), "admitted": False, "label": "c0"}}
+    filled = cc.derive_target_hits([_profile_row("c0", ["PF00001"])], referents)
+    assert filled[0]["target_profile_hit"] is False
+    assert filled[0]["target_referent_empty"] is True
+
+
+def test_a_row_with_no_recognition_and_no_referent_is_left_alone():
+    row = {"id": "ge_x", "arm": "zymctrl", "class_key": "zz", "condition": "requested",
+           "sequence": "MKV", "sequence_sha256": "x", "length": 3}
+    filled = cc.derive_target_hits([row], {})
+    assert filled[0].get("target_profile_hit") is None
+
+
+# ----------------------------------------------------- grouping provenance (2026-10-08)
+
+
+def test_the_collapsed_estimator_records_which_grouping_it_used():
+    declared = [
+        _row(id=f"ge_{index}", sequence=f"MK{index}", near_duplicate_group="g0",
+             target_profile_hit=True)
+        for index in range(4)
+    ]
+    assert cc.cell_rates(declared)["grouping_source"] == "near_duplicate_group"
+    assert cc.cell_rates(declared)["grouped_rate"] == pytest.approx(1.0)
+    undeclared = [
+        _row(id=f"ge_{index}", sequence=f"MK{index}", target_profile_hit=True)
+        for index in range(4)
+    ]
+    assert cc.cell_rates(undeclared)["grouping_source"] == "exact_sequence_digest"
+    mixed = declared[:2] + undeclared[2:]
+    assert cc.cell_rates(mixed)["grouping_source"] == "mixed"

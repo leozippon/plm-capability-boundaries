@@ -202,18 +202,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             referent = referents[arm][class_key]["referent"]
             record["target_referent"] = list(referent)
             record["target_class_admitted"] = referents[arm][class_key]["admitted"]
-            if referent:
-                record["target_profile_hit"] = fo.target_hit(block["families"], referent)
-                record["target_referent_empty"] = False
-            else:
-                # A class whose referent draw carried no Pfam family has no profile set
-                # the oracle could assign to, so nothing can hit it. The frozen
-                # 2026-09-05 run recorded such a class as a non-hit rather than as
-                # unscored, and that convention is reproduced here so the two
-                # artefacts aggregate the same support. The marker is what lets the
-                # admitted support drop the class instead of crediting it with a zero.
-                record["target_profile_hit"] = False
-                record["target_referent_empty"] = True
+            hit, empty = fo.target_hit_for_class(block["families"], referent)
+            record["target_profile_hit"] = hit
+            record["target_referent_empty"] = empty
         annotations.append(record)
 
     sidecar = args.out / "family_recognition.jsonl"

@@ -15,12 +15,24 @@ attempt versus one unit per near-duplicate group), and neither is a correction o
 the other. The resampling unit is the class and the interval comes from the
 package's one class-clustered resampler; no bootstrap is written here.
 
-Several ledgers may be supplied. One ledger per campaign stream gives a
-within-stream class-clustered interval per stream plus an equal-weight Student-t
-summary across streams, which is the replication campaign's own declared
-uncertainty rule. ZymCTRL and ProLLaMA are reported side by side and are never
-pooled or differenced: they are asked for different kinds of class through
-different oracles.
+A **stream** is the set of ledgers that together carry both sides of the
+difference for one sampling stream, and ``--ledger <stream>:<path>`` is how it is
+declared. This matters because the generation cells are one-sided: the
+replication campaign sampled only the requested condition, and the cells that
+sampled the missing mismatched side are separate files. A stream label that
+collects only one condition cannot form a within-class paired difference and is
+refused, naming what is missing, rather than quietly reporting a one-sided rate.
+
+Each stream yields a within-stream class-clustered interval; across streams the
+summary is an equal-weight Student-t interval at the stream as the unit, which is
+the replication campaign's own declared uncertainty rule. ZymCTRL and ProLLaMA
+are reported side by side and are never pooled or differenced: they are asked for
+different kinds of class through different oracles.
+
+Ledgers that carry only an oracle family set and no ``target_profile_hit`` -- the
+replication campaign's own annotated attempts, which predate any mismatched cell
+-- have it derived from the frozen class-to-Pfam referent through the one shared
+definition in ``family_oracle.target_hit_for_class``.
 """
 
 from __future__ import annotations
@@ -79,6 +91,17 @@ def _join_recognition(rows: list[dict[str, Any]], sidecars: list[Path]) -> list[
     return joined
 
 
+def _parse_ledger(value: str) -> tuple[str, Path]:
+    stream, separator, path = value.partition(":")
+    if not separator or not stream or not path:
+        raise SystemExit(
+            f"--ledger takes stream:path, got {value!r}; the stream label is explicit "
+            "so a stream is never inferred from a path, and both the requested and the "
+            "mismatched ledgers of one sampling stream carry the same label"
+        )
+    return stream, Path(path)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     queue = cg.load_queue(args.queue)
     referents: dict[str, dict[str, Any]] = {}
@@ -87,33 +110,63 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         arm = str(payload.get("arm") or path.stem)
         referents[arm] = fo.class_referents(payload)
 
-    if len(args.attempts) != len(args.stream):
-        raise SystemExit(
-            f"{len(args.attempts)} ledgers and {len(args.stream)} stream labels; one "
-            "label per ledger is required so a stream is never inferred from a path"
+    by_stream: dict[str, list[Path]] = defaultdict(list)
+    for value in args.ledger:
+        stream, path = _parse_ledger(value)
+        by_stream[stream].append(path)
+
+    # The unconditioned floor arms were sampled once, under no class request, and the
+    # campaign that declared this endpoint read one floor measurement from both
+    # conditioned arms. Supplying it here lets a stream that contains only conditioned
+    # cells still answer clause 2; the floor is shared across streams rather than
+    # resampled per stream, and the artefact says so.
+    floor_rows: list[dict[str, Any]] = []
+    floor_inputs: list[dict[str, Any]] = []
+    for path in args.floor_ledger:
+        block = cc.read_attempts(path)
+        floor_rows.extend(block)
+        floor_inputs.append(
+            {
+                "path": str(path),
+                "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                "n_records": len(block),
+            }
         )
 
     streams: dict[str, dict[str, Any]] = {}
     inputs: list[dict[str, Any]] = []
-    for ledger, stream in zip(args.attempts, args.stream):
-        rows = cc.read_attempts(ledger)
+    for stream, paths in sorted(by_stream.items()):
+        rows: list[dict[str, Any]] = []
+        for path in paths:
+            block = cc.read_attempts(path)
+            inputs.append(
+                {
+                    "stream": stream,
+                    "path": str(path),
+                    "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                    "n_records": len(block),
+                }
+            )
+            rows.extend(block)
+        identifiers = [str(row["id"]) for row in rows]
+        if len(set(identifiers)) != len(identifiers):
+            raise SystemExit(
+                f"stream {stream!r} collects ledgers that share attempt identifiers; "
+                "the same attempt cannot enter one stream twice"
+            )
         rows = _join_recognition(rows, args.recognition)
-        inputs.append(
-            {
-                "stream": stream,
-                "path": str(ledger),
-                "sha256": hashlib.sha256(Path(ledger).read_bytes()).hexdigest(),
-                "n_records": len(rows),
-            }
-        )
         per_arm: dict[str, Any] = {}
         for arm in sorted({str(row.get("arm")) for row in rows} & set(queue["arms"])):
-            if not any(
-                row.get("arm") == arm and row.get("condition") in cc.CONDITIONS for row in rows
-            ):
+            selected = [
+                row
+                for row in rows
+                if row.get("arm") == arm and row.get("condition") in cc.CONDITIONS
+            ]
+            if not selected:
                 continue
+            selected = cc.derive_target_hits(selected, referents.get(arm, {}))
             per_arm[arm] = cc.arm_contrast(
-                rows,
+                selected,
                 arm=arm,
                 pairing=cc.pairing_from_queue(queue, arm),
                 referents=referents.get(arm),
@@ -123,10 +176,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         if not per_arm:
             raise SystemExit(
-                f"{ledger} carries no requested or mismatched cell of a queued arm"
+                f"stream {stream!r} carries no requested or mismatched cell of a queued arm"
             )
         floors = {
-            arm: cc.floor_rates(rows, referents=referents.get(arm)) for arm in per_arm
+            arm: cc.floor_rates(rows + floor_rows, referents=referents.get(arm))
+            for arm in per_arm
         }
         for arm, contrast in per_arm.items():
             relevant = {
@@ -135,7 +189,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if name in cg.FLOORS.get(arm, ())
             }
             contrast["verdict"] = cc.arm_verdict(contrast, floor=relevant)
-        streams[stream] = {"arms": per_arm, "floors": floors}
+        streams[stream] = {
+            "arms": per_arm,
+            "floors": floors,
+            "ledgers": [str(path) for path in paths],
+        }
 
     by_arm: dict[str, dict[str, Any]] = defaultdict(dict)
     for stream, payload in streams.items():
@@ -150,6 +208,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "ci95": contrast["primary"]["ci95"],
                     "n_classes": contrast["primary"]["n_classes"],
                     "verdict": contrast["verdict"]["outcome"],
+                    "grouping_source": sorted(
+                        {
+                            block["conditions"][cond]["grouping_source"]
+                            for block in contrast["per_class"].values()
+                            for cond in cc.CONDITIONS
+                        }
+                    ),
                 }
                 for stream, contrast in sorted(per_stream.items())
             },
@@ -179,6 +244,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "class are assigned to c. Aggregated as an equal-weight mean over classes "
             "with the class as the resampling unit"
         ),
+        "stream_definition": (
+            "a stream is the set of ledgers that together carry both conditions of one "
+            "sampling stream; the across-stream interval treats the stream as the unit"
+        ),
         "primary_convention": {
             "support": cc.PRIMARY_SUPPORT,
             "estimator": cc.PRIMARY_ESTIMATOR,
@@ -189,13 +258,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "is not superseded"
             ),
         },
+        "grouping_note": (
+            "the collapsed estimator uses the near-duplicate group where a ledger "
+            "declares one and the exact sequence digest otherwise; grouping_source "
+            "records which, per stream"
+        ),
         "hit_field": args.hit_field,
         "resamples": int(args.resamples),
         "bootstrap_seed": int(args.bootstrap_seed),
         "resampling_unit": "the class",
         "queue_digest": queue["digest"],
+        "streams": {stream: payload["ledgers"] for stream, payload in sorted(streams.items())},
         "inputs": inputs,
         "anchors": [str(path) for path in args.anchors],
+        "floor_ledgers": floor_inputs,
+        "floor_is_shared_across_streams": bool(floor_inputs),
+        "floor_note": (
+            "the unconditioned floor arms were sampled once under no class request; "
+            "clause 2 reads that one measurement from every stream rather than "
+            "resampling a floor per stream"
+        ),
         "recognition_sidecars": [str(path) for path in args.recognition],
         "arms": sorted(by_arm),
         "panel": panel,
@@ -208,10 +290,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--attempts", type=Path, nargs="+", required=True,
-                        help="attempt ledgers, one per campaign stream")
-    parser.add_argument("--stream", nargs="+", required=True,
-                        help="one stream label per --attempts ledger")
+    parser.add_argument("--ledger", nargs="+", required=True,
+                        help="stream:path pairs; all ledgers of one sampling stream share its label")
+    parser.add_argument("--floor-ledger", type=Path, nargs="*", default=[],
+                        help="ledgers carrying the unconditioned floor arms, read by every stream")
     parser.add_argument("--recognition", type=Path, nargs="*", default=[],
                         help="family_recognition.jsonl sidecars for ledgers that carry no recognition")
     parser.add_argument("--anchors", type=Path, nargs="*", default=[],

@@ -107,16 +107,28 @@ def run_table(args: argparse.Namespace) -> dict[str, Any]:
         if args.natural_draw is None:
             raise SystemExit("--natural-recognition needs the --natural-draw it was scored from")
         draw = json.loads(args.natural_draw.read_text(encoding="utf-8"))
+        # The draw's completion JSON keeps the accounting; the drawn sequences are in
+        # the sibling records file, which is what the oracle was actually given.
+        records_path = args.natural_draw_records or (args.natural_draw.parent / DRAW_RECORDS)
+        if not records_path.is_file():
+            raise SystemExit(
+                f"{records_path} does not exist. --natural-draw names the draw's "
+                "completion JSON, whose drawn sequences live beside it in "
+                f"{DRAW_RECORDS}; pass --natural-draw-records if it sits elsewhere"
+            )
+        records = gcx.read_jsonl(records_path)
         recognition = {
-            str(row["id"]): row
-            for row in gcx.read_jsonl(args.natural_recognition)
+            str(row["id"]): row for row in gcx.read_jsonl(args.natural_recognition)
         }
-        family_matched = gcx.natural_recognition_rates(draw, recognition)
+        family_matched = gcx.natural_recognition_rates(draw, recognition, records=records)
         family_matched["draw"] = {
             "path": str(args.natural_draw),
             "sha256": hashlib.sha256(args.natural_draw.read_bytes()).hexdigest(),
+            "records_path": str(records_path),
+            "records_sha256": hashlib.sha256(records_path.read_bytes()).hexdigest(),
             "n_drawn": draw["n_drawn"],
             "draw_seed": draw["draw_seed"],
+            "classes_without_referent": draw.get("classes_without_referent"),
         }
 
     verdict = {
@@ -251,6 +263,8 @@ def main() -> None:
     parser.add_argument("--draw-seed", type=int, default=gcx.DRAW_SEED)
     parser.add_argument("--length-tolerance", type=float, default=gcx.LENGTH_MATCH_TOLERANCE)
     parser.add_argument("--natural-draw", type=Path, default=None)
+    parser.add_argument("--natural-draw-records", type=Path, default=None,
+                        help=f"the drawn sequences; defaults to {DRAW_RECORDS} beside --natural-draw")
     parser.add_argument("--natural-recognition", type=Path, default=None,
                         help="family_recognition.jsonl for the family-matched draw")
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")
