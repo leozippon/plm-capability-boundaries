@@ -50,6 +50,10 @@ if str(ROOT) not in sys.path:
 
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.interactions import generated_mutation as gm  # noqa: E402
+from src.capability.interactions.contact_enrichment import (  # noqa: E402
+    ADDITIVE_RESPONSE_BINS,
+    cross_fit_binned_residuals,
+)
 from src.capability.position.contact_response import ProfileAccumulator  # noqa: E402
 
 COMPLETION = "generated_mutation_analysis.json"
@@ -72,7 +76,121 @@ def _site_of(label: str) -> int:
     return int(label[1:-1]) - 1
 
 
-def analyse_arm(extraction: gm.Extraction, assays: dict, *, draws: int, seed: int) -> dict:
+def profile_control_block(rows: list, strata: list, control: dict, assays: dict, contrasts,
+                          *, draws: int, seed: int) -> dict:
+    """The evolutionary-profile control, three ways, with its own support counts.
+
+    The asymmetry this controls for is real and not subtle: a natural protein has
+    relatives in a sequence corpus and a generated product mostly does not, so
+    "the model responds less to mutating a generated protein" could simply be
+    "the model has no family knowledge to lose". Three readings, in increasing
+    strength and decreasing support:
+
+    *retrievability* quotes the control stage's own census, which is the
+    measurement that the asymmetry exists at all;
+
+    *the channel itself* is the generated-minus-natural contrast of the
+    mutation-local LOOKUP score -- if the evolutionary statistic does not differ
+    between the origins, it cannot explain a difference in likelihood response;
+
+    *both without a profile* re-estimates every primary endpoint on the pairs
+    where **neither** member has a retrievable profile. A likelihood contrast
+    that survives there is not an evolutionary-retrieval effect, and this is the
+    cleanest of the three because it removes the channel rather than adjusting
+    for it;
+
+    *LOOKUP-adjusted* residualises each endpoint on the mutation-local LOOKUP
+    score with the project's own leave-one-group-out binned residualizer. It is
+    reported last and with its support, because it is defined only where a
+    LOOKUP score exists, which is exactly where the asymmetry is weakest.
+    """
+
+    scores = {
+        (row["sequence_id"], row["mutation"]): row["lookup_score_nats"]
+        for row in control["mutations"]
+    }
+    profiled = {
+        row["sequence_id"]: row["profile"] is not None for row in control["sequences"]
+    }
+    for row in rows:
+        row["lookup_score_nats"] = scores.get((row["sequence_id"], row["mutation"]))
+
+    both_absent = {
+        identity
+        for identity in profiled
+        if not profiled[identity]
+        and not profiled.get(assays.get(identity, {}).get("paired_with"), True)
+    }
+    block: dict = {
+        "retrievability": control.get("summary"),
+        "lookup_score_nats": gm.paired_origin_contrast(
+            rows, value="lookup_score_nats", draws=draws, seed=seed
+        ),
+        "sequences_with_a_profile": {
+            origin: sum(
+                1 for row in control["sequences"]
+                if row["origin"] == origin and row["profile"] is not None
+            )
+            for origin in gm.ORIGINS
+        },
+    }
+    block["lookup_score_nats"]["precision"] = gm.precision_record(
+        block["lookup_score_nats"]["difference"]
+    )
+
+    without = [row for row in rows if row["sequence_id"] in both_absent]
+    block["both_without_profile"] = dict(
+        contrasts(without, [row for row in strata if row["sequence_id"] in both_absent]),
+        sequences=len(both_absent),
+        reading=(
+            "neither member of these pairs has a retrievable evolutionary profile, so a "
+            "contrast here cannot be an evolutionary-retrieval effect"
+        ),
+    ) if both_absent else {
+        "undefined": "no matched pair has both members without a retrievable profile"
+    }
+
+    scored = [row for row in rows if row.get("lookup_score_nats") is not None]
+    if len({row["group"] for row in scored}) >= 2:
+        covariate = np.asarray([row["lookup_score_nats"] for row in scored], dtype=np.float64)
+        groups = np.asarray([row["group"] for row in scored])
+        adjusted = {}
+        for endpoint in SCALAR_ENDPOINTS + ALIGNED_ENDPOINTS:
+            usable = [row for row in scored if row[endpoint] is not None]
+            if len({row["group"] for row in usable}) < 2:
+                adjusted[endpoint] = {"undefined": "too few groups carry this endpoint"}
+                continue
+            mask = np.asarray([row[endpoint] is not None for row in scored])
+            residual = cross_fit_binned_residuals(
+                covariate[mask],
+                np.asarray([row[endpoint] for row in usable], dtype=np.float64),
+                groups[mask],
+                ADDITIVE_RESPONSE_BINS,
+            )
+            shaped = [dict(row, residual=float(value)) for row, value in zip(usable, residual)]
+            estimate = gm.paired_origin_contrast(
+                shaped, value="residual", draws=draws, seed=seed
+            )
+            estimate["precision"] = gm.precision_record(estimate["difference"])
+            estimate["mutations"] = len(usable)
+            adjusted[endpoint] = estimate
+        block["lookup_adjusted"] = dict(
+            adjusted,
+            bins=ADDITIVE_RESPONSE_BINS,
+            method=(
+                "endpoint minus the mean endpoint of its LOOKUP-score quantile bin, the "
+                "curve fit on every independence group except the row's own"
+            ),
+        )
+    else:
+        block["lookup_adjusted"] = {
+            "undefined": "fewer than two independence groups carry a LOOKUP score"
+        }
+    return block
+
+
+def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
+                *, draws: int, seed: int) -> dict:
     """Every endpoint of one arm over the whole cohort."""
 
     per_mutation: list[dict] = []
@@ -228,6 +346,18 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, *, draws: int, seed: in
             extraction.completion["totals"]["retention_max_abs_nats"]
         ),
         "primary": contrasts(per_mutation, stratum_rows),
+        "profile_control": (
+            profile_control_block(
+                per_mutation, stratum_rows, control, assays, contrasts, draws=draws, seed=seed
+            )
+            if control is not None
+            else {
+                "undefined": (
+                    "no evolutionary-profile control was supplied; the generated-versus-natural "
+                    "contrast is therefore not controlled for sequence retrievability"
+                )
+            }
+        ),
         "non_degenerate": dict(
             contrasts(
                 [row for row in per_mutation if row["sequence_id"] in non_degenerate],
@@ -248,6 +378,9 @@ def main() -> None:
                         help="the singles cohort this extraction was run on")
     parser.add_argument("--archives", type=Path, nargs="+", required=True,
                         help="one completed extraction directory per arm")
+    parser.add_argument("--profile-control", type=Path,
+                        help="the evolutionary-profile control table "
+                             "(measure_generated_profile_control.py)")
     parser.add_argument("--draws", type=int, default=gm.BOOTSTRAP_DRAWS)
     parser.add_argument("--seed", type=int, default=gm.BOOTSTRAP_SEED)
     parser.add_argument("--device", default="cpu",
@@ -265,10 +398,19 @@ def main() -> None:
     if len(assays) != len(cohort["assays"]):
         raise SystemExit("the cohort carries a duplicate assay identity")
 
+    control = None
+    if args.profile_control is not None:
+        control = json.loads(Path(args.profile_control).read_text())
+        if control.get("schema") != "generated_profile_control_v1":
+            raise SystemExit(f"{args.profile_control}: unexpected schema")
+        summary = Path(args.profile_control).parent / "generated_profile_control.json"
+        if summary.is_file():
+            control["summary"] = json.loads(summary.read_text())["summary"]
+
     arms = []
     for root in args.archives:
         extraction = gm.open_extraction(root)
-        arms.append(analyse_arm(extraction, assays, draws=args.draws, seed=args.seed))
+        arms.append(analyse_arm(extraction, assays, control, draws=args.draws, seed=args.seed))
     if len({record["arm"] for record in arms}) != len(arms):
         raise SystemExit("two extraction directories report the same arm")
 
@@ -301,6 +443,12 @@ def main() -> None:
             "subset of the mutations; the retained share travels with the estimate.",
             "Intervals condition on the extracted likelihoods and omit generation, sampling "
             "and checkpoint variation.",
+            "If a generated product has no retrievable evolutionary profile at all, then "
+            "'adjust the contrast for the mutation-local evolutionary statistic' is not a "
+            "well-posed operation -- the covariate does not exist on one arm of a paired "
+            "comparison, and the LOOKUP-adjusted block reports that rather than a number. "
+            "The well-posed control in that case is the restriction to pairs where neither "
+            "member has a profile, whose support is reported with it.",
         ],
         "code_sha256": {
             name: sha256_file(ROOT / name)

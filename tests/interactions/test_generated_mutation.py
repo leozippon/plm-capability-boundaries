@@ -164,6 +164,63 @@ def test_length_matching_is_one_to_one_inside_the_caliper():
         assert abs(row["length_delta"]) <= caliper
 
 
+def test_a_byte_identical_pool_entry_cannot_become_two_comparators():
+    # Swiss-Prot is non-redundant per entry and not per sequence: one protein can
+    # appear many times. Drawing records rather than distinct sequences gave two
+    # generated products the same comparator under one content identity, which is
+    # the cohort defect this test exists to make impossible.
+    twin = SEQ_B[:70]
+    generated = [_record("ge_1", SEQ_A[:70]), _record("ge_2", SEQ_A[:70])]
+    pool = [twin, twin, twin, SEQ_B[:69] + "W"]
+    matched = gm.match_natural(generated, pool)
+    sequences = [row["sequence"] for row in matched["matched"]]
+    identities = [row["id"] for row in matched["matched"]]
+    assert len(set(sequences)) == len(sequences)
+    assert len(set(identities)) == len(identities)
+    assert matched["balance"]["pool_records"] == 4
+    assert matched["balance"]["pool_distinct_sequences"] == 2
+    assert matched["balance"]["pool_duplicate_records_removed"] == 2
+
+
+def test_duplicate_assay_identities_are_refused_at_the_producer():
+    rows = [
+        gm.cohort_assay(assay="x", wildtype=SEQ_A, mutants=["A1G"],
+                        sequences=[gm.apply_substitutions(SEQ_A, {0: "G"})], cluster="g"),
+        gm.cohort_assay(assay="x", wildtype=SEQ_A, mutants=["A1W"],
+                        sequences=[gm.apply_substitutions(SEQ_A, {0: "W"})], cluster="g"),
+    ]
+    gm.require_unique_assays(rows[:1])
+    with pytest.raises(ValueError, match="not unique"):
+        gm.require_unique_assays(rows)
+
+
+def test_a_built_singles_cohort_has_unique_identities_against_a_redundant_pool(tmp_path):
+    # End to end through the builder's own singles path, with a pool deliberately
+    # made as redundant as the real corpus is.
+    records = [
+        _record(f"ge_{index:02d}", SEQ_A[: 60 + index], stage=stage, stream=stream)
+        for stage in ("stage_1", "stage_2")
+        for stream in ("a", "b")
+        for index in range(3)
+    ]
+    pool = []
+    for index in range(3):
+        pool.extend([SEQ_B[: 60 + index]] * 5)
+    matched = gm.match_natural(records[:3], pool)
+    assays = []
+    for row in records[:3]:
+        partner = next(p for p in matched["matched"] if p["matched_to"] == row["id"])
+        for identity, sequence in ((row["id"], row["sequence"]),
+                                   (partner["id"], partner["sequence"])):
+            scan = gm.scan_mutations(sequence, sites=2, subs=1)
+            assays.append(gm.cohort_assay(
+                assay=identity, wildtype=sequence,
+                mutants=[item["label"] for item in scan],
+                sequences=[item["sequence"] for item in scan], cluster="g"))
+    gm.require_unique_assays(assays)
+    assert len({row["assay"] for row in assays}) == len(assays)
+
+
 def test_length_matching_reports_a_generated_product_it_cannot_match():
     generated = [_record("ge_long", SEQ_A), _record("ge_short", SEQ_A[:45])]
     matched = gm.match_natural(generated, [SEQ_A[:45]])

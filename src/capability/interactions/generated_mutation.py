@@ -217,7 +217,16 @@ def stratified_subsample(
 
 
 def natural_identity(sequence: str) -> str:
-    """A content identity for a natural partner, so a cohort row is reproducible."""
+    """A content identity for a natural partner, so a cohort row is reproducible.
+
+    Content-derived, which makes it reproducible and makes two byte-identical
+    natural records *the same* row rather than two rows. That is the right
+    semantics and it is why :func:`match_natural` draws from distinct sequences:
+    Swiss-Prot is non-redundant per entry and not per sequence, so a pool of
+    387,931 eligible records in the 39-408 band carries only 316,900 distinct
+    sequences, one of them 63 times. Drawing records would hand two generated
+    products the same protein under one identity.
+    """
 
     return "nat_" + hashlib.sha256(sequence.encode()).hexdigest()[:20]
 
@@ -227,18 +236,28 @@ def match_natural(
 ) -> dict[str, Any]:
     """One natural partner per generated product, matched on length, without reuse.
 
-    The pool is permuted once under the declared seed and bucketed by length, so
-    which natural record fills a length is a function of the seed and not of the
-    file order. Partners are assigned shortest-generated-first, which is where the
-    caliper binds: a 40-residue product has far fewer admissible partners than a
+    The pool is reduced to its **distinct sequences**, permuted once under the
+    declared seed and bucketed by length, so which natural protein fills a length
+    is a function of the seed and not of the file order. Distinct sequences rather
+    than records because the comparator is a protein, not a database entry: two
+    byte-identical Swiss-Prot entries are one protein sequenced in two strains,
+    ``near_duplicate_groups`` would put them in one independence group anyway, and
+    drawing both would give two generated products the same comparator under one
+    content identity. The two invariants this function owns -- one natural protein
+    serves at most one generated product, and the partners carry distinct
+    identities -- are asserted before it returns.
+
+    Partners are assigned shortest-generated-first, which is where the caliper
+    binds: a 40-residue product has far fewer admissible partners than a
     400-residue one, and serving the scarce end first keeps a failure to match
     from being pushed onto the short products as a group.
     """
 
+    distinct: list[str] = list(dict.fromkeys(str(record) for record in pool))
     buckets: dict[int, list[int]] = {}
-    order = _rng("natural-pool", len(pool)).permutation(len(pool))
+    order = _rng("natural-pool", len(distinct)).permutation(len(distinct))
     for position in order:
-        buckets.setdefault(len(pool[int(position)]), []).append(int(position))
+        buckets.setdefault(len(distinct[int(position)]), []).append(int(position))
     used: set[int] = set()
     matched: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
@@ -260,7 +279,7 @@ def match_natural(
             unmatched.append({"id": row["id"], "length": length, "caliper": caliper})
             continue
         used.add(partner)
-        sequence = pool[partner]
+        sequence = distinct[partner]
         matched.append(
             {
                 "id": natural_identity(sequence),
@@ -271,6 +290,14 @@ def match_natural(
                 "pool_position": partner,
             }
         )
+    sequences = [row["sequence"] for row in matched]
+    identities = [row["id"] for row in matched]
+    if len(set(sequences)) != len(sequences) or len(set(identities)) != len(identities):
+        raise AssertionError(
+            "match_natural returned a reused natural protein; the pool is drawn from "
+            "distinct sequences without replacement, so this cannot happen and a cohort "
+            "must not be written from it"
+        )
     deltas = [abs(int(row["length_delta"])) for row in matched]
     return {
         "matched": sorted(matched, key=lambda row: row["matched_to"]),
@@ -279,6 +306,9 @@ def match_natural(
             "pairs": len(matched),
             "unmatched_generated": len(unmatched),
             "pool_records": len(pool),
+            "pool_distinct_sequences": len(distinct),
+            "pool_duplicate_records_removed": len(pool) - len(distinct),
+            "draw": "distinct eligible sequences, without replacement",
             "mean_absolute_length_delta_residues": float(np.mean(deltas)) if deltas else None,
             "max_absolute_length_delta_residues": int(max(deltas)) if deltas else None,
             "caliper_rule": (
@@ -657,6 +687,38 @@ def cohort_assay(
     }
     row.update(dict(extra or {}))
     return row
+
+
+def require_unique_assays(assays: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a cohort whose consumer would refuse it, at the producer.
+
+    ``extract_position_likelihood.select_assays`` rejects a duplicate assay
+    identity, and it is right to. But a builder that can emit such a cohort is
+    the defect and the consumer's guard is only the symptom: the cell dies after
+    the campaign has been frozen, pushed and scheduled, which is the most
+    expensive place to find it. This is the producer-side half of that contract,
+    called by every mode before a cohort is written, and it names the colliding
+    identities and the sequences behind them so the cause is readable without
+    reopening the file.
+    """
+
+    seen: dict[str, list[str]] = {}
+    for row in assays:
+        seen.setdefault(str(row["assay"]), []).append(str(row["wildtype"]))
+    collisions = {
+        assay: wildtypes for assay, wildtypes in seen.items() if len(wildtypes) > 1
+    }
+    if collisions:
+        detail = ", ".join(
+            f"{assay} x{len(wildtypes)}"
+            f"{' (identical sequences)' if len(set(wildtypes)) == 1 else ' (different sequences)'}"
+            for assay, wildtypes in sorted(collisions.items())[:8]
+        )
+        raise ValueError(
+            f"{len(collisions)} assay identities are not unique: {detail}. A cohort with a "
+            "repeated identity would be refused by the extraction stage, and the duplicate "
+            "would also mean one comparator serving two rows."
+        )
 
 
 # --------------------------------------------------------------- stage plumbing

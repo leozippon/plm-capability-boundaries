@@ -391,6 +391,9 @@ def main() -> None:
 
     out = gm.prepare_output_directory(args.out, COMPLETION)
     built = {"singles": build_singles, "pairs": build_pairs, "cycles": build_cycles}[args.mode](args)
+    # The producer's half of the identity contract: every mode passes through here,
+    # so no cohort this builder writes can be one the extraction stage refuses.
+    gm.require_unique_assays(built["assays"])
 
     sources = {}
     for name, path in (("generated", args.generated), ("pairwise_cohort", args.pairwise_cohort)):
