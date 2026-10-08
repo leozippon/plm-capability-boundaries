@@ -17,6 +17,8 @@ Four stages, in this order. Each takes `--device` and `--out`, takes every other
 
 The fit stage re-derives each cohort's support from the same readers and refuses to run unless the re-derived row digest equals the one the admission recorded. A fit therefore cannot quietly run on a support the admission never saw.
 
+All four share one output-directory contract, `prepare_output`. A missing directory is created and an existing *empty* one is accepted, because the campaign queue does its own `mkdir -p` and then injects the directory as `--out`: under the runner the output directory always exists and is always empty when a cell starts, so a guard on existence would refuse every normal cell and nothing else. What is refused is content, which is the actual evidence of prior work — a present completion record, reported as a previous run having finished there, or any other content, reported as a previous run having written there without completing. Both exit non-zero naming the path. There is no override flag: resuming is the queue's own skip-complete behaviour, which reads exactly the completion record this guard refuses to write over.
+
 ## The admission discipline
 
 **The independent unit is a sequence-homology group**, at the frozen rule of 30% identity over 80% of both sequences with at least thirty paired residues, plus exact and containment identity. Assay files, genes, PDB complexes, score sets, conditions and exact-sequence components are not families and are never counted as such. The grouping instrument is the committed exact aligner, so every cohort's independence is measured the same way.

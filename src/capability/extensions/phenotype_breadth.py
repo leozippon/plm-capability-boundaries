@@ -160,6 +160,43 @@ def stable_draw_key(*parts: str) -> int:
     return int.from_bytes(digest[:8], 'big')
 
 
+def prepare_output(out, completion: str) -> Path:
+    """Accept a fresh or empty output directory; refuse one that holds prior work.
+
+    What has to be prevented is a run merging into, or silently overwriting, the
+    output of a previous run. Directory *existence* does not identify that case:
+    the campaign queue creates the output directory itself and then injects it as
+    ``--out``, so under the runner the directory always exists and is always
+    empty when a cell starts. A guard on existence would refuse every normal cell
+    and nothing else.
+
+    The evidence of prior work is content. A present completion record is the
+    unambiguous signal that a run already finished here and is reported as such;
+    any other content means a run has already written into this directory, and a
+    second one would interleave with it. Both are refused loudly, naming the
+    path. There is deliberately no override flag: resuming is the queue's own
+    skip-complete behaviour, which reads exactly the completion record this
+    function refuses to write over.
+    """
+
+    out = Path(out).resolve()
+    if out.exists():
+        if not out.is_dir():
+            raise ValueError(f'output path exists and is not a directory: {out}')
+        if (out / completion).exists():
+            raise ValueError(
+                f'refusing to write where a previous run already completed: {out} holds '
+                f'{completion}')
+        existing = sorted(entry.name for entry in out.iterdir())
+        if existing:
+            raise ValueError(
+                f'refusing a non-empty output directory: {out} already holds {len(existing)} '
+                f'entries, first {existing[0]!r}; a previous run wrote here without completing '
+                'and this run would interleave with it')
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 @dataclass(frozen=True)
 class PhenotypeRow:
     """One measured single substitution of one background, with its identity.

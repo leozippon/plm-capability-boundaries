@@ -469,3 +469,67 @@ def test_a_background_spanning_two_independent_groups_is_a_defect():
     others = [row for row in rows if row.unit not in {rows[0].unit, rows[-1].unit}]
     with pytest.raises(ValueError, match='span more than one independent group'):
         breadth.qualify(cohort_of(others + crossed), RUNTIME)
+
+
+# --------------------------------------------------------------------------- #
+# The output-directory contract the campaign runner imposes
+# --------------------------------------------------------------------------- #
+
+COMPLETION = 'phenotype_scoring.json'
+
+
+def test_a_missing_output_directory_is_created(tmp_path):
+    target = tmp_path / 'fresh' / 'cell'
+    out = breadth.prepare_output(target, COMPLETION)
+    assert out == target.resolve() and out.is_dir()
+    assert not any(out.iterdir())
+
+
+def test_an_existing_empty_output_directory_is_accepted(tmp_path):
+    # This is the normal case under the campaign queue: the runner does its own
+    # mkdir -p and then injects the directory as --out, so a guard on existence
+    # would refuse every cell.
+    target = tmp_path / 'cell'
+    target.mkdir()
+    assert breadth.prepare_output(target, COMPLETION) == target.resolve()
+    # Idempotent: preparing the same empty directory twice is still accepted.
+    assert breadth.prepare_output(target, COMPLETION) == target.resolve()
+
+
+def test_a_directory_holding_the_completion_artifact_is_refused(tmp_path):
+    target = tmp_path / 'cell'
+    target.mkdir()
+    (target / COMPLETION).write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError, match='a previous run already completed') as error:
+        breadth.prepare_output(target, COMPLETION)
+    assert str(target.resolve()) in str(error.value)
+    assert COMPLETION in str(error.value)
+
+
+def test_a_directory_holding_an_incomplete_previous_run_is_refused(tmp_path):
+    target = tmp_path / 'cell'
+    (target / 'nested').mkdir(parents=True)
+    with pytest.raises(ValueError, match='non-empty output directory') as error:
+        breadth.prepare_output(target, COMPLETION)
+    assert str(target.resolve()) in str(error.value)
+    # The refusal says why: merging into a partial run is the hazard.
+    assert 'interleave' in str(error.value)
+
+
+def test_an_output_path_that_is_not_a_directory_is_refused(tmp_path):
+    target = tmp_path / 'cell'
+    target.write_text('', encoding='utf-8')
+    with pytest.raises(ValueError, match='not a directory'):
+        breadth.prepare_output(target, COMPLETION)
+
+
+def test_every_stage_uses_the_shared_output_contract():
+    # The four stages must not grow their own guard: the runner contract is one
+    # declaration, and a stage that re-implements it is the one that fails.
+    stages = ('qualify_phenotype_cohorts', 'score_phenotype_states',
+              'fit_phenotype_breadth', 'analyse_matched_phenotypes')
+    root = Path(__file__).resolve().parents[2] / 'scripts/capability/extensions'
+    for stage in stages:
+        source = (root / f'{stage}.py').read_text(encoding='utf-8')
+        assert 'breadth.prepare_output(args.out, COMPLETION)' in source, stage
+        assert 'refusing an existing output directory' not in source, stage

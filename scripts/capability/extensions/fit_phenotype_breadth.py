@@ -143,7 +143,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='profile_features npz over the qualification profile plan')
     parser.add_argument('--cohort', action='append', default=[],
                         help='restrict to these admitted cohorts; repeatable')
-    parser.add_argument('--out', type=Path, required=True, help='fresh output directory')
+    parser.add_argument('--out', type=Path, required=True,
+                        help='output directory; an empty one is accepted, one holding a previous '
+                             'run is refused')
     parser.add_argument('--device', default='cpu', help='accepted for queue compatibility')
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--runtime', type=Path, default=None)
@@ -153,10 +155,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    out = args.out.resolve()
-    if out.exists():
-        raise SystemExit(f'refusing an existing output directory: {out}')
-    out.mkdir(parents=True)
+    try:
+        out = breadth.prepare_output(args.out, COMPLETION)
+    except ValueError as error:
+        raise SystemExit(str(error))
     args.out = out
     args.runtime = (args.runtime or out / 'runtime').resolve()
     qualification = json.loads(

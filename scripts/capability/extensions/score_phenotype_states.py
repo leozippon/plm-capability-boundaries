@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
+from src.capability.extensions import phenotype_breadth as breadth  # noqa: E402
 from src.capability.extensions.phenotype_breadth import PLAN_SCHEMA  # noqa: E402
 from src.capability.interactions.pairwise_epistasis import (  # noqa: E402
     ARM_DTYPE, PRODUCTION_BATCH_SIZE, ROSTER)
@@ -159,7 +160,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='refuse a plan whose bytes are not these')
     parser.add_argument('--arms', required=True,
                         help='comma-separated checkpoint names, scored in the order given')
-    parser.add_argument('--out', type=Path, required=True, help='fresh output directory')
+    parser.add_argument('--out', type=Path, required=True,
+                        help='output directory; an empty one is accepted, one holding a previous '
+                             'run is refused')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--dtype', default=None,
                         help='override the per-arm declared dtype; normally omitted')
@@ -183,10 +186,10 @@ def main(argv=None) -> int:
         raise SystemExit(f'not panel checkpoints: {unknown}')
     if len(set(arms)) != len(arms):
         raise SystemExit('duplicate arm requested')
-    out = args.out.resolve()
-    if out.exists():
-        raise SystemExit(f'refusing an existing output directory: {out}')
-    out.mkdir(parents=True)
+    try:
+        out = breadth.prepare_output(args.out, COMPLETION)
+    except ValueError as error:
+        raise SystemExit(str(error))
     args.out = out
     plan = read_plan(args.plan, args.expect_plan_sha256)
     states = plan['states'][:args.state_limit] if args.state_limit else plan['states']

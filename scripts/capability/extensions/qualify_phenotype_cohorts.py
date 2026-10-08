@@ -64,7 +64,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out', type=Path, required=True,
-                        help='fresh output directory; an existing one is refused')
+                        help='output directory; it may already exist while it is empty, and a '
+                             'directory holding a previous run is refused')
     parser.add_argument('--device', default='cpu', help='accepted for queue compatibility')
     parser.add_argument('--root', type=Path, default=ROOT,
                         help='project root holding data/ and results/')
@@ -169,10 +170,10 @@ def qualify_matched(args, out: Path) -> tuple[dict, dict, dict]:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    out = args.out.resolve()
-    if out.exists():
-        raise SystemExit(f'refusing an existing output directory: {out}')
-    out.mkdir(parents=True)
+    try:
+        out = breadth.prepare_output(args.out, COMPLETION)
+    except ValueError as error:
+        raise SystemExit(str(error))
     for name in SUBDIRECTORIES:
         (out / name).mkdir()
     args.runtime = (args.runtime or out / 'runtime').resolve()

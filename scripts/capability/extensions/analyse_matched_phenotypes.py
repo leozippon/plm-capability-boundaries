@@ -86,10 +86,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    out = args.out.resolve()
-    if out.exists():
-        raise SystemExit(f'refusing an existing output directory: {out}')
-    out.mkdir(parents=True)
+    try:
+        out = breadth.prepare_output(args.out, COMPLETION)
+    except ValueError as error:
+        raise SystemExit(str(error))
     admission = json.loads(
         (args.qualification / 'cohorts' / f'{MATCHED_KEY}.json').read_text(encoding='utf-8'))
     if admission['status'] != 'admitted':
