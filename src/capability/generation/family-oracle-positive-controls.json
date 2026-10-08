@@ -1,0 +1,77 @@
+{
+  "controls": [
+    {
+      "arm": "zymctrl",
+      "id": "ge_00125b7fbeccdf8c30d4cf27",
+      "required_families": [
+        "PF00578",
+        "PF08534"
+      ],
+      "sequence": "MTEITFKGGPIHLKGQQINEGDFAPDFTVLDNDLNQVTLADYAGKKKLISVVPSIDTGVCDQQTRKFNSDASKEEGIVLTISADLPFAQKRWCASAGLDNVITLSDHRDLSFGENYGVVMEELRLLARAVFVLDADNKVVYKEIVSEGTDFPDFDAALAAYKNI",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "zymctrl",
+      "id": "ge_0117c7656b9dd10d0cd3167c",
+      "required_families": [
+        "PF12804"
+      ],
+      "sequence": "MSRWAGIVLAGGMSSRFGEPKALASWQGSTFIEHILKEMTSALQEVVVISHSDIKERVEQFVQVPVIEDIPHYKGNGPLAGIVSGMEYIEADWYAIMPCDAPNVSHEWFTILLEQTSNEYDAVVPIINGRKQPLFAAYHNRVKEKIYALLQEEKRSMGQLLSQCNVKYVAGEDVQANTDWFINVNTKEEYVQAQKDLSNE",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "prollama",
+      "id": "ge_01cb80741945a96db4b03fbc",
+      "required_families": [
+        "PF01521"
+      ],
+      "sequence": "MSDDMALPLQFTDAAANKVKDLIADEENPNLRLRVYITGGGCSGFQYGFTFDDAMNEGDMTIEKQGVALVIDPMSLQYLVGGCVDYTEGLEGSRFIVTNPNAKSTCGCGSSFSI",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "prollama",
+      "id": "ge_01f0c9f1b5dafbd9b19a2915",
+      "required_families": [
+        "PF01195"
+      ],
+      "sequence": "MVKMIVGLGNPGSKYEKTKHNIGFMAIDNIVKNLDVTFTDDKNFKAQIGSTFINHEKVYFVKPTTFMNNSGIAVKALLTYYNIDITDLIVIYDDLDMEVSKLRLRSKGSAGGHNGIKSIIAHIGTQEFNRIKVGIGRPLKGMTVINHVMGQFNTEDNIAISLTLDRVVNAVKFYLQENDFEKTMQKFNG",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "zymctrl",
+      "id": "ge_01f4d75fc64eb1fb0c85e9ef",
+      "required_families": [
+        "PF02508"
+      ],
+      "sequence": "MSGKTSYKDLLLAPIAKNNPIALQILGICSALAVTTKLETAFVMAIAVTLVTGLSNLFVSLIRNYIPNSIRIIVQLAIIASLVIVVDQILKAYAYGLSKQLSVFVGLIITNCIVMGRAEAFAMKSPPVESFVDGIGNGLGYGSMLIIVAFFRELIGSGKLFGMTIFETIQNGGWYQANGLFLLAPSAFFIIGFVIWGLRTWKPEQQEK",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "zymctrl",
+      "id": "ge_0212e577306d1b36d12a15e4",
+      "required_families": [
+        "PF01746"
+      ],
+      "sequence": "MKISILSLFPELYETWIKHSIISNAIKNNQVIIEVIDFRLYTNDKHKKVDDYQYGGGAGMVLRIEPIVAAIRAIRSSNSYVILTTPKGQVFNQELANNFVSKYDHIIIIAGHYEGFDERINYYIDAQYSIGDFVLTGGELPSMVISDAVIRLLDGVISPSSLETESFNNYLLDYPVYTRPLVFEGHKVPDILLSGHHKNIADFRKQQQETITKKNRPDLYQKYLNNKK",
+      "source_role": "natural_reference"
+    },
+    {
+      "arm": "prollama",
+      "id": "ge_0000020b951a830fa3a3ace8",
+      "required_families": [],
+      "sequence": "RKVVVFQLVGNFGLKYLATGYKDLKSKGIQAVFLDDGKAIGELKIKSGKVLQKLPADTVDDEGKIEAKTAKGFVVPIIEDIRKQMDD",
+      "source_role": "generation"
+    },
+    {
+      "arm": "prollama",
+      "id": "ge_0003c5eaf8b2dcc7c696635c",
+      "required_families": [],
+      "sequence": "MILQHGDRVVLFRYFTKGRNVKKLSKIMHEIPEKFFKELWPEWKSATVDVSIKVLVGLANPRLSSKEGQPWLKIEEVKAYVYGKLLRG",
+      "source_role": "generation"
+    }
+  ],
+  "provenance": "records of results/R6/generation_evidence_20260905/attempts.jsonl, whose pfam_families field is the frozen oracle call this control reproduces",
+  "purpose": "a restored Pfam/HMMER oracle is trusted only after it recovers, on sequences whose family set the frozen 2026-09-05 oracle run already recorded, exactly those families, and returns no family on sequences the same run recorded as carrying none. A silently empty recognition set would read as a true-negative yield of zero, which is the one failure this endpoint cannot absorb",
+  "schema": "generation_family_oracle_positive_controls_v1",
+  "threshold": "gathering"
+}
