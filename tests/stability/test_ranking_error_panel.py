@@ -286,7 +286,8 @@ class WithinFamilyCalibration(unittest.TestCase):
             self.target, baseline, baseline, self.group, self.site)
         self.assertEqual(len(labels), len(set(self.group.tolist())))
         self.assertTrue(np.allclose(values, 0.0, rtol=0, atol=1e-12))
-        self.assertEqual(set(record), {'baseline', 'augmented'})
+        self.assertEqual(set(record), {'baseline', 'augmented', 'baseline_calibrated_mse'})
+        self.assertEqual(len(record['baseline_calibrated_mse']), len(labels))
 
 
 # --------------------------------------------------------------------------- #
@@ -348,28 +349,98 @@ class SimultaneousInference(unittest.TestCase):
         resolved_marginal = sum(1 for row in marginal if row['interval'][0] > 0)
         self.assertGreaterEqual(resolved_marginal, len(family['resolved_above_zero']))
 
-    def test_ranking_versus_error_tabulates_the_paired_metric_disagreement(self):
-        error = {'verdicts': {'a': 'above_zero', 'b': 'unresolved', 'c': 'unresolved'},
-                 'resolved_above_zero': ['a'], 'resolved_below_zero': []}
-        rank = {'verdicts': {'a': 'above_zero', 'b': 'above_zero', 'c': 'unresolved'},
-                'resolved_above_zero': ['a', 'b'], 'resolved_below_zero': []}
-        summary = contrast.ranking_versus_error(
-            {'within_family_calibrated_error': error,
-             'within_family_ranking_on_error_controls': rank}, ['a', 'b', 'c'])
-        cross = summary['paired_metric_comparison']['cross_tabulation']
-        self.assertEqual(cross['both'], ['a'])
-        self.assertEqual(cross['ranking_only'], ['b'])
-        self.assertEqual(cross['error_only'], [])
-        self.assertEqual(cross['neither'], ['c'])
-        self.assertEqual(summary['resolved_counts']['within_family_ranking_on_error_controls'],
-                         {'above_zero': 2, 'below_zero': 0, 'unresolved': 1})
+    @staticmethod
+    def family(verdicts):
+        return {'status': 'complete', 'verdicts': verdicts,
+                'resolved_above_zero': [k for k, v in verdicts.items() if v == 'above_zero'],
+                'resolved_below_zero': [k for k, v in verdicts.items() if v == 'below_zero']}
 
-    def test_contrast_definitions_pair_one_metric_per_control_set(self):
-        self.assertEqual(
-            contrast.CONTRASTS['within_family_calibrated_error']['control'],
-            contrast.CONTRASTS['within_family_ranking_on_error_controls']['control'])
-        self.assertEqual(contrast.CONTRASTS['within_family_ranking']['control'], 'S2')
-        self.assertEqual(contrast.CONTRASTS['transfer_error']['control'], 'S')
+    def test_ranking_versus_error_reads_the_primary_pair_over_the_profile_baseline(self):
+        arms = ['a', 'b', 'c']
+        families = {
+            'profile_calibrated_error': self.family(
+                {'a': 'above_zero', 'b': 'unresolved', 'c': 'unresolved'}),
+            'profile_ranking': self.family(
+                {'a': 'above_zero', 'b': 'above_zero', 'c': 'unresolved'}),
+            'matched_calibrated_error': self.family(
+                {'a': 'above_zero', 'b': 'above_zero', 'c': 'above_zero'}),
+            'matched_ranking': self.family(
+                {'a': 'above_zero', 'b': 'above_zero', 'c': 'above_zero'}),
+        }
+        summary = contrast.ranking_versus_error(families, arms)
+        self.assertEqual(summary['primary_baseline'], 'profile')
+        primary = summary['paired_metric_comparison']['primary_profile_baseline']
+        self.assertEqual(primary['contrasts'], list(contrast.PRIMARY_PAIR))
+        self.assertEqual(primary['resolved_ranking'], 2)
+        self.assertEqual(primary['resolved_calibrated_error'], 1)
+        self.assertTrue(primary['ranking_more_widespread'])
+        cross = primary['cross_tabulation']
+        self.assertEqual((cross['both'], cross['ranking_only'], cross['error_only'],
+                          cross['neither']), (['a'], ['b'], [], ['c']))
+        companion = summary['paired_metric_comparison']['companion_matched_baseline']
+        self.assertEqual(companion['contrasts'], list(contrast.COMPANION_PAIR))
+        self.assertFalse(companion['ranking_more_widespread'])
+
+    def test_what_the_profile_is_worth_names_arms_the_profile_already_explains(self):
+        arms = ['a', 'b', 'c']
+        families = {
+            'profile_ranking': self.family(
+                {'a': 'above_zero', 'b': 'unresolved', 'c': 'unresolved'}),
+            'matched_ranking': self.family(
+                {'a': 'above_zero', 'b': 'above_zero', 'c': 'unresolved'}),
+        }
+        worth = contrast.ranking_versus_error(families, arms)['what_the_profile_is_worth']
+        self.assertEqual(worth['ranking']['resolved_with_profile_in_baseline'], 1)
+        self.assertEqual(worth['ranking']['resolved_without_profile_in_baseline'], 2)
+        self.assertEqual(worth['ranking']['arms_resolving_only_without_profile'], ['b'])
+
+    def test_a_blocked_family_is_excluded_from_the_summary_rather_than_counted(self):
+        families = {'profile_ranking': {'status': 'blocked_undefined_families'},
+                    'matched_ranking': self.family({'a': 'above_zero'})}
+        summary = contrast.ranking_versus_error(families, ['a'])
+        self.assertNotIn('profile_ranking', summary['resolved_counts'])
+        self.assertNotIn('ranking', summary['what_the_profile_is_worth'])
+
+    def test_the_contrast_grid_is_two_baselines_times_three_readings(self):
+        self.assertEqual(set(contrast.BASELINES), {'profile', 'matched'})
+        self.assertEqual(set(contrast.READINGS),
+                         {'ranking', 'calibrated_error', 'transfer_error'})
+        self.assertEqual(len(contrast.CONTRASTS),
+                         len(contrast.BASELINES) * len(contrast.READINGS))
+        for baseline in contrast.BASELINES:
+            for reading in contrast.READINGS:
+                self.assertIn(f'{baseline}_{reading}', contrast.CONTRASTS)
+
+    def test_the_profile_baseline_is_primary_and_actually_carries_the_profile(self):
+        profile = contrast.BASELINES['profile']
+        self.assertEqual(profile['role'], 'primary')
+        self.assertEqual(profile['design'], 'S2')
+        self.assertIn('prof2', profile['blocks'])
+        self.assertEqual(contrast.BASELINES['matched']['design'], 'S')
+        self.assertNotIn('prof2', contrast.BASELINES['matched']['blocks'])
+        # The headline pair differs in the metric alone, never in the baseline.
+        baselines = {contrast.CONTRASTS[name]['baseline'] for name in contrast.PRIMARY_PAIR}
+        self.assertEqual(baselines, {'profile'})
+        self.assertEqual({contrast.CONTRASTS[name]['baseline']
+                          for name in contrast.COMPANION_PAIR}, {'matched'})
+        # Every contrast is a nested increment over its own baseline, which is a
+        # stronger statement than comparing two separate correlations.
+        for definition in contrast.CONTRASTS.values():
+            self.assertIn('nested', definition['increment'])
+
+    def test_every_frozen_equivalent_names_a_contrast_this_panel_computes(self):
+        for name in contrast.FROZEN_EQUIVALENT:
+            self.assertIn(name, contrast.CONTRASTS)
+        # The calibrated readings are new controls with no frozen counterpart.
+        self.assertNotIn('profile_calibrated_error', contrast.FROZEN_EQUIVALENT)
+        self.assertNotIn('matched_calibrated_error', contrast.FROZEN_EQUIVALENT)
+
+    def test_arm_contrasts_refuses_an_incomplete_design_set(self):
+        panel = {'group': np.asarray(['g'] * 4), 'site': np.asarray(['g:1'] * 4)}
+        with self.assertRaises(ValueError) as caught:
+            contrast.arm_contrasts(panel, {'S': np.zeros(4), 'S_M': np.zeros(4)},
+                                   channels={'combined': np.zeros(4)})
+        self.assertIn('S2', str(caught.exception))
 
 
 # --------------------------------------------------------------------------- #
@@ -392,7 +463,7 @@ class MissingArmFailsLoudly(unittest.TestCase):
     def test_an_absent_extraction_is_refused(self):
         self.manifest(self.root / 'cell', 'gpt2')
         with self.assertRaises(SystemExit) as caught:
-            stage.discover_extraction([self.root], 'progen3-3b')
+            stage.locate_extractions([self.root], ['progen3-3b'])
         message = str(caught.exception)
         self.assertIn('do not resolve to exactly one', message)
         # The refusal names the arm and the candidates it did find, so an
@@ -403,7 +474,7 @@ class MissingArmFailsLoudly(unittest.TestCase):
         self.manifest(self.root / 'first', 'progen3-3b')
         self.manifest(self.root / 'second', 'progen3-3b')
         with self.assertRaises(SystemExit) as caught:
-            stage.discover_extraction([self.root], 'progen3-3b')
+            stage.locate_extractions([self.root], ['progen3-3b'])
         message = str(caught.exception)
         self.assertIn('do not resolve to exactly one', message)
         self.assertIn(str((self.root / 'first').resolve()), message)
@@ -424,19 +495,19 @@ class MissingArmFailsLoudly(unittest.TestCase):
         self.manifest(self.root / 'cell', 'progen3-3b',
                       schema='stability_singles_extraction_v1')
         with self.assertRaises(SystemExit):
-            stage.discover_extraction([self.root], 'progen3-3b')
+            stage.locate_extractions([self.root], ['progen3-3b'])
 
     def test_an_extraction_of_another_cohort_does_not_satisfy_this_stage(self):
         self.manifest(self.root / 'cell', 'progen3-3b', cohort='0' * 64)
         with self.assertRaises(SystemExit):
-            stage.discover_extraction([self.root], 'progen3-3b')
+            stage.locate_extractions([self.root], ['progen3-3b'])
 
     def test_a_malformed_manifest_is_skipped_without_crashing_the_search(self):
         (self.root / 'broken').mkdir()
         (self.root / 'broken/manifest_progen3-3b.json').write_text('{not json')
         self.manifest(self.root / 'good', 'progen3-3b')
-        self.assertEqual(stage.discover_extraction([self.root], 'progen3-3b'),
-                         (self.root / 'good').resolve())
+        self.assertEqual(stage.locate_extractions([self.root], ['progen3-3b']),
+                         {'progen3-3b': (self.root / 'good').resolve()})
 
     def test_an_unknown_arm_name_is_refused_before_anything_is_read(self):
         completed = subprocess.run(
@@ -465,9 +536,94 @@ class MissingArmFailsLoudly(unittest.TestCase):
         self.assertFalse((self.root / 'out' / 'panel.json').exists())
 
     def test_a_restricted_run_cannot_produce_the_production_completion_record(self):
-        self.assertNotEqual(stage.COMPLETION, stage.SMOKE_COMPLETION)
+        self.assertEqual(len({stage.COMPLETION, stage.SMOKE_COMPLETION,
+                              stage.AUDIT_COMPLETION}), 3)
         self.assertEqual(len(ROSTER), 33)
         self.assertEqual(tuple(SPLIT_SEEDS), (20260923, 20260924, 20260925))
+
+
+class ExtractionAudit(unittest.TestCase):
+    """Every arm is verified before anything is fitted, and failures are named.
+
+    This is the check that a 31-arm panel cannot be presented as 33-arm
+    simultaneous inference. It must attempt every arm even after one fails, so
+    an operator deciding what to rescore sees the whole list in one pass.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cohort = {'backgrounds': [
+            {'name': 'nat-a', 'group': 'g1', 'wildtype': 'ACDE',
+             'sequences': ['ACDE', 'VCDE'],
+             'variants': [{'state': 1, 'position': 1, 'mutant': 'V'}]}]}
+
+    def archive(self, directory: Path, arm: str, *, corrupt_digest=False,
+                wrong_sequence=False) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        background = self.cohort['backgrounds'][0]
+        sequences = (['AAAA', 'VCDE'] if wrong_sequence else background['sequences'])
+        name = f'{arm}_archive.npz'
+        np.savez_compressed(
+            directory / name,
+            likelihood=np.asarray([-1.0, -2.0]),
+            variant_states=np.asarray([1]), variant_positions=np.asarray([1]),
+            state_sequence_sha256=np.asarray(
+                [hashlib.sha256(s.encode()).hexdigest() for s in sequences], dtype='<U64'))
+        digest = 'f' * 64 if corrupt_digest else None
+        from src.capability.core.io import sha256_file
+        (directory / f'manifest_{arm}.json').write_text(json.dumps({
+            'identity': {'schema': stage.LIKELIHOOD_SCHEMA, 'arm': arm,
+                         'cohort_sha256': COHORT_SHA256, 'dtype': 'float32', 'budget': 1024,
+                         'checkpoint_path': '/weights/' + arm,
+                         'checkpoint_tensor_files': [{'name': 'model.safetensors'}]},
+            'status': 'complete', 'sequences_scored': 2, 'elapsed_seconds': 1.0,
+            'backgrounds': [{'background': 'nat-a', 'group': 'g1', 'file': name,
+                             'sha256': digest or sha256_file(directory / name),
+                             'sequences': 2, 'variants': 1,
+                             'repeat_likelihood_nats': 0.0}]}))
+
+    def test_a_complete_arm_is_tabulated_with_its_identity(self):
+        self.archive(self.root / 'cell', 'gpt2')
+        table, failed = stage.audit_extractions({'gpt2': self.root / 'cell'}, self.cohort)
+        self.assertEqual(failed, [])
+        row, = table
+        self.assertEqual(row['status'], 'complete')
+        self.assertEqual((row['arm'], row['dtype'], row['scored_variants']),
+                         ('gpt2', 'float32', 1))
+        self.assertEqual(row['checkpoint_path'], '/weights/gpt2')
+        self.assertEqual(row['repeat_likelihood_nats_max'], 0.0)
+
+    def test_a_corrupt_archive_digest_fails_that_arm_and_names_it(self):
+        self.archive(self.root / 'a', 'gpt2')
+        self.archive(self.root / 'b', 'progen3-3b', corrupt_digest=True)
+        table, failed = stage.audit_extractions(
+            {'gpt2': self.root / 'a', 'progen3-3b': self.root / 'b'}, self.cohort)
+        self.assertEqual(failed, ['progen3-3b'])
+        by_arm = {row['arm']: row for row in table}
+        self.assertEqual(by_arm['gpt2']['status'], 'complete')
+        self.assertEqual(by_arm['progen3-3b']['status'], 'failed')
+        self.assertIn('hash mismatch', by_arm['progen3-3b']['error'])
+
+    def test_a_state_bound_to_the_wrong_sequence_fails_that_arm(self):
+        self.archive(self.root / 'a', 'gpt2', wrong_sequence=True)
+        _, failed = stage.audit_extractions({'gpt2': self.root / 'a'}, self.cohort)
+        self.assertEqual(failed, ['gpt2'])
+
+    def test_every_arm_is_attempted_even_after_several_fail(self):
+        """A run of failures must not stop the table at the first entry."""
+
+        located = {}
+        for index, arm in enumerate(['gpt2', 'progen3-3b', 'prollama', 'rita-xl']):
+            directory = self.root / f'cell{index}'
+            self.archive(directory, arm, corrupt_digest=arm != 'rita-xl')
+            located[arm] = directory
+        table, failed = stage.audit_extractions(located, self.cohort)
+        self.assertEqual(len(table), 4)
+        self.assertEqual(sorted(failed), ['gpt2', 'progen3-3b', 'prollama'])
+        self.assertEqual([row['arm'] for row in table if row['status'] == 'complete'],
+                         ['rita-xl'])
 
 
 if __name__ == '__main__':

@@ -3,49 +3,47 @@
 
 The question is whether a frozen checkpoint's likelihood difference improves the
 *ordering* of single-substitution stability changes inside a protein family more
-widely than it improves the *quantitative* prediction of those changes, and
-whether any gain survives being read on each protease channel separately.
+widely than it improves the *quantitative* prediction of those changes -- once
+both readings are taken against a baseline that already contains evolutionary
+information, and both carry panel-wide simultaneous inference. The protease
+channels are then read off the same predictions as a robustness check.
 
 Inputs are the frozen gate's own bytes -- the 25,856-variant cohort over 101
 family groups, the control qualification frozen before any model quantity was
 read, the mutation-local profiles and the published panel -- plus the native
 likelihood archives produced by ``extract_stability_singles.py
---likelihood-only``.  Nothing is refitted from a different cohort and nothing is
+--likelihood-only``. Nothing is refitted from a different cohort and nothing is
 reconstructed from a stored summary: every number here comes from held-out
 predictions this stage computes.
 
-Per arm and per split seed, five designs are fitted on the identical rows and the
-identical nested family partitions, differing only in their declared columns:
-the squared-error-qualified control set ``S``, that set plus the arm's own
-tokenisation descriptors ``S_T``, ``S`` plus the likelihood difference ``M``, the
-rank-qualified set ``S2``, and ``S2`` plus ``M``.  ``S_T`` exists to re-derive
+The run proceeds in three phases, in this order on purpose.
+
+**Audit.** Every one of the 33 arms is re-verified before anything is fitted:
+manifest status and schema, cohort binding, the SHA-256 of each of its 101
+archives against the manifest, each state bound to its exact sequence bytes, and
+the variant state and position order against the cohort. The per-arm table is
+written whether or not the audit passes, and a failure names every arm that
+failed rather than stopping at the first. The published support is 33 arms; a
+31-arm panel presented as 33-arm simultaneous inference is precisely the defect
+that lost this result once already, so an incomplete support stops the run.
+
+**Fit.** Per arm and per split seed, five designs are fitted on identical rows
+and identical nested family partitions, differing only in their declared
+columns: the matched control set ``S``, that set plus the arm's own tokenisation
+descriptors ``S_T``, ``S`` plus the likelihood difference ``M``, the
+profile-inclusive set ``S2``, and ``S2`` plus ``M``. ``S_T`` exists to re-derive
 the gate's matched-baseline rule rather than assume it: the published panel
-selected ``S`` for all 33 arms, and an arm whose tokenisation descriptors now
-qualify would no longer be comparable with that record, so the run is refused
-instead of quietly changing baseline.
+selected the control set alone for all 33 arms, and an arm whose segmentation
+descriptors now qualified would no longer be comparable with that record. The
+held-out predictions are retained, so a further contrast never costs another
+fit.
 
-Four per-family contrasts are read from those predictions.  Two are errors, in
-squared kcal/mol: the frozen transfer reading, in which one global
-nat-to-kcal/mol slope is learned on the training families, and the qualified
-within-family reading, in which both predictions are first recalibrated inside
-each family by an affine map fitted on that family's other sites.  Two are
-rankings, dimensionless: the licensed within-background Spearman increment over
-``S2`` and the same increment over ``S``, which differs from the calibrated
-error contrast in nothing but the metric.  Each contrast is then published as its
-own 33-column maximum-statistic family over the same 101 resampled families; the
-marginal per-arm interval is published beside it and never in place of it.
-
-The protease channels are read from the same held-out predictions against the
-cohort's own trypsin and chymotrypsin endpoints, as a declared 99-column family
-per metric, together with the two channels' own agreement -- because a difference
-between channels smaller than the channels disagree with each other is a
-statement about the assay, not about the model.
-
-A missing arm is a failure, not a smaller panel.  The published support is 33
-arms and the panel is written only when all 33 are present and accepted; the
-2026-09-24 panel registered 33 arms while 32 of its per-arm fits had already
-ceased to exist, and a stage that silently shrinks its panel is how that becomes
-invisible.
+**Panel.** Six per-family contrasts -- two baselines times three readings -- each
+published as its own 33-column maximum-statistic family over the same 101
+resampled family groups. The profile-inclusive baseline is primary for every
+reading, because only it answers whether the model added something an alignment
+profile did not already supply. The marginal per-arm interval sits beside each
+column and never in place of it.
 """
 from __future__ import annotations
 
@@ -74,8 +72,9 @@ from src.capability.stability.stability_gate import (
     ENDPOINT, QUALIFICATION_SEEDS, TOKENISATION_FEATURE_ORDER, build_panel, fold_predictions,
     group_errors, load_profiles, paired_increment, qualify, tokenisation_block)
 
-SCHEMA = 'stability_ranking_error_panel_v1'
-CHANNEL_SCHEMA = 'stability_channel_robustness_panel_v1'
+SCHEMA = 'stability_ranking_error_panel_v2'
+CHANNEL_SCHEMA = 'stability_channel_robustness_panel_v2'
+AUDIT_SCHEMA = 'stability_extraction_audit_v1'
 LIKELIHOOD_SCHEMA = 'stability_singles_likelihood_extraction_v1'
 
 #: Written last, and only over the complete 33-arm support.
@@ -85,17 +84,20 @@ COMPLETION = 'completion.json'
 #: a restricted run can never satisfy a production cell's expected artefact.
 SMOKE_COMPLETION = 'smoke_fit.json'
 
+#: Written instead of :data:`COMPLETION` by ``--audit-only``, for the same reason.
+AUDIT_COMPLETION = 'audit.json'
+
 #: The frozen gate inputs this stage reads, resolved under ``--gate-dir`` by
 #: :mod:`~src.capability.stability.gate_inputs`, which states why the layout is
-#: resolved rather than assumed.  The extraction plan is not among them: this
+#: resolved rather than assumed. The extraction plan is not among them: this
 #: stage reads scores, never the plan that produced them.
 GATE_INPUTS = ('cohort.json', 'controls_qualification.json', 'profile_features.npz',
                'panel.json')
 
 #: Largest tolerated disagreement between a recomputed and a frozen group-equal
-#: baseline mean squared error.  The baseline carries no arm-specific column, so
-#: the two are the same arithmetic on the same bytes and differ only by
-#: float accumulation order.
+#: baseline mean squared error. The baseline carries no arm-specific column, so
+#: the two are the same arithmetic on the same bytes and differ only by float
+#: accumulation order.
 BASELINE_TOLERANCE_KCAL2_MOL2 = 1e-9
 
 #: Measurement channels, and the cohort field carrying each one's endpoint.
@@ -105,10 +107,10 @@ _STATE: dict = {}
 
 
 # --------------------------------------------------------------------------- #
-# Input resolution and support verification.
+# Input resolution, support verification and the extraction audit.
 # --------------------------------------------------------------------------- #
 
-def resolve_gate_inputs(gate_dir: Path) -> dict[str, Path]:
+def resolve_gate_inputs(gate_dir) -> dict[str, Path]:
     """Locate each frozen gate input this stage reads, exactly once."""
 
     return gate_inputs.resolve(gate_dir, GATE_INPUTS)
@@ -119,7 +121,7 @@ def locate_extractions(roots: list[Path], arms: list[str]) -> dict[str, Path]:
 
     A root may be a cell's own output directory, a campaign run directory or the
     parent of several, so manifests are looked for at the root and one or two
-    levels below it.  The walk happens once and only the manifests of the
+    levels below it. The walk happens once and only the manifests of the
     requested arms are opened, because the same tree holds the campaign
     manifests of every other lane and reading them all would be both slow and
     pointless.
@@ -127,7 +129,7 @@ def locate_extractions(roots: list[Path], arms: list[str]) -> dict[str, Path]:
     A candidate is admitted only on the likelihood-only archive schema and the
     frozen cohort digest, which is what separates this recomputation from the
     2026-09-24 representation extractions that live in the same tree under the
-    same filenames.  Two surviving candidates for one arm are a refusal, not a
+    same filenames. Two surviving candidates for one arm are a refusal, not a
     choice: the two could differ, and picking one silently is the failure mode
     this whole stage exists to prevent.
     """
@@ -162,10 +164,50 @@ def locate_extractions(roots: list[Path], arms: list[str]) -> dict[str, Path]:
     return located
 
 
-def discover_extraction(roots: list[Path], arm: str) -> Path:
-    """One arm's extraction directory; the single-arm form of the walk above."""
+def audit_extractions(located: dict[str, Path], cohort: dict) -> tuple[list[dict], list[str]]:
+    """Re-verify every arm's archives before anything is fitted.
 
-    return locate_extractions(roots, [arm])[arm]
+    The verification is the extension's own :func:`verify_scalar_archive`, run
+    once per arm: manifest status, schema and cohort binding, the SHA-256 of each
+    archive against the manifest, each state bound to its exact sequence bytes,
+    and the variant state and position order against the cohort. It is not
+    re-implemented here, so the audit and the fit cannot disagree about what a
+    valid archive is.
+
+    Every arm is attempted even after one fails, because an operator deciding
+    which arms to rescore needs the whole list, not the first entry of it.
+    """
+
+    table, failed = [], []
+    for arm in sorted(located):
+        directory = located[arm]
+        manifest_path = directory / f'manifest_{arm}.json'
+        record: dict = {'arm': arm, 'directory': str(directory),
+                        'manifest': manifest_path.name}
+        try:
+            scalar, manifest = verify_scalar_archive(directory, arm, cohort, COHORT_SHA256)
+            identity = manifest['identity']
+            record.update(
+                status='complete',
+                manifest_sha256=sha256_file(manifest_path),
+                manifest_status=manifest['status'],
+                dtype=identity['dtype'],
+                budget=identity['budget'],
+                checkpoint_path=identity['checkpoint_path'],
+                checkpoint_tensor_files=len(identity['checkpoint_tensor_files']),
+                backgrounds=len(manifest['backgrounds']),
+                sequences_scored=manifest['sequences_scored'],
+                scored_variants=int(len(scalar)),
+                repeat_likelihood_nats_max=max(row['repeat_likelihood_nats']
+                                               for row in manifest['backgrounds']),
+                likelihood_increment_range_nats=[float(scalar.min()), float(scalar.max())],
+                elapsed_seconds=manifest['elapsed_seconds'])
+        except Exception as error:  # noqa: BLE001 - every arm's own failure is the finding
+            record.update(status='failed', error_type=type(error).__name__,
+                          error=str(error))
+            failed.append(arm)
+        table.append(record)
+    return table, failed
 
 
 def channel_targets(cohort: dict) -> dict[str, np.ndarray]:
@@ -173,7 +215,7 @@ def channel_targets(cohort: dict) -> dict[str, np.ndarray]:
 
     The three endpoints are already frozen in the cohort, formed by the same
     two-estimate difference against the same wild-type row under the same
-    substitution, censoring and three-width quality rules.  Reading them here
+    substitution, censoring and three-width quality rules. Reading them here
     rather than re-deriving them from the source tables is what keeps the channel
     comparison on exactly the rows the combined endpoint was published on.
     """
@@ -222,11 +264,12 @@ def tokenisation_blocks(directory: Path, arm: str, cohort: dict) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# Per-arm fit. One worker process holds the panel; only contrast vectors return.
+# Per-arm fit. One worker holds the panel; contrast vectors and the retained
+# held-out predictions come back.
 # --------------------------------------------------------------------------- #
 
 def _initialise(paths: dict, device: str, threads: int, draws: int,
-                calibration_folds: int, calibration_seed: int) -> None:
+                calibration_folds: int, calibration_seed: int, oof_dir: str) -> None:
     torch.set_num_threads(max(threads, 1))
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -237,7 +280,7 @@ def _initialise(paths: dict, device: str, threads: int, draws: int,
                                {row['name']: row['wildtype'] for row in cohort['backgrounds']})
     panel = build_panel(cohort, profiles)
     _STATE.update(cohort=cohort, controls=controls, sets=sets, derivation=derivation,
-                  panel=panel, device=device, draws=draws,
+                  panel=panel, device=device, draws=draws, oof_dir=Path(oof_dir),
                   channels=channel_targets(cohort),
                   calibration_folds=calibration_folds, calibration_seed=calibration_seed)
 
@@ -257,7 +300,7 @@ def fit_arm(task: tuple[str, str]) -> dict:
                   T=tokenisation_blocks(Path(directory), arm, cohort))
     designs = {'S': tuple(sets['S']), 'S_T': (*sets['S'], 'T'), 'S_M': (*sets['S'], 'M'),
                'S2': tuple(sets['S2']), 'S2_M': (*sets['S2'], 'M')}
-    seeds, baselines = {}, {}
+    seeds, baselines, retained = {}, {}, {}
     for seed in SPLIT_SEEDS:
         outcome = fold_predictions(panel, blocks, designs, seed=seed,
                                    device=_STATE['device'])
@@ -272,6 +315,8 @@ def fit_arm(task: tuple[str, str]) -> dict:
             'dimensions': outcome['folds'][0]['dimensions'],
             'held_groups': [record['held_groups'] for record in outcome['folds']],
         }
+        for name in designs:
+            retained[f'{seed}|{name}'] = predictions[name].astype(np.float64)
         for name in ('S', 'S2'):
             _, errors = group_errors(panel['target'], predictions[name],
                                      panel['group'], panel['site'])
@@ -284,6 +329,17 @@ def fit_arm(task: tuple[str, str]) -> dict:
             'baseline, while the published panel selected the control set alone for all '
             '33 arms; the recomputed increments would not be comparable with that record '
             f'and no baseline is substituted silently. Verdict: {verdict}')
+    # Held-out predictions are retained so that a later contrast over these same
+    # fits never costs another 33-arm refit, which is what the first pass cost.
+    oof_dir = _STATE['oof_dir']
+    oof_dir.mkdir(parents=True, exist_ok=True)
+    oof_path = oof_dir / f'oof_{arm}.npz'
+    temporary = oof_path.with_suffix('.tmp')
+    with temporary.open('wb') as stream:
+        np.savez_compressed(stream, sample_id=np.asarray(panel['site'], dtype=str),
+                            group=np.asarray(panel['group'], dtype=str),
+                            target=panel['target'], **retained)
+    temporary.replace(oof_path)
     return {'arm': arm, 'extraction_directory': str(directory),
             'extraction_manifest_sha256': sha256_file(Path(directory) / f'manifest_{arm}.json'),
             'dtype': manifest['identity']['dtype'],
@@ -292,6 +348,10 @@ def fit_arm(task: tuple[str, str]) -> dict:
                                               for row in manifest['backgrounds']),
             'tokenisation_stratum': TOKENISATION_STRATUM[arm],
             'tokenisation_verdict': verdict, 'matched_baseline': 'S',
+            'held_out_predictions': {'file': oof_path.name,
+                                     'sha256': sha256_file(oof_path),
+                                     'designs': sorted(designs),
+                                     'layout': 'one array per "<seed>|<design>"'},
             'baseline_mse_kcal2_mol2': baselines, 'seeds': seeds,
             'seconds': time.monotonic() - began}
 
@@ -313,17 +373,24 @@ def seed_mean(record: dict, channel: str, name: str) -> np.ndarray:
                     for seed in SPLIT_SEEDS], axis=0)
 
 
+def _undefined(records: list[dict], channel: str, name: str) -> dict:
+    baseline = contrast.CONTRASTS[name]['baseline']
+    out = {}
+    for record in records:
+        per_seed = {seed: row['contrasts'][channel]['undefined_ranking_groups'][baseline]
+                    for seed, row in record['seeds'].items()
+                    if row['contrasts'][channel]['undefined_ranking_groups'][baseline]}
+        if per_seed:
+            out[record['arm']] = per_seed
+    return out
+
+
 def contrast_family(records: list[dict], channel: str, name: str, *, draws: int) -> dict:
     """One declared contrast as a 33-column maximum-statistic family."""
 
     arms = [record['arm'] for record in records]
     matrix = np.column_stack([seed_mean(record, channel, name) for record in records])
-    undefined = {record['arm']: {
-        seed: record['seeds'][seed]['contrasts'][channel]['undefined_ranking_groups']
-        for seed in record['seeds']
-        if any(record['seeds'][seed]['contrasts'][channel]['undefined_ranking_groups'].values())}
-        for record in records}
-    undefined = {arm: value for arm, value in undefined.items() if value}
+    undefined = _undefined(records, channel, name)
     if not np.isfinite(matrix).all():
         return {'status': 'blocked_undefined_families', 'columns': arms,
                 'undefined_families': undefined,
@@ -336,8 +403,8 @@ def contrast_family(records: list[dict], channel: str, name: str, *, draws: int)
                   marginal={arm: contrast.marginal_interval(matrix[:, index])
                             for index, arm in enumerate(arms)},
                   per_seed_point={
-                      arm: {str(seed): float(np.mean(
-                          records[index]['seeds'][str(seed)]['contrasts'][channel][name]))
+                      arm: {str(seed): float(np.nanmean(contrast.vector(
+                          records[index]['seeds'][str(seed)]['contrasts'][channel][name])))
                           for seed in SPLIT_SEEDS}
                       for index, arm in enumerate(arms)})
     return family
@@ -347,7 +414,7 @@ def channel_family(records: list[dict], name: str, *, draws: int) -> dict:
     """One contrast read on both proteases and on their difference, per arm.
 
     Three columns per arm -- trypsin, chymotrypsin and the paired difference --
-    make one declared family of 99 contrasts.  The difference column is the
+    make one declared family of 99 contrasts. The difference column is the
     robustness reading: a gain that appears on one protease only is a property of
     that measurement channel, and the paired column is what can resolve it.
     """
@@ -374,7 +441,7 @@ def channel_agreement(cohort: dict, panel: dict, targets: dict) -> dict:
     Every accepted row of this cohort had to pass a 0.5 kcal/mol confidence-width
     rule on the combined, trypsin and chymotrypsin fits alike, so each of the
     25,856 variants carries both channels by construction; the qualification
-    below states that rather than assuming it.  The agreement is the floor the
+    below states that rather than assuming it. The agreement is the floor the
     between-channel contrasts have to be read against: a difference between
     channels smaller than the channels' own disagreement is a statement about the
     assay.
@@ -397,7 +464,6 @@ def channel_agreement(cohort: dict, panel: dict, targets: dict) -> dict:
             'wild_types_with_both_channels': len(cohort['backgrounds']),
             'variants_with_both_channels': int(len(trypsin)),
             'variants_total': int(len(panel['target'])),
-            'rule': cohort['row_accounting']['indel_rule'],
             'width_rule': 'each of the combined, trypsin and chymotrypsin 95% confidence '
                           'widths inside [0, 0.5] kcal/mol, applied before the support was '
                           'drawn, so no variant of this cohort lacks either channel',
@@ -409,10 +475,16 @@ def channel_agreement(cohort: dict, panel: dict, targets: dict) -> dict:
                 cohort['row_accounting']['accepted_rows_at_channel_fit_bound'],
         },
         'per_family': per_family,
+        'overall_channel_spearman': float(spearmanr(trypsin, chymotrypsin)[0]),
+        'overall_mean_squared_channel_difference_kcal2_mol2': float(
+            np.mean((trypsin - chymotrypsin) ** 2)),
         'mean_family_channel_spearman': float(np.mean(
             [row['channel_spearman'] for row in per_family])),
         'mean_family_squared_channel_difference_kcal2_mol2': float(np.mean(
             [row['mean_squared_channel_difference_kcal2_mol2'] for row in per_family])),
+        'floor_reading': 'any model-driven between-channel difference must be read against '
+                         'this disagreement; a difference below it is a statement about the '
+                         'assay, not about the model',
         'interpretation': 'correlated channels of one proteolysis assay, not independent '
                           'replication; a nonsignificant between-channel difference is not '
                           'evidence of equivalence',
@@ -422,28 +494,23 @@ def channel_agreement(cohort: dict, panel: dict, targets: dict) -> dict:
 def frozen_comparison(published: dict, records: list[dict]) -> dict:
     """Recomputed against published, arm by arm, whichever way it comes out.
 
-    Two frozen quantities are directly comparable: the published squared-error
-    increment over the squared-error-qualified control set, which this stage
-    recomputes as ``transfer_error``, and the published within-background
-    Spearman increment over the rank-qualified set, recomputed as
-    ``within_family_ranking``.  The published baselines carry no arm-specific
+    Four frozen quantities are directly comparable, one per baseline and
+    uncalibrated reading; the per-family calibrated readings are new controls and
+    have no frozen counterpart. The published baselines carry no arm-specific
     column and are compared as a hard gate, because a baseline that differs means
     the recomputation is not on the frozen support at all.
     """
 
-    arms_reported = published.get('arms_reported', [])
     frozen_panel = published.get('panel', {})
-    pairs = {'transfer_error': 'primary_likelihood',
-             'within_family_ranking': 'secondary_likelihood_spearman'}
     increments: dict[str, dict] = {}
-    for name, key in pairs.items():
+    for name, key in contrast.FROZEN_EQUIVALENT.items():
         frozen = frozen_panel.get(key, {}).get('arms', {})
         rows = {}
         for record in records:
             arm = record['arm']
             if arm not in frozen:
                 continue
-            recomputed = float(np.mean(seed_mean(record, 'combined', name)))
+            recomputed = float(np.nanmean(seed_mean(record, 'combined', name)))
             rows[arm] = {'recomputed_seed_mean': recomputed,
                          'published_seed_mean': frozen[arm]['seed_mean'],
                          'difference': recomputed - frozen[arm]['seed_mean'],
@@ -451,6 +518,7 @@ def frozen_comparison(published: dict, records: list[dict]) -> dict:
         increments[name] = {
             'published_contrast': key,
             'published_metric': frozen_panel.get(key, {}).get('metric'),
+            'published_licensed': frozen_panel.get(key, {}).get('licensed'),
             'arms': rows,
             'max_absolute_difference': (max(abs(row['difference']) for row in rows.values())
                                         if rows else None),
@@ -465,10 +533,9 @@ def frozen_comparison(published: dict, records: list[dict]) -> dict:
                 continue
             recomputed = {record['baseline_mse_kcal2_mol2'][str(seed)][name]
                           for record in records}
-            spread = max(recomputed) - min(recomputed)
             baselines[f'{seed}|{name}'] = {
                 'recomputed_mse_kcal2_mol2': float(max(recomputed)),
-                'recomputed_spread_across_arms': float(spread),
+                'recomputed_spread_across_arms': float(max(recomputed) - min(recomputed)),
                 'published_mse_kcal2_mol2': frozen[role]['mse_kcal2_mol2'],
                 'difference': float(max(recomputed) - frozen[role]['mse_kcal2_mol2'])}
     offending = {key: row for key, row in baselines.items()
@@ -479,7 +546,7 @@ def frozen_comparison(published: dict, records: list[dict]) -> dict:
                          f'ones on the frozen support: {json.dumps(offending)}')
     return {
         'published_panel_schema': published.get('schema'),
-        'published_arms_reported': len(arms_reported),
+        'published_arms_reported': len(published.get('arms_reported', [])),
         'published_arms_missing': published.get('arms_missing'),
         'published_tokenisation_arms_in_baseline': {
             str(seed): published.get('baseline_identity', {}).get(
@@ -491,6 +558,38 @@ def frozen_comparison(published: dict, records: list[dict]) -> dict:
         'reading': ('the baselines are a gate and the increments are a finding; a published '
                     'increment that does not reproduce is reported as it comes out, in '
                     'either direction'),
+    }
+
+
+def headline(families: dict, comparison: dict, arms: list) -> dict:
+    """The one question this panel exists to answer, with its own caveat attached."""
+
+    available = {name: family for name, family in families.items()
+                 if family.get('status') == 'complete'}
+    error, rank = contrast.PRIMARY_PAIR
+    counts = {name: len(family['resolved_above_zero']) for name, family in available.items()}
+    answer = None
+    if error in counts and rank in counts:
+        answer = ('ranking improvements are more widespread than quantitative ones'
+                  if counts[rank] > counts[error]
+                  else 'ranking improvements are not more widespread than quantitative ones'
+                  if counts[rank] < counts[error]
+                  else 'ranking and quantitative improvements are equally widespread')
+    return {
+        'question': ('are stability ranking improvements more widespread than quantitative '
+                     'stability improvements, once both are measured against a baseline '
+                     'containing evolutionary information and both carry panel-wide '
+                     'simultaneous inference across all 33 arms'),
+        'primary_baseline': contrast.BASELINES['profile'],
+        'resolved_above_zero_by_contrast': counts,
+        'answer': answer,
+        'reproduction_of_published_positives': {
+            arm: {name: row['arms'].get(arm) for name, row in comparison['increments'].items()}
+            for arm in ('progen3-3b', 'prollama') if arm in arms},
+        'caveat': ('the two metrics are not commensurable -- a rank correlation and a '
+                   'squared kcal/mol -- so this is a comparison of how many arms each '
+                   'separate 33-column family resolves, not a tested difference between '
+                   'the metrics; no single band covers a comparison between them'),
     }
 
 
@@ -512,6 +611,9 @@ def main() -> None:
     parser.add_argument('--draws', type=int, default=contrast.PANEL_DRAWS)
     parser.add_argument('--calibration-folds', type=int, default=contrast.CALIBRATION_FOLDS)
     parser.add_argument('--calibration-seed', type=int, default=contrast.CALIBRATION_SEED)
+    parser.add_argument('--audit-only', action='store_true',
+                        help='verify every arm\'s archives, write the per-arm table and '
+                             f'{AUDIT_COMPLETION}, and fit nothing')
     parser.add_argument('--arms', default='',
                         help='interface check only: a comma-separated subset. A restricted '
                              'run publishes per-arm fits and no panel, and writes '
@@ -540,10 +642,39 @@ def main() -> None:
         raise SystemExit('the control qualification was frozen against a different cohort')
     sets, derivation = control_sets(controls)
 
-    # Resolved before anything expensive is built. A missing arm is the failure
-    # this stage exists to make loud, and it must not wait behind a fifteen-second
-    # panel assembly to be reported.
+    # Phase one. Resolved and audited before anything expensive is built, because
+    # an incomplete support is the failure this stage exists to make loud.
     located = locate_extractions(args.extraction_root, arms)
+    audit, failed = audit_extractions(located, cohort)
+    args.out.mkdir(parents=True, exist_ok=True)
+    audit_record = {
+        'schema': AUDIT_SCHEMA,
+        'generated_utc': datetime.now(timezone.utc).isoformat(),
+        'arms_requested': arms,
+        'arms_in_published_support': len(ROSTER),
+        'arms_complete': [row['arm'] for row in audit if row['status'] == 'complete'],
+        'arms_failed': failed,
+        'complete': not failed and not restricted,
+        'cohort_sha256': digests['cohort.json'],
+        'verification': ('manifest status, schema and cohort binding; the SHA-256 of every '
+                         'archive against its manifest; every state bound to its exact '
+                         'UTF-8 sequence bytes; variant state and position order against '
+                         'the cohort; likelihood finite on every state'),
+        'arms': audit,
+    }
+    write_json(args.out / 'extraction_audit.json', audit_record)
+    if failed:
+        raise SystemExit(
+            f'{len(failed)} of {len(arms)} arms did not verify: {failed}. The per-arm table '
+            f"is written to {args.out / 'extraction_audit.json'}; the published support is "
+            f'{len(ROSTER)} arms and no panel is written over fewer.')
+    if args.audit_only:
+        write_json(args.out / AUDIT_COMPLETION, {
+            **audit_record, 'status': 'audit_only', 'panel': 'not requested',
+            'elapsed_seconds': time.monotonic() - began})
+        print(json.dumps({'status': 'audit_only', 'arms_complete': len(audit_record['arms_complete']),
+                          'arms_failed': failed}, indent=1), flush=True)
+        return
 
     profiles, _ = load_profiles(paths['profile_features.npz'],
                                 {row['name']: row['wildtype'] for row in cohort['backgrounds']})
@@ -556,14 +687,14 @@ def main() -> None:
              for seed in SPLIT_SEEDS}
     targets = channel_targets(cohort)
 
-    args.out.mkdir(parents=True, exist_ok=True)
     fits = args.out / 'fits'
     fits.mkdir(exist_ok=True)
-
+    oof = args.out / 'oof'
     pending = [(arm, str(located[arm])) for arm in arms
                if not (fits / f'fit_{arm}.json').exists()]
     initargs = ({name: str(path) for name, path in paths.items()}, args.device,
-                args.threads, args.draws, args.calibration_folds, args.calibration_seed)
+                args.threads, args.draws, args.calibration_folds, args.calibration_seed,
+                str(oof))
     if pending:
         if args.workers > 1:
             with ProcessPoolExecutor(max_workers=min(args.workers, len(pending)),
@@ -590,8 +721,8 @@ def main() -> None:
         'generated_utc': datetime.now(timezone.utc).isoformat(),
         'endpoint': ENDPOINT,
         'support': {**support, 'split_seeds': list(SPLIT_SEEDS),
-                    'qualified_control_set': list(sets['S']),
-                    'rank_qualified_control_set': list(sets['S2']),
+                    'matched_control_set': list(sets['S']),
+                    'profile_inclusive_control_set': list(sets['S2']),
                     'secondary_control_derivation': derivation,
                     'cohort_sha256': digests['cohort.json'],
                     'controls_sha256': digests['controls_qualification.json'],
@@ -601,16 +732,25 @@ def main() -> None:
                     'outer_fold_held_groups': folds},
         'calibration': {'folds': args.calibration_folds, 'seed': args.calibration_seed,
                         'semantics': contrast.family_calibrated.__doc__.strip()},
+        'baselines': contrast.BASELINES,
+        'readings': contrast.READINGS,
         'contrast_definitions': contrast.CONTRASTS,
+        'primary_pair': list(contrast.PRIMARY_PAIR),
+        'companion_pair': list(contrast.COMPANION_PAIR),
         'arms': arms,
+        'extraction_audit': {'arms_complete': len(audit_record['arms_complete']),
+                             'arms_failed': failed,
+                             'file': 'extraction_audit.json'},
         'extraction': {record['arm']: {
             'directory': record['extraction_directory'],
             'manifest_sha256': record['extraction_manifest_sha256'],
             'dtype': record['dtype'], 'checkpoint_path': record['checkpoint_path'],
-            'repeat_likelihood_nats_max': record['repeat_likelihood_nats_max']}
+            'repeat_likelihood_nats_max': record['repeat_likelihood_nats_max'],
+            'held_out_predictions': record['held_out_predictions']}
             for record in records},
         'code_sha256': {str(path.relative_to(ROOT)): sha256_file(path) for path in (
             Path(__file__), ROOT / 'src/capability/stability/ranking_error.py',
+            ROOT / 'src/capability/stability/gate_inputs.py',
             ROOT / 'src/capability/stability/stability_gate.py',
             ROOT / 'src/capability/extensions/stability_followups.py',
             ROOT / 'scripts/capability/interactions/run_residual_panel.py')},
@@ -622,7 +762,7 @@ def main() -> None:
             'arms_requested': arms, 'arms_in_published_support': len(ROSTER),
             'panel': 'not written; the published support is 33 arms',
             'per_arm_point_estimates': {record['arm']: {
-                channel: {name: float(np.mean(seed_mean(record, channel, name)))
+                channel: {name: float(np.nanmean(seed_mean(record, channel, name)))
                           for name in contrast.CONTRASTS}
                 for channel in CHANNELS} for record in records},
             'frozen_comparison': frozen_comparison(published, records),
@@ -638,18 +778,18 @@ def main() -> None:
     panel_record = {
         **identity,
         'families': families,
-        'ranking_versus_error': contrast.ranking_versus_error(
-            {name: family for name, family in families.items() if family['status'] == 'complete'},
-            arms),
+        'ranking_versus_error': contrast.ranking_versus_error(families, arms),
+        'headline': headline(families, comparison, arms),
         'frozen_comparison': comparison,
         'blocked_contrasts': blocked,
         'multiplicity': (
-            'each contrast is one 33-column maximum-statistic family over the same 101 '
-            'resampled family groups, with split seeds averaged inside the family before '
-            'resampling; the bands condition on the fitted cross-validation predictions '
-            'and omit training and split variation; families are not pooled across '
-            'metrics, because the metrics carry different units; the marginal per-arm '
-            'interval beside each column is not a simultaneous statement'),
+            'each of the six contrasts is one 33-column maximum-statistic family over the '
+            'same 101 resampled family groups, with split seeds averaged inside the family '
+            'before resampling; the bands condition on the fitted cross-validation '
+            'predictions and omit training and split variation; families are not pooled '
+            'across baselines or across metrics, because a rank correlation and a squared '
+            'kcal/mol are not commensurable; the marginal per-arm interval beside each '
+            'column is not a simultaneous statement'),
     }
     write_json(args.out / 'panel.json', panel_record)
 
@@ -676,17 +816,20 @@ def main() -> None:
     write_json(args.out / 'channels.json', channel_record)
 
     write_json(args.out / COMPLETION, {
-        'schema': 'stability_ranking_error_completion_v1',
+        'schema': 'stability_ranking_error_completion_v2',
         'status': 'complete' if not blocked else 'complete_with_blocked_contrasts',
         'generated_utc': datetime.now(timezone.utc).isoformat(),
         'arms': arms,
         'blocked_contrasts': blocked,
         'artifacts': {name: sha256_file(args.out / name)
-                      for name in ('panel.json', 'channels.json')},
+                      for name in ('panel.json', 'channels.json', 'extraction_audit.json')},
         'per_arm_fits': {record['arm']: sha256_file(fits / f"fit_{record['arm']}.json")
                          for record in records},
+        'held_out_predictions': {record['arm']: record['held_out_predictions']['sha256']
+                                 for record in records},
         'resolved_above_zero': {name: family.get('resolved_above_zero')
                                 for name, family in families.items()},
+        'headline_answer': panel_record['headline']['answer'],
         'frozen_increment_max_absolute_difference': {
             name: row['max_absolute_difference']
             for name, row in comparison['increments'].items()},
@@ -694,6 +837,7 @@ def main() -> None:
     })
     print(json.dumps({
         'arms': len(arms), 'blocked_contrasts': blocked,
+        'headline': panel_record['headline']['answer'],
         'resolved_above_zero': {name: family.get('resolved_above_zero')
                                 for name, family in families.items()},
         'frozen_increment_max_absolute_difference': {
