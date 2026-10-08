@@ -533,3 +533,99 @@ def test_every_stage_uses_the_shared_output_contract():
         source = (root / f'{stage}.py').read_text(encoding='utf-8')
         assert 'breadth.prepare_output(args.out, COMPLETION)' in source, stage
         assert 'refusing an existing output directory' not in source, stage
+
+
+# --------------------------------------------------------------------------- #
+# The within-family calibrated error control
+# --------------------------------------------------------------------------- #
+
+def test_the_calibration_is_the_stability_control_and_not_a_second_one():
+    from src.capability.stability import ranking_error
+    # Folds and seed are read from the validated module, so the control this
+    # cohort is read under and the stability panel's control are one control.
+    assert ranking_error.CALIBRATION_FOLDS >= 2 and ranking_error.CALIBRATION_SEED
+    assert 'within-family' in ranking_error.family_calibrated.__doc__
+
+
+def test_calibration_sites_make_one_site_of_two_substitutions_of_one_residue():
+    rows = make_rows(2, per_unit=4)
+    extra = rows[0].__class__(**{**rows[0].__dict__, 'row_id': 'alt',
+                                 'mt_aa': 'K' if rows[0].mt_aa != 'K' else 'R',
+                                 'mutant_sequence': substitute(
+                                     rows[0].wildtype, rows[0].position,
+                                     'K' if rows[0].mt_aa != 'K' else 'R')})
+    labels = breadth.calibration_sites([*rows, extra])
+    assert labels[0] == labels[-1]
+    assert len(set(labels.tolist())) == len(rows)
+
+
+def test_a_cohort_without_enough_sites_per_family_is_not_evaluable():
+    from src.capability.stability.ranking_error import CALIBRATION_FOLDS
+    # Two mutated sites per family cannot carry a four-fold within-family
+    # partition. The control says so instead of calibrating on a weaker one.
+    rows = []
+    for unit in range(breadth.INDEPENDENCE_FLOOR + 2):
+        wt = wildtype(unit)
+        for offset in range(CALIBRATION_FOLDS - 2):
+            position = 2 * offset + 1
+            for residue in ('W', 'K'):
+                rows.append(breadth.PhenotypeRow(
+                    cohort='c', row_id=f'{unit}:{offset}:{residue}', background=f'bg{unit}',
+                    unit=breadth.sha_text(wt), wildtype=wt,
+                    mutant_sequence=substitute(wt, position, residue), position=position,
+                    wt_aa=wt[position - 1], mt_aa=residue,
+                    label=random.Random(f'l{unit}{offset}{residue}').gauss(0, 1),
+                    direction=1, label_unit='u', source_sha256=f's{unit}{offset}{residue}'))
+    groups = {row.unit: f'g{row.unit[:6]}' for row in rows}
+    blocks = breadth.control_blocks(rows, None)
+    grid = breadth.quantitative_grid(rows, blocks, {'arm': scores_for(rows)},
+                                     unit_groups=groups, baselines={'base': NARROW_QUALIFIED})
+    assert grid['status'] == 'not_evaluable'
+    assert 'not well posed' in grid['reason']
+    assert grid['support']['groups_evaluable'] == 0
+    assert len(grid['support']['groups_refused']) == breadth.INDEPENDENCE_FLOOR + 2
+
+
+@pytest.fixture(scope='module')
+def grid():
+    rows = make_rows(breadth.INDEPENDENCE_FLOOR + 2, per_unit=12)
+    groups = {row.unit: f'g{row.unit[:6]}' for row in rows}
+    blocks = breadth.control_blocks(rows, None)
+    scores = {'informative': scores_for(rows, coefficient=3.0),
+              'uninformative': scores_for(rows, coefficient=0.0, noise=1.0)}
+    return breadth.quantitative_grid(rows, blocks, scores, unit_groups=groups,
+                                     baselines={'base': NARROW_QUALIFIED}), rows
+
+
+def test_both_readings_are_published_on_one_restricted_support(grid):
+    result, rows = grid
+    assert result['status'] == 'complete'
+    assert set(result['panels']) == {'base_transfer_error', 'base_calibrated_error'}
+    transfer, calibrated = (result['panels']['base_transfer_error'],
+                            result['panels']['base_calibrated_error'])
+    # Identical rows, identical arms, identical groups: only the error treatment
+    # differs, so the two verdicts are comparable.
+    assert transfer['groups'] == calibrated['groups']
+    assert transfer['arms'] == calibrated['arms']
+    assert result['support']['rows_evaluable'] == len(rows)
+    assert 'the difference between them is the error treatment' in result['support']['comparability']
+    assert 'not pooled' in result['multiplicity']
+
+
+def test_the_calibrated_reading_declares_itself_within_family(grid):
+    result, _ = grid
+    assert 'within-family' in breadth.READINGS['calibrated_error']
+    assert 'never reads a held-out family' in breadth.READINGS['transfer_error']
+    records = result['calibration_records']
+    # Baseline and augmented receive the identical treatment, which is what keeps
+    # the paired increment a statement about the added column alone.
+    designs = {record['design'] for record in records}
+    assert designs == {'control', 'control_plus_model'}
+    assert all('not a transfer estimate' in record['semantics'] for record in records)
+
+
+def test_calibration_cannot_rescue_an_uninformative_likelihood(grid):
+    result, _ = grid
+    for name, cell in result['panels'].items():
+        noise = {r['arm']: r for r in cell['arm_results']}['uninformative']
+        assert noise['resolved_positive'] is False, name

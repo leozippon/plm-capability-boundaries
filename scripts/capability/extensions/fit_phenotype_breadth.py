@@ -86,6 +86,7 @@ def fit_one(args, key: str, admission: dict, scores, profiles) -> list[dict]:
                   tuple(b for b in breadth.CANDIDATE_BLOCKS if not b.startswith('prof')))
     endpoints = ['ranking'] + (['quantitative'] if admission['quantitative_licensed'] else [])
     produced = []
+    qualified_sets: dict[str, list[str]] = {}
     for endpoint in endpoints:
         labels = np.asarray([row.oriented_label() for row in rows], dtype=np.float64)
         target = (breadth.rerank(labels, backgrounds) if endpoint == 'ranking' else labels)
@@ -107,6 +108,7 @@ def fit_one(args, key: str, admission: dict, scores, profiles) -> list[dict]:
                             if endpoint == 'quantitative' else
                             'rank target; no physical calibration is claimed and rank-target error '
                             'is never reported as phenotype error')})
+        qualified_sets[endpoint] = list(qualification['qualified'])
         emit(args.out / 'controls' / f'{key}-{endpoint}.json', qualification)
         panel = breadth.fit_cohort(rows, blocks, scores, unit_groups=groups,
                                    qualified=qualification['qualified'], endpoint=endpoint)
@@ -129,7 +131,56 @@ def fit_one(args, key: str, admission: dict, scores, profiles) -> list[dict]:
                          'resolved_positive': panel['resolved_positive'],
                          'resolved_negative': panel['resolved_negative'],
                          'arm_results': panel['arm_results']})
+        if endpoint == 'quantitative':
+            produced.append(quantitative_readings(args, key, admission, rows, blocks, scores,
+                                                  groups, qualified_sets))
     return produced
+
+
+def quantitative_readings(args, key, admission, rows, blocks, scores, groups,
+                          qualified_sets) -> dict:
+    """The transfer and within-family-calibrated readings on identical predictions.
+
+    Two baselines are published rather than one, following the stability
+    ranking-versus-error grid: the set the error metric itself qualified, and the
+    profile-inclusive set the ranking metric qualified. The second exists because
+    the evolutionary profile transfers rank and not level, so the error metric
+    rejects the very columns the ranking metric keeps; reading only the
+    error-qualified set would leave the question "does the likelihood add
+    quantitative information beyond evolutionary statistics" unasked.
+    """
+
+    baselines = {'error_qualified': qualified_sets['quantitative']}
+    ranking_set = qualified_sets.get('ranking')
+    if ranking_set and ranking_set != baselines['error_qualified']:
+        baselines['profile_inclusive'] = ranking_set
+    grid = breadth.quantitative_grid(rows, blocks, scores, unit_groups=groups,
+                                     baselines=baselines)
+    grid.update({
+        'cohort': key, 'phenotype': admission['phenotype'],
+        'endpoint_definition': admission['endpoint'],
+        'quantitative_unit': admission['quantitative_unit'],
+        'baselines': {name: list(columns) for name, columns in baselines.items()},
+        'reading_boundary': (
+            'the transfer reading is the only one that supports a claim about predicting this '
+            'endpoint in its own units on a family the fit never saw; the calibrated reading uses '
+            'the held-out family\'s own labels at other sites to fix that family\'s scale and is '
+            'a within-family statement'),
+        'limitations': breadth.LIMITATIONS})
+    emit(args.out / 'panels' / f'{key}-quantitative-readings.json', grid)
+    summary = {'cohort': key, 'endpoint': 'quantitative_readings', 'status': grid['status'],
+               'metric': 'error', 'groups': grid['support']['groups_evaluable'],
+               'support': grid['support']}
+    if grid['status'] == 'complete':
+        summary['cells'] = {
+            name: {'resolved_positive': cell['resolved_positive'],
+                   'resolved_negative': cell['resolved_negative'],
+                   'median_point_over_half_width': cell['median_point_over_half_width'],
+                   'median_simultaneous_half_width': cell['median_simultaneous_half_width']}
+            for name, cell in grid['panels'].items()}
+    else:
+        summary['reason'] = grid['reason']
+    return summary
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -217,9 +268,11 @@ def main(argv=None) -> int:
         'results': summaries, 'limitations': breadth.LIMITATIONS,
         'resources': resources(args.device)})
     print(json.dumps({'out': str(out), 'arms': sorted(scores),
-                      'results': [{k: s[k] for k in ('cohort', 'endpoint', 'status',
-                                                     'resolved_positive', 'resolved_negative')}
-                                  for s in summaries]}, indent=1))
+                      'results': [{k: row[k] for k in
+                                   ('cohort', 'endpoint', 'status', 'groups',
+                                    'resolved_positive', 'resolved_negative', 'cells', 'reason')
+                                   if k in row}
+                                  for row in summaries]}, indent=1))
     return 0
 
 

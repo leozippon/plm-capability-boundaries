@@ -99,6 +99,21 @@ CONTROL_BLOCKS = BASE_BLOCKS + CANDIDATE_BLOCKS
 #: standardized rank, the rendering every frozen ranking panel uses.
 MODEL_COLUMNS = ('M_nats', 'M_rank')
 
+#: The two readings of the quantitative endpoint, and what each demands of the
+#: likelihood's scale. They are published together because reporting either
+#: alone has been over-read in both directions.
+READINGS = {
+    'transfer_error': (
+        'group-equal held-out squared-error reduction in the endpoint\'s own units under one '
+        'global slope learned on the training families; the stronger claim, since it never reads '
+        'a held-out family\'s labels'),
+    'calibrated_error': (
+        'the same reduction after the within-family affine recalibration the stability '
+        'ranking-versus-error control declares; a within-family reading, because it uses the '
+        'held-out family\'s own labels at other sites to fix that family\'s scale, and therefore '
+        'the error counterpart of the within-background rank correlation'),
+}
+
 #: Simultaneous-inference settings. The band is the 95th percentile of the
 #: maximum absolute centered bootstrap deviation over the declared contrast
 #: family under one shared draw of the independent groups, which is the rule
@@ -829,6 +844,180 @@ def aggregate(rows: Sequence[dict], key: str, groups: Sequence[str]) -> np.ndarr
     return np.asarray([float(np.mean(by_group[group])) for group in groups])
 
 
+def arm_band(cells: Sequence[dict], arms: Sequence[str],
+             groups: Sequence[str]) -> tuple[dict, list[dict]]:
+    """One simultaneous band over the arms, from per-background increment cells.
+
+    Seeds are averaged within a background, backgrounds within their group, and
+    groups weighted equally; the band is then one shared-draw family over the
+    arms. Both readings of the quantitative endpoint and the ranking endpoint go
+    through this one function, so a verdict never differs because two call sites
+    aggregated differently.
+    """
+
+    averaged: list[dict] = []
+    for arm in arms:
+        for background in sorted({cell['background'] for cell in cells if cell['arm'] == arm}):
+            selected = [cell for cell in cells
+                        if cell['arm'] == arm and cell['background'] == background]
+            averaged.append({'arm': arm, 'background': background, 'group': selected[0]['group'],
+                             'increment': float(np.mean([c['increment'] for c in selected]))})
+    matrix = np.column_stack([aggregate([r for r in averaged if r['arm'] == arm],
+                                        'increment', groups) for arm in arms])
+    band = simultaneous_band(matrix)
+    resolved = []
+    for index, arm in enumerate(arms):
+        low, high = band['simultaneous'][index]
+        point_low, point_high = band['pointwise'][index]
+        half_width = 0.5 * (high - low)
+        resolved.append({'arm': arm, 'point': band['point'][index],
+                         'pointwise': [point_low, point_high], 'simultaneous': [low, high],
+                         'simultaneous_half_width': half_width,
+                         'point_over_half_width': (abs(band['point'][index]) / half_width
+                                                   if half_width > 0 else None),
+                         'resolved_positive': low > 0, 'resolved_negative': high < 0,
+                         'pointwise_positive': point_low > 0})
+    return band, resolved
+
+
+def calibration_sites(rows: Sequence[PhenotypeRow]) -> np.ndarray:
+    """The leakage unit of the within-family recalibration: a mutated site.
+
+    Two substitutions of the same residue of the same wild type are one site, so
+    neither can be used to calibrate the other. The label is the wild-type digest
+    with the residue index, which is what the stability control's site partition
+    expects and carries no measurement.
+    """
+
+    return np.asarray([f'{row.unit[:12]}:{row.position}' for row in rows])
+
+
+def quantitative_grid(rows: Sequence[PhenotypeRow], blocks: dict[str, np.ndarray],
+                      scores: dict[str, dict[str, float]], *, unit_groups: dict[str, str],
+                      baselines: dict[str, Sequence[str]],
+                      seeds: Sequence[int] = SPLIT_SEEDS) -> dict[str, Any]:
+    """Transfer and within-family-calibrated error, on identical predictions.
+
+    The transfer error learns one global slope from the endpoint's units on the
+    training families and applies it to families the fit never saw, so it asks
+    two questions at once: does the model carry quantitative information, and is
+    one slope right for every family. Nothing makes the second true. The
+    calibrated reading answers the first with the second already settled: before
+    the error is taken, each held-out prediction is recalibrated inside its own
+    family by an affine map fitted on that family's *other* sites.
+
+    The recalibration is not reimplemented here. It is
+    :func:`..stability.ranking_error.family_calibrated` with that module's own
+    folds and seed, so the control this cohort is read under and the control the
+    stability panel is read under are the same control.
+
+    **This is a within-family reading and cannot be read as prediction in the
+    endpoint's units on a new family**: it uses the held-out family's own labels,
+    at other sites, to fix that family's scale. It is the error counterpart of
+    the within-background rank correlation, and the transfer reading is published
+    beside it for the stronger claim. Both readings come from one set of fitted
+    predictions over one restricted support, so the only difference between them
+    is the error treatment.
+    """
+
+    from ..stability.ranking_error import (
+        CALIBRATION_FOLDS, CALIBRATION_SEED, family_calibrated)
+
+    sites_all = calibration_sites(rows)
+    groups_all = np.asarray([unit_groups[row.unit] for row in rows])
+    by_group: dict[str, set] = defaultdict(set)
+    for group, site in zip(groups_all.tolist(), sites_all.tolist()):
+        by_group[group].add(site)
+    eligible = sorted(group for group, sites in by_group.items()
+                      if len(sites) >= CALIBRATION_FOLDS)
+    mask = np.isin(groups_all, eligible)
+    support = {
+        'folds': CALIBRATION_FOLDS, 'seed': CALIBRATION_SEED,
+        'site': 'wild-type digest with the mutated residue index',
+        'groups_offered': len(by_group), 'groups_evaluable': len(eligible),
+        'groups_refused': sorted(set(by_group) - set(eligible)),
+        'rows_offered': len(rows), 'rows_evaluable': int(mask.sum()),
+        'rule': (f'a family needs at least {CALIBRATION_FOLDS} distinct mutated sites to carry '
+                 'the within-family affine recalibration; a family below that is refused and '
+                 'named, never calibrated on a weaker partition'),
+        'comparability': ('both readings are computed on this restricted support only, so the '
+                          'difference between them is the error treatment and not the support; '
+                          'the full-support transfer reading is the separate quantitative panel'),
+    }
+    floor_record = bootstrap_unit_floor(len(eligible))
+    if floor_record['degenerate'] or len(eligible) < OUTER_FOLDS:
+        return {'status': 'not_evaluable', 'support': support,
+                'independence_floor': floor_record,
+                'reason': (f'{len(eligible)} families carry at least {CALIBRATION_FOLDS} mutated '
+                           f'sites, which cannot support the floor and the outer partition; the '
+                           'calibrated control is not well posed on this cohort')}
+    selected = [row for row, keep in zip(rows, mask.tolist()) if keep]
+    sub_blocks = {name: matrix[mask] for name, matrix in blocks.items()}
+    backgrounds = np.asarray([row.background for row in selected])
+    groups = groups_all[mask]
+    sites = sites_all[mask]
+    labels = np.asarray([row.oriented_label() for row in selected], dtype=np.float64)
+    arms = sorted(scores)
+    ordered = sorted(set(groups.tolist()))
+    cells: list[dict] = []
+    calibrations: list[dict] = []
+    for baseline, names in baselines.items():
+        for arm in arms:
+            model = model_block(selected, scores[arm], backgrounds)
+            arm_blocks = {**sub_blocks, 'M': model['M_nats']}
+            for seed in seeds:
+                signature = outer_signature(groups, seed)
+                control, _ = fold_predictions(design(arm_blocks, names), labels,
+                                              backgrounds, groups, signature)
+                augmented, _ = fold_predictions(design(arm_blocks, [*names, 'M']), labels,
+                                                backgrounds, groups, signature)
+                recalibrated = {}
+                for key, prediction in (('control', control),
+                                        ('control_plus_model', augmented)):
+                    values, record = family_calibrated(prediction, labels, groups, sites,
+                                                       folds=CALIBRATION_FOLDS,
+                                                       seed=CALIBRATION_SEED)
+                    recalibrated[key] = values
+                    calibrations.append({'baseline': baseline, 'arm': arm, 'seed': seed,
+                                         'design': key, **record})
+                for reading, predictions in (
+                        ('transfer_error', {'control': control,
+                                            'control_plus_model': augmented}),
+                        ('calibrated_error', recalibrated)):
+                    for row in background_metrics(predictions, labels, backgrounds, groups,
+                                                  metric='error'):
+                        cells.append({
+                            'baseline': baseline, 'reading': reading, 'arm': arm, 'seed': seed,
+                            'background': row['background'], 'group': row['group'],
+                            'increment': (row['scores']['control']
+                                          - row['scores']['control_plus_model'])})
+    panels = {}
+    for baseline in baselines:
+        for reading in ('transfer_error', 'calibrated_error'):
+            selected_cells = [c for c in cells
+                              if c['baseline'] == baseline and c['reading'] == reading]
+            band, resolved = arm_band(selected_cells, arms, ordered)
+            ratios = [r['point_over_half_width'] for r in resolved
+                      if r['point_over_half_width'] is not None]
+            panels[f'{baseline}_{reading}'] = {
+                'baseline': baseline, 'baseline_blocks': list(baselines[baseline]),
+                'reading': reading, 'arms': arms, 'groups': ordered,
+                'inference': band, 'arm_results': resolved,
+                'median_point_over_half_width': float(np.median(ratios)) if ratios else None,
+                'median_simultaneous_half_width': float(np.median(
+                    [r['simultaneous_half_width'] for r in resolved])),
+                'resolved_positive': sum(1 for r in resolved if r['resolved_positive']),
+                'resolved_negative': sum(1 for r in resolved if r['resolved_negative'])}
+    return {'status': 'complete', 'support': support, 'independence_floor': floor_record,
+            'split_seeds': list(seeds), 'readings': READINGS, 'panels': panels,
+            'calibration_records': calibrations,
+            'multiplicity': ('each of the four cells carries its own simultaneous family over the '
+                             'arms; the cells are not pooled, so a verdict that differs between '
+                             'two cells is a difference between differently-qualified error '
+                             'controls and not a multiplicity-corrected contrast'),
+            'per_background': cells}
+
+
 def fit_cohort(rows: Sequence[PhenotypeRow], blocks: dict[str, np.ndarray],
                scores: dict[str, dict[str, float]], *, unit_groups: dict[str, str],
                qualified: Sequence[str], endpoint: str,
@@ -878,23 +1067,7 @@ def fit_cohort(rows: Sequence[PhenotypeRow], blocks: dict[str, np.ndarray],
                 'target_sha256': array_digest(target)}
     arms = sorted(scores)
     groups_ordered = sorted(set(groups.tolist()))
-    averaged: list[dict] = []
-    for arm in arms:
-        for background in sorted({r['background'] for r in per_background if r['arm'] == arm}):
-            cells = [r for r in per_background if r['arm'] == arm and r['background'] == background]
-            averaged.append({'arm': arm, 'background': background, 'group': cells[0]['group'],
-                             'increment': float(np.mean([c['increment'] for c in cells]))})
-    matrix = np.column_stack([aggregate([r for r in averaged if r['arm'] == arm],
-                                        'increment', groups_ordered) for arm in arms])
-    band = simultaneous_band(matrix)
-    resolved = []
-    for index, arm in enumerate(arms):
-        low, high = band['simultaneous'][index]
-        point_low, point_high = band['pointwise'][index]
-        resolved.append({'arm': arm, 'point': band['point'][index],
-                         'pointwise': [point_low, point_high], 'simultaneous': [low, high],
-                         'resolved_positive': low > 0, 'resolved_negative': high < 0,
-                         'pointwise_positive': point_low > 0})
+    band, resolved = arm_band(per_background, arms, groups_ordered)
     return {'endpoint': endpoint, 'metric': metric, 'model_column': model_column,
             'qualified_controls': list(qualified), 'arms': arms,
             'groups': groups_ordered, 'split_seeds': list(seeds),
