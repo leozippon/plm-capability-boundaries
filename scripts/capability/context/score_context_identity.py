@@ -54,11 +54,10 @@ EXPECT_PLAN = "context_identity_plan.json"
 EXPECT_SCORE = "context_identity_scores.json"
 EXPECT_ANALYSE = "context_identity_curve.json"
 
-#: Batch invariance tolerances, the context-homologue stage's own: a packed row's
-#: target NLL must agree with the same row scored alone, and the mutant-minus-wild
-#: differences -- the quantity the endpoint is built from -- far more tightly.
-MAX_BATCH_SINGLE_NATS_PER_TOKEN = 0.02
-MAX_MUTANT_DELTA_NATS = 0.001
+#: The batch extent the startup probe measures the spread at. Production never
+#: scores at it; see
+#: :data:`~src.capability.context.homology_context.SCORING_ROWS_PER_FORWARD` for
+#: why the spread is measured and published rather than tolerated.
 
 
 def stage_module(filename: str):
@@ -265,6 +264,105 @@ def plan(args: argparse.Namespace) -> None:
     )
 
 
+def numerics_preflight(args, arm, stage, targets, plans, assays, *, conditions) -> dict:
+    """Gate on repeat determinism; measure and publish the batch-extent spread.
+
+    Production scores one row per forward
+    (:data:`~src.capability.context.homology_context.SCORING_ROWS_PER_FORWARD`), so
+    the gate is the one the extraction lane declares for batch-size-one scoring:
+    the same row scored twice must give the identical number, because at one row
+    per forward the repeat *is* the identical computation and any difference is
+    non-determinism rather than rounding.
+
+    The batched-versus-single spread is still measured, on the first assay that
+    supplies each condition, and published -- not gated on. It is the evidence for
+    the protocol: at eight rows per forward this quantity reached 1.5e-3 and 4.6e-3
+    nats on the two larger ProGen2 rungs, which is what a tolerance would have had
+    to be widened past.
+    """
+
+    checks: dict[str, dict] = {}
+    for condition in conditions:
+        assay = next(
+            (
+                row
+                for row in assays
+                if plans[row["target_id"]]["conditions"][condition]["status"] == "present"
+            ),
+            None,
+        )
+        if assay is None:
+            continue
+        target = targets[assay["target_id"]]
+        plan_record = plans[assay["target_id"]]
+        sequences = [target["wildtype"]] + variant_sequences(
+            target["wildtype"], assay["mutants"][:2]
+        )
+        packed = [ch.item_ids(arm, sequence, modality="protein") for sequence in sequences]
+        spans = [
+            ch.target_span(arm, ids, record=sequence)
+            for ids, sequence in zip(packed, sequences)
+        ]
+        context_ids: list[int] = []
+        for item in plan_record["items"][condition]:
+            context_ids.extend(ch.item_ids(arm, item["sequence"], modality="protein"))
+        prefix = ch.row_prefix_ids(arm) + context_ids
+        rows = [prefix + ids for ids in packed]
+
+        def scored(batch: list[list[int]], offset: int) -> list[float]:
+            logits, ids = stage._forward_rows(arm, batch)
+            out = []
+            for index in range(len(batch)):
+                left, right = spans[offset + index]
+                value = stage._target_nll(
+                    logits[index : index + 1],
+                    ids[index : index + 1],
+                    len(prefix) + left,
+                    len(prefix) + right,
+                )
+                out.append(-value["nll_sum"])
+            del logits, ids
+            return out
+
+        single = [scored([row], index)[0] for index, row in enumerate(rows)]
+        repeat = [scored([row], index)[0] for index, row in enumerate(rows)]
+        drift = [abs(single[index] - repeat[index]) for index in range(len(rows))]
+        probe = scored(rows[: H.BATCH_EXTENT_PROBE_ROWS], 0)
+        extent = [
+            (probe[index] - probe[0]) - (single[index] - single[0])
+            for index in range(1, len(probe))
+        ]
+        checks[condition] = {
+            "assay": assay["assay"],
+            "rows": len(rows),
+            "rows_per_forward": H.SCORING_ROWS_PER_FORWARD,
+            "max_repeat_difference_nats": max(drift),
+            "repeat_tolerance_nats": H.REPEAT_TOLERANCE_NATS,
+            "measured_batch_extent_spread_nats": {
+                "probe_rows": len(probe),
+                "max_mutant_delta_difference": (
+                    max(abs(value) for value in extent) if extent else 0.0
+                ),
+                "mutant_delta_differences": extent,
+                "gated_on": False,
+                "note": (
+                    "recorded as the evidence for scoring one row per forward; production "
+                    "never scores at this batch extent"
+                ),
+            },
+            "finite": bool(np.isfinite(single).all() and np.isfinite(repeat).all()),
+        }
+        if not checks[condition]["finite"] or max(drift) > H.REPEAT_TOLERANCE_NATS:
+            raise RuntimeError(
+                f"{args.arm}: a row scored twice at one row per forward differs by "
+                f"{max(drift):.3e} nats on condition {condition} (assay "
+                f"{assay['assay']}), above the {H.REPEAT_TOLERANCE_NATS:.1e} tolerance. "
+                "At one row per forward the repeat is the identical computation, so this "
+                "is non-determinism and nothing is scored under it."
+            )
+    return checks
+
+
 def score(args: argparse.Namespace) -> None:
     import torch
 
@@ -282,9 +380,44 @@ def score(args: argparse.Namespace) -> None:
     if args.assay_limit:
         assays = assays[: args.assay_limit]
     started = time.monotonic()
-    checks: dict[str, dict] = {}
+    preflight = {
+        "arm": args.arm,
+        "device": args.device,
+        "dtype": args.dtype,
+        "budget": args.budget,
+        "rows_per_forward": H.SCORING_ROWS_PER_FORWARD,
+        "homologs": str(args.homologs),
+        "homologs_sha256": sha256_file(args.homologs),
+        "assays_declared": len(assays),
+        "first_assay": assays[0]["assay"],
+        "last_assay": assays[-1]["assay"],
+        "targets": len(targets),
+        "item_counts": support["item_counts"],
+        "cuda_free_bytes": (
+            torch.cuda.mem_get_info(torch.device(args.device))[0]
+            if args.device.startswith("cuda")
+            else None
+        ),
+    }
+    write_json(args.out / "preflight.json", preflight)
+    print(f"preflight: {json.dumps(preflight)}", flush=True)
     results: list[dict] = []
     conditions = tuple(H.CONDITIONS) + (H.CEILING_CONDITION,)
+
+    # The batch-invariance check runs here, on the first assay that supplies each
+    # condition, rather than when the scoring loop first reaches that condition.
+    # The check is a refusal: if a packed row's target NLL depends on the batch it
+    # was scored in, nothing this arm produces under this packing is usable.
+    # Discovering that hours into a 201-assay cell throws away every assay already
+    # scored, so it is discovered in the first minute instead.
+    checks = numerics_preflight(
+        args, arm, stage, targets, plans, assays, conditions=conditions
+    )
+    print(
+        f"numerics verified on {len(checks)} conditions at "
+        f"{H.SCORING_ROWS_PER_FORWARD} row(s) per forward",
+        flush=True,
+    )
 
     for number, assay in enumerate(assays, start=1):
         target = targets[assay["target_id"]]
@@ -315,47 +448,33 @@ def score(args: argparse.Namespace) -> None:
                     f"{assay['assay']} {condition}: packed row exceeds the {args.budget}-position budget"
                 )
             sums: list[float] = []
-            for start in range(0, len(rows), args.batch_size):
-                batch = rows[start : start + args.batch_size]
-                logits, ids = stage._forward_rows(arm, batch)
-                for index in range(len(batch)):
-                    left, right = spans[start + index]
-                    value = stage._target_nll(
-                        logits[index : index + 1],
-                        ids[index : index + 1],
-                        len(prefix) + left,
-                        len(prefix) + right,
-                    )
-                    sums.append(-value["nll_sum"])
-                del logits, ids
+            try:
+                for start in range(0, len(rows), H.SCORING_ROWS_PER_FORWARD):
+                    batch = rows[start : start + H.SCORING_ROWS_PER_FORWARD]
+                    logits, ids = stage._forward_rows(arm, batch)
+                    for index in range(len(batch)):
+                        left, right = spans[start + index]
+                        value = stage._target_nll(
+                            logits[index : index + 1],
+                            ids[index : index + 1],
+                            len(prefix) + left,
+                            len(prefix) + right,
+                        )
+                        sums.append(-value["nll_sum"])
+                    del logits, ids
+            except Exception as error:
+                # A cell that dies mid-loop must say which assay, which condition
+                # and which row shapes it died on; the log tail is the only thing
+                # a pod failure leaves behind.
+                raise RuntimeError(
+                    f"{args.arm}: scoring {assay['assay']} under {condition} failed after "
+                    f"{len(sums)} of {len(rows)} rows "
+                    f"(prefix {len(prefix)}, target span {spans[0]}, widest row "
+                    f"{max(len(row) for row in rows)}, budget {args.budget}, assay "
+                    f"{number} of {len(assays)}): {type(error).__name__}: {error}"
+                ) from error
             if not np.isfinite(sums).all():
                 raise RuntimeError(f"{assay['assay']} {condition}: non-finite likelihood")
-            if condition not in checks:
-                single = []
-                for index in range(min(3, len(rows))):
-                    logits, ids = stage._forward_rows(arm, [rows[index]])
-                    left, right = spans[index]
-                    value = stage._target_nll(
-                        logits, ids, len(prefix) + left, len(prefix) + right
-                    )
-                    single.append(-value["nll_sum"])
-                    del logits, ids
-                gaps = [
-                    abs(sums[index] - single[index]) / (spans[index][1] - spans[index][0])
-                    for index in range(len(single))
-                ]
-                deltas = [
-                    (sums[index] - sums[0]) - (single[index] - single[0])
-                    for index in range(1, len(single))
-                ]
-                checks[condition] = {
-                    "max_batch_single_nats_per_token": max(gaps),
-                    "mutant_delta_difference_nats": deltas,
-                }
-                if max(gaps) > MAX_BATCH_SINGLE_NATS_PER_TOKEN or (
-                    deltas and max(abs(value) for value in deltas) > MAX_MUTANT_DELTA_NATS
-                ):
-                    raise RuntimeError(f"batch/single check failed: {checks[condition]}")
             wild[condition] = sums[0]
             scored[condition] = (np.asarray(sums[1:]) - sums[0]).tolist()
 
@@ -411,11 +530,16 @@ def score(args: argparse.Namespace) -> None:
                 "caveat": ch.CAVEATS.get(args.arm),
                 "scoring_stratum": "target_only_native_packed_residue_span",
                 "budget": args.budget,
-                "batch_size": args.batch_size,
-                "batch_single_checks": checks,
-                "batch_single_tolerances": {
-                    "nats_per_token": MAX_BATCH_SINGLE_NATS_PER_TOKEN,
-                    "mutant_delta_nats": MAX_MUTANT_DELTA_NATS,
+                "rows_per_forward": H.SCORING_ROWS_PER_FORWARD,
+                "numerics_checks": checks,
+                "numerics_protocol": {
+                    "rows_per_forward": H.SCORING_ROWS_PER_FORWARD,
+                    "repeat_tolerance_nats": H.REPEAT_TOLERANCE_NATS,
+                    "gate": "a row scored twice must give the identical number",
+                    "reason": (
+                        "the endpoint is a difference of two scored states, so a "
+                        "batch-extent dependent shift lands on it directly"
+                    ),
                 },
                 "support": support,
                 "assay_limit": args.assay_limit or None,
@@ -491,6 +615,19 @@ def family_matrix(records: list[dict], *, referent: str, bins: list[str], target
             if values:
                 matrix[position, index] = float(np.mean(values))
     return order, columns, matrix
+
+
+def columns_for(referent: str, admitted: list[str]) -> list[str]:
+    """Every condition read against one referent: the bins, the other control, the ceiling.
+
+    The other control is a column rather than a footnote because that is the
+    estimate that separates a homology-specific effect from a general prefix cost:
+    read against the empty context, the matched-unrelated condition *is* the price
+    of having a prefix at all.
+    """
+
+    others = [name for name in H.CONTROL_CONDITIONS if name != referent]
+    return [*admitted, *others, H.CEILING_CONDITION]
 
 
 def panel_statistics(records: list[dict], *, referent: str, bins: list[str], targets, label: str):
@@ -571,6 +708,131 @@ def panel_statistics(records: list[dict], *, referent: str, bins: list[str], tar
     }
 
 
+def mechanism(records: list[dict]) -> dict:
+    """Separate a copying/identity-driven degradation from a general prefix cost.
+
+    Two candidate explanations of a context effect, tested with numbers rather
+    than asserted:
+
+    (a) **copying or prefix-induced bias toward the prompted sequence**, which
+        predicts that the per-target effect tracks how close the context is to the
+        target -- its realised identity, and the length of the longest verbatim run
+        it shares with the target -- and that it is largest for the verbatim
+        ceiling;
+    (b) **a general prefix cost**, where any long prefix moves the likelihood
+        surface, which predicts an effect roughly independent of identity and
+        equally present in the matched-unrelated condition.
+
+    The association is the Spearman correlation, over (assay, bin) cells, between
+    the per-cell effect against the empty context and each covariate, with a
+    bootstrap over wild-type family clusters so the unit of dependence is the
+    family and not the cell. The estimator is the package's own paired group
+    bootstrap, whose ``derived_statistic`` hook returns each side's own interval;
+    its difference interval says which covariate tracks the effect better.
+
+    The general prefix cost itself is not estimated here: it is the
+    matched-unrelated column of the no-context panel.
+    """
+
+    from src.capability.core.statistics import (
+        MINIMUM_BOOTSTRAP_UNITS,
+        paired_group_bootstrap,
+    )
+
+    def rank_correlation(truth, values):
+        return float(spearmanr(truth, values).statistic)
+
+    out: dict[str, dict] = {}
+    for record in records:
+        cells = []
+        for assay in record["assays"]:
+            empty = assay["spearman"].get(H.NO_CONTEXT)
+            if empty is None:
+                continue
+            for name in H.BIN_NAMES:
+                value = assay["spearman"].get(name)
+                identities = [
+                    float(v) for v in assay["context_identities"].get(name, ()) if np.isfinite(v)
+                ]
+                overlaps = assay["context_max_lcs"].get(name, ())
+                if value is None or not identities or not overlaps:
+                    continue
+                cells.append(
+                    {
+                        "assay": assay["assay"],
+                        "bin": name,
+                        "cluster": int(assay["cluster"]),
+                        "effect": float(value) - float(empty),
+                        "mean_identity": float(np.mean(identities)),
+                        "max_lcs": float(max(overlaps)),
+                    }
+                )
+        clusters = {cell["cluster"] for cell in cells}
+        summary = {
+            "cells": len(cells),
+            "clusters": len(clusters),
+            "unit": "wild-type family cluster",
+            "effect": f"within-assay Spearman under a bin minus the same under {H.NO_CONTEXT}",
+        }
+        if len(clusters) < MINIMUM_BOOTSTRAP_UNITS or len(cells) < 3:
+            out[record["arm"]] = {
+                **summary,
+                "status": "unresolved_thin_support",
+                "reason": "fewer clusters than the independence floor",
+            }
+            continue
+        effect = np.asarray([cell["effect"] for cell in cells])
+        identity = np.asarray([cell["mean_identity"] for cell in cells])
+        overlap = np.asarray([cell["max_lcs"] for cell in cells])
+        groups = np.asarray([cell["cluster"] for cell in cells])
+        left = paired_group_bootstrap(
+            effect, identity, overlap, groups, rank_correlation,
+            seed=H.BOOTSTRAP_SEED, n_bootstrap=H.BOOTSTRAP_DRAWS,
+            derived_statistic=lambda first, second: first,
+        )
+        right = paired_group_bootstrap(
+            effect, identity, overlap, groups, rank_correlation,
+            seed=H.BOOTSTRAP_SEED, n_bootstrap=H.BOOTSTRAP_DRAWS,
+            derived_statistic=lambda first, second: second,
+        )
+        out[record["arm"]] = {
+            **summary,
+            "status": "estimated",
+            "effect_versus_context_identity": {
+                "spearman": left["derived_score"],
+                "interval": left["derived_ci95"],
+                "reads": "negative means the effect is more damaging the closer the context",
+            },
+            "effect_versus_longest_common_substring": {
+                "spearman": right["derived_score"],
+                "interval": right["derived_ci95"],
+                "reads": "negative means the effect is more damaging the longer the shared run",
+            },
+            "identity_minus_lcs_association": {
+                "difference": left["difference"],
+                "interval": left["difference_ci95"],
+            },
+            "bootstrap": {
+                "draws": left["n_bootstrap"],
+                "seed": H.BOOTSTRAP_SEED,
+                "groups": left["n_groups"],
+                "method": "paired group bootstrap over family clusters",
+            },
+            "candidate_hypotheses": {
+                "copying_or_prefix_bias": (
+                    "predicts a monotone association with identity and with the longest "
+                    "shared run, and the largest effect at the verbatim ceiling"
+                ),
+                "general_prefix_cost": (
+                    "predicts an effect independent of identity and present in the "
+                    "matched-unrelated condition; read that from the matched-unrelated "
+                    "column of the no-context panel, not from here"
+                ),
+            },
+        }
+    return out
+
+
 def analyse(args: argparse.Namespace) -> None:
     records = []
     for path in sorted(args.scores):
@@ -586,6 +848,14 @@ def analyse(args: argparse.Namespace) -> None:
     arms = [record["arm"] for record in records]
     if len(set(arms)) != len(arms):
         raise SystemExit(f"two score records carry the same arm: {arms}")
+    protocols = {record["arm"]: record.get("rows_per_forward") for record in records}
+    if set(protocols.values()) != {H.SCORING_ROWS_PER_FORWARD}:
+        raise SystemExit(
+            f"these records were not all scored at {H.SCORING_ROWS_PER_FORWARD} row(s) per "
+            f"forward: {protocols}. Scores taken at different batch extents are different "
+            "arithmetic and are never pooled or compared across arms; rescore the records "
+            "that differ."
+        )
     support = records[0]["support"]
     admitted = [name for name in support["admitted_bins"]]
     balanced = set(support["balanced_target_ids"])
@@ -597,18 +867,25 @@ def analyse(args: argparse.Namespace) -> None:
             )
     args.out.mkdir(parents=True, exist_ok=True)
     panels = []
-    for referent in H.REFERENTS:
+    # The reading referent first, then the others: the order the artefact is read in.
+    ordered = [H.READING_REFERENT] + [r for r in H.REFERENTS if r != H.READING_REFERENT]
+    for referent in ordered:
         panels.append(
             panel_statistics(
-                records, referent=referent, bins=admitted, targets=None, label=H.PRIMARY_PANEL
+                records,
+                referent=referent,
+                bins=columns_for(referent, admitted),
+                targets=None,
+                label=H.PRIMARY_PANEL,
             )
+            | {"is_reading_referent": referent == H.READING_REFERENT}
         )
         if support["balanced_clusters"] >= H.GROUP_FLOOR:
             panels.append(
                 panel_statistics(
                     records,
                     referent=referent,
-                    bins=admitted,
+                    bins=columns_for(referent, admitted),
                     targets=balanced,
                     label=H.SECONDARY_PANEL,
                 )
@@ -669,6 +946,8 @@ def analyse(args: argparse.Namespace) -> None:
             "support": support,
             "realised_identity_by_bin": realised,
             "panels": panels,
+            "reading_referent": H.READING_REFERENT,
+            "mechanism": mechanism(records),
             "ceiling": ceiling,
             "limitations": list(H.LIMITATIONS),
             "runtime": runtime("cpu"),
@@ -692,7 +971,12 @@ def main() -> None:
     parser.add_argument("--homologs", type=Path)
     parser.add_argument("--scores", type=Path, nargs="*", default=[])
     parser.add_argument("--budget", type=int, default=H.POSITION_BUDGET)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=H.SCORING_ROWS_PER_FORWARD,
+        help="rows per forward; the declaration fixes it at one and refuses any other value",
+    )
     parser.add_argument("--dtype", default="float32")
     parser.add_argument("--assay-limit", type=int, default=0)
     args = parser.parse_args()
@@ -700,6 +984,14 @@ def main() -> None:
         raise SystemExit(
             f"the declaration fixes the position budget at {H.POSITION_BUDGET}; a run at "
             f"{args.budget} is a different experiment"
+        )
+    if args.batch_size != H.SCORING_ROWS_PER_FORWARD:
+        raise SystemExit(
+            f"the declaration fixes scoring at {H.SCORING_ROWS_PER_FORWARD} row(s) per "
+            f"forward and was given {args.batch_size}. Scores taken at a different batch "
+            "extent are different arithmetic: the mutant-minus-wild differences this "
+            "endpoint is built from moved by 1.5e-3 and 4.6e-3 nats at eight rows per "
+            "forward on the two larger ProGen2 rungs."
         )
     if args.phase in {"plan", "score"}:
         if args.arm is None or args.homologs is None:

@@ -408,6 +408,43 @@ STRUCTURE_COMPARISON_RULE = (
 #: the variant. The floor is the package's own.
 GROUP_FLOOR = MINIMUM_BOOTSTRAP_UNITS
 
+# ------------------------------------------------------------------- numerics
+
+#: Rows per forward pass when scoring. **One**, and not for throughput.
+#:
+#: The endpoint is a difference of two scored states -- a variant's summed log
+#: likelihood minus its own wild type's -- so anything that shifts a row's score
+#: by an amount depending on *which batch it was scored in* lands on the endpoint
+#: directly. That dependence is real and is arithmetic, not modelling: a
+#: linear-algebra library reduces over the hidden dimension differently at
+#: different batch extents. The position lane measured it at up to 3.24e-5 nats on
+#: shared-prefix terms and answered it by scoring one row per forward, which is
+#: also the protocol the pairwise and stability panels run under.
+#:
+#: **Measured here, on this experiment's own rows.** At eight rows per forward the
+#: mutant-minus-wild differences moved by 1.495e-3 nats on ProGen2-medium and
+#: 4.578e-3 on ProGen2-xlarge -- both exact binary fractions, the signature of
+#: half-precision rounding -- against 2.4e-4 on the same quantity locally. The two
+#: larger ProGen2 rungs are the ones that failed; the per-token figure stayed near
+#: 1e-6 throughout, which is why a per-token tolerance cannot catch this.
+#:
+#: Widening the tolerance would have admitted an artifact and, with it, a real
+#: defect of the same size. Scoring one row per forward removes the dependence at
+#: source and lets the tolerance stay a genuine check.
+SCORING_ROWS_PER_FORWARD = 1
+
+#: With one row per forward the batched-versus-single comparison is degenerate, so
+#: the gate becomes the one the extraction lane already declares for batch-size-one
+#: scoring: the same row scored twice must give the identical number. A nonzero
+#: difference there is non-determinism, not rounding, and nothing is scored under
+#: it.
+REPEAT_TOLERANCE_NATS = 0.0
+
+#: The batch-extent spread is still *measured* at startup and published, because it
+#: is the evidence for the protocol above rather than a number anything is gated
+#: on.
+BATCH_EXTENT_PROBE_ROWS = 8
+
 #: This experiment's own draws: candidate ordering, donor ordering, generation
 #: and the bootstrap.
 DRAW_SEED = 20261008
@@ -421,18 +458,35 @@ BOOTSTRAP_DRAWS = 10000
 #: the simultaneous 95% interval over the whole arm-by-bin family excludes zero;
 #: the pointwise reading is reported beside it and is explicitly weaker.
 VANISHING_POINT_RULE = (
-    "read on the primary per-bin paired panel: scan CURVE_ORDER from the highest "
-    "identity bin downward; the vanishing point is the lower identity edge of the "
-    "last bin whose primary (versus-unrelated) contrast has a simultaneous 95% "
-    "interval above zero, and the first bin below it is where the gain is no "
-    "longer established. A bin that fails admission, or whose interval spans "
-    "zero, is reported as unresolved -- which is not the same as a bin where the "
-    "gain vanished"
+    "read on the primary per-bin paired panel against the READING_REFERENT (the "
+    "empty context): scan CURVE_ORDER from the highest identity bin downward; the "
+    "vanishing point is the lower identity edge of the last bin whose contrast has "
+    "a simultaneous 95% interval above zero, and the first bin below it is where "
+    "the gain is no longer established. A bin that fails admission, or whose "
+    "interval spans zero, is reported as unresolved -- which is not the same as a "
+    "bin where the gain vanished, and a bin resolved below zero is reported as "
+    "that rather than as unresolved"
 )
 
 #: Which panel decides the vanishing point, and which is reported beside it.
 PRIMARY_PANEL = "per_bin_paired_support"
 SECONDARY_PANEL = "complete_case_over_admitted_bins"
+
+#: The referent the curve is **read** on, as distinct from the referent that
+#: controls for content (:data:`PRIMARY_REFERENT`).
+#:
+#: A gain measured only against the matched-unrelated context cannot tell "a
+#: homologous prefix helps less than an unrelated one" from "any prefix at all
+#: hurts, and an unrelated one hurts more". Those are different claims, and the
+#: second is answered by the matched-unrelated condition's own contrast against
+#: the empty context -- the general prefix cost -- which is estimated as a column
+#: of the no-context panel rather than argued about. So each bin is read against
+#: the empty context, and the matched-unrelated comparison is reported beside it.
+#:
+#: This is a reading rule and lives in the inference section, so it changes no
+#: digest and invalidates no scored record: all of these conditions were already
+#: scored.
+READING_REFERENT = NO_CONTEXT
 
 #: What this design cannot establish, recorded here so no artefact has to
 #: rediscover it.
@@ -448,6 +502,8 @@ LIMITATIONS: tuple[str, ...] = (
     "relative is not absence from any model's pretraining corpus.",
     "Identity is a scalar summary of one alignment; two items in the same bin "
     "can carry very different information.",
+    "Scores produced at different rows-per-forward are not the same arithmetic "
+    "and are never pooled or compared across arms.",
     "The evolutionary-profile referent is a difference of correlations, not a "
     "nested increment over a joint baseline: a bin that exceeds the profile here "
     "has not been shown to add information to a fit that already contains it.",
@@ -524,6 +580,22 @@ def declaration() -> dict[str, Any]:
             "vanishing_point_rule": VANISHING_POINT_RULE,
             "primary_panel": PRIMARY_PANEL,
             "secondary_panel": SECONDARY_PANEL,
+            "rows_per_forward": SCORING_ROWS_PER_FORWARD,
+            "repeat_tolerance_nats": REPEAT_TOLERANCE_NATS,
+            "batch_extent_probe_rows": BATCH_EXTENT_PROBE_ROWS,
+            "numerics_reason": (
+                "the endpoint is a difference of two scored states, so a batch-extent "
+                "dependent shift lands on it directly; one row per forward removes the "
+                "dependence at source rather than widening a tolerance to accommodate it"
+            ),
+            "reading_referent": READING_REFERENT,
+            "reading_referent_reason": (
+                "a contrast against the matched-unrelated context alone cannot separate "
+                "'homologous context helps less than unrelated context' from 'any prefix "
+                "hurts'; the empty context is therefore the referent the curve is read on, "
+                "and the matched-unrelated condition's own contrast against it prices the "
+                "general prefix cost"
+            ),
             "bin_admission": (
                 f"a bin is admitted only if its own retrieval support reaches "
                 f"{GROUP_FLOOR} independent family groups, decided before any model "

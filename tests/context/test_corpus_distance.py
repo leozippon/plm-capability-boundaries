@@ -224,3 +224,23 @@ def test_referent_value_reads_the_profile_from_beside_the_conditions():
     # A missing referent is None, so the contrast is skipped rather than invented.
     assert stage.referent_value({"spearman": {}}, H.UNRELATED) is None
     assert stage.referent_value({"spearman": {}, "lookup_spearman": None}, H.PROFILE_REFERENT) is None
+
+
+def test_the_analysis_refuses_to_pool_scores_from_different_batch_extents():
+    """Scores taken at different batch extents are different arithmetic."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts/capability/context/score_context_identity.py"
+    spec = importlib.util.spec_from_file_location("score_context_identity", path)
+    stage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage)
+    from src.capability.context import homology_context as H
+
+    # The declaration fixes the protocol, and the stage refuses any other value
+    # rather than silently scoring at it.
+    assert H.SCORING_ROWS_PER_FORWARD == 1
+    assert stage.H.SCORING_ROWS_PER_FORWARD == 1
+    source = path.read_text()
+    assert "rows_per_forward" in source
+    assert "never pooled or compared across arms" in source

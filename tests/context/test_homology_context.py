@@ -564,3 +564,48 @@ def test_the_declaration_names_an_evolutionary_profile_referent():
     # It is a referent, never a condition the decoder is scored under.
     assert H.PROFILE_REFERENT not in H.CONDITIONS
     assert any("not a nested increment" in line for line in declared["limitations"])
+
+
+def test_the_curve_is_read_against_the_empty_context():
+    """A contrast against the matched control alone cannot price a prefix itself.
+
+    Reading only bin-minus-unrelated conflates "homologous context helps less
+    than unrelated context" with "any prefix hurts". The empty context is
+    therefore the reading referent, and the matched-unrelated condition's own
+    contrast against it is what prices the general prefix cost.
+    """
+    declared = H.declaration()
+    assert H.READING_REFERENT == H.NO_CONTEXT
+    assert declared["inference"]["reading_referent"] == H.NO_CONTEXT
+    assert "any prefix" in declared["inference"]["reading_referent_reason"]
+    assert "READING_REFERENT" in declared["inference"]["vanishing_point_rule"]
+    # The matched control stays declared as the content control it is.
+    assert H.PRIMARY_REFERENT == H.UNRELATED
+    # A reading rule must not invalidate a scored record: it is not in any
+    # digest scope, so a stage can change how it reads without rescoring.
+    for scope in ("search", "retrieval", "context"):
+        assert "inference" not in (H.DIGEST_SCOPES[scope] or ())
+
+
+def test_scoring_is_one_row_per_forward_with_a_structural_repeat_gate():
+    """The endpoint is a difference of two scored states, so batch extent matters.
+
+    At eight rows per forward the mutant-minus-wild differences moved by 1.5e-3
+    and 4.6e-3 nats on the two larger ProGen2 rungs, against a 1e-3 check -- exact
+    binary fractions, i.e. rounding, not a logic error. The answer is one row per
+    forward, which makes the repeat gate structural, not a widened tolerance that
+    would also admit a real defect of the same size.
+    """
+    declared = H.declaration()
+    assert H.SCORING_ROWS_PER_FORWARD == 1
+    assert H.REPEAT_TOLERANCE_NATS == 0.0
+    inference = declared["inference"]
+    assert inference["rows_per_forward"] == 1
+    assert inference["repeat_tolerance_nats"] == 0.0
+    assert inference["batch_extent_probe_rows"] == H.BATCH_EXTENT_PROBE_ROWS
+    assert "difference of two scored states" in inference["numerics_reason"]
+    assert any("rows-per-forward" in line for line in declared["limitations"])
+    # A numerics protocol is a reading of the same inputs, not a different cohort,
+    # so it must not invalidate a retrieval artefact.
+    for scope in ("search", "retrieval", "context"):
+        assert "inference" not in (H.DIGEST_SCOPES[scope] or ())
