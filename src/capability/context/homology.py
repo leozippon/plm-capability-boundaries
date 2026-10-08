@@ -258,6 +258,19 @@ def _dbinfo(tool: DiamondTool, database: Path) -> tuple[int, int]:
     return values["Sequences"], values["Letters"]
 
 
+def database_counts(tool: DiamondTool, database: Path) -> tuple[int, int]:
+    """``(sequences, letters)`` an existing index reports about itself.
+
+    Public because an index built elsewhere cannot always be checked the way
+    :func:`build_database` checks one: a corpus staged as ``.fasta.gz`` has no
+    residue count readable by :func:`count_fasta_records`, so the only thing an
+    adopting caller can compare the index against is the published release
+    record that was digest-verified when the corpus was staged.
+    """
+
+    return _dbinfo(tool, database)
+
+
 def build_database(
     tool: DiamondTool,
     source_fasta: Path,
