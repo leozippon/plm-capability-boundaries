@@ -232,10 +232,18 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, *, draws: int, seed: in
         "non_degenerate": block(non_degenerate) if non_degenerate else {
             "undefined": "every product in this cohort falls in the degeneracy stratum"
         },
-        "by_stage": {
-            stage: block([row for row in rows if row["stage"] == stage])
-            for stage in sorted({row["stage"] for row in rows})
-        },
+        "by_stage": dict(
+            {
+                stage: block([row for row in rows if row["stage"] == stage])
+                for stage in sorted({row["stage"] for row in rows})
+            },
+            status="exploratory",
+            reading=(
+                "a split of the primary support by generating stage, with no multiplicity "
+                "control over the arms, contact definitions and endpoints already reported; "
+                "a nominal 95% exclusion here is not a finding"
+            ),
+        ),
         "descriptive_spearman": descriptive,
     }
 
@@ -300,6 +308,12 @@ def main() -> None:
             "Contacts come from a predicted structure of a sequence with no experimental "
             "structure, so a contact call inherits the folding instrument's error; the "
             "confidence filter and the admitted-position count are recorded with the cohort.",
+            "The support is bounded by how confidently these products fold, not by the "
+            "sampling: a product whose positions are mostly below the confidence floor "
+            "cannot supply a separation-matched contact pair at all. The cohort's "
+            "refused-product count and the admitted-position distribution are the "
+            "measurement of that bound and must be read with every estimate here, because "
+            "the retained products are the better-folding tail of the generated set.",
             "The separation match is exact by construction inside a stratum, but burial, "
             "composition and local repetitiveness are not matched.",
             "Intervals condition on the extracted likelihoods and on the selected pair design.",
