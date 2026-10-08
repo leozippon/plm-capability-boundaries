@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""E01: how far a single substitution's likelihood response reaches, and whether structure explains it.
+
+Reads the position-resolved archives ``extract_position_likelihood.py`` writes and
+reports, per arm, three things.
+
+**The propagation profile.** The signed and absolute mean response at every
+sequence separation from the mutated site, with a log-linear decay fit and the
+separation at which the absolute response halves. Reported separately downstream
+and upstream, because for a causal arm the upstream side is exactly zero by
+construction and the number that matters there is the assertion, not an estimate.
+
+**The site term, apart.** At the mutated residue the two states hold the
+likelihood of different residues, so that position is not a response. It is
+summarised on its own and never enters a profile.
+
+**The structural contrast.** Among residues that carry an admitted experimental
+coordinate, the response of residues in C-beta contact with the mutated site
+minus the response of non-contacting residues at matched sequence separation,
+nested so that the bootstrap unit is the family. The within-stratum separation
+imbalance is reported beside it, because a contact contrast that is really a
+sequence-distance contrast is the failure this design exists to exclude.
+
+Every archive is validated by the project's own reader
+(``responses.RetainedResponses``) before a single number is taken from it: the
+per-state closure, the native mutation closure and the biological exclusions are
+that reader's, not this stage's. Where this stage's own receiver census overlaps
+that reader's, the two are required to agree exactly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.capability.core.io import sha256_file, write_json  # noqa: E402
+from src.capability.extensions.responses import RetainedResponses  # noqa: E402
+from src.capability.position.contact_response import (  # noqa: E402
+    CONTACT_ANGSTROM,
+    CONTACT_DEFINITION,
+    MIN_SEQUENCE_SEPARATION,
+    SCHEMA,
+    ProfileAccumulator,
+    admitted_geometry,
+    agrees_with_frozen,
+    contact_pairs,
+    receiver_census,
+    rebuild_states,
+    require_geometry,
+    stratified_contact_contrast,
+    structural_rows,
+)
+from src.capability.position.position_likelihood import CAUSAL, read_archive  # noqa: E402
+
+COMPLETION = "position_propagation.json"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def read_json(path: Path):
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt") as handle:
+        return json.load(handle)
+
+
+def analyse_arm(directory: Path, cohort_rows, geometry_source, *, min_support, max_separation,
+                max_residues=None):
+    """One arm's profile, site summary and structural rows."""
+
+    completion = read_json(directory / "position_likelihood.json")
+    if completion.get("status") != "complete":
+        raise SystemExit(f"{directory}: the extraction did not complete")
+    identity = completion["identity"]
+    arm, paradigm = identity["arm"], identity["paradigm"]
+    downstream = ProfileAccumulator(direction="downstream", min_support=min_support)
+    upstream = ProfileAccumulator(direction="upstream", min_support=min_support)
+    site_values: list[float] = []
+    structural: list[dict] = []
+    per_assay, agreement = [], {"assays": 0, "receivers": 0, "max_abs_difference_nats": 0.0}
+    worst_upstream = 0.0
+    skipped = []
+    for receipt in completion["assays"]:
+        assay = receipt["assay"]
+        row = cohort_rows[assay]
+        if max_residues is not None and len(row["wildtype"]) > max_residues:
+            skipped.append(assay)
+            continue
+        payload = read_archive(directory / "archives" / receipt["file"])
+        states = rebuild_states(payload, [row["wildtype"], *row["sequences"]])
+        identity_block = {
+            "wildtype": row["wildtype"], "mutants": row["mutants"], "sequences": row["sequences"],
+        }
+        with np.load(directory / "archives" / receipt["file"], allow_pickle=False) as data:
+            retained = RetainedResponses(data, states, identity_block)
+            frozen = {index: retained.response(index) for index in retained.selected_indices}
+        geometry, pairs = geometry_source(assay, row)
+        census_count = 0
+        structural_before = len(structural)
+        for index, frozen_response in frozen.items():
+            site = int(frozen_response["i"])
+            census = receiver_census(payload, index, site=site, paradigm=paradigm)
+            check = agrees_with_frozen(census, frozen_response)
+            agreement["receivers"] += check["downstream_receivers"]
+            agreement["max_abs_difference_nats"] = max(
+                agreement["max_abs_difference_nats"], check["max_abs_difference_nats"]
+            )
+            worst_upstream = max(worst_upstream, float(census["upstream_max_abs_nats"]))
+            rows = census["receivers"]
+            if max_separation is not None:
+                rows = [r for r in rows if abs(int(r["separation"])) <= max_separation]
+            downstream.add(rows)
+            upstream.add(rows)
+            downstream.count_mutation()
+            upstream.count_mutation()
+            site_values.append(float(census["site_response"]))
+            census_count += 1
+            if geometry is not None:
+                structural.extend(
+                    structural_rows(
+                        census, geometry, pairs, assay=assay, family=row["cluster"],
+                        mutation=row["mutants"][index],
+                    )
+                )
+        agreement["assays"] += 1
+        assay_structural = len(structural) - structural_before
+        per_assay.append({
+            "assay": assay,
+            "family": row["cluster"],
+            "residues": len(row["wildtype"]),
+            "selected_single_substitutions": census_count,
+            "excluded": retained.exclusions[:8],
+            "excluded_total": len(retained.exclusions),
+            "structural_receivers": assay_structural,
+        })
+    if paradigm == CAUSAL and worst_upstream != 0.0:
+        raise SystemExit(
+            f"{arm}: upstream terms differ by {worst_upstream} nats on a causal arm"
+        )
+    sites = np.asarray(site_values, dtype=np.float64) if site_values else np.zeros(0)
+    return {
+        "arm": arm,
+        "paradigm": paradigm,
+        "identity": identity,
+        "extraction": {"directory": str(directory),
+                       "completion_sha256": sha256_file(directory / "position_likelihood.json")},
+        "assays": per_assay,
+        "assays_outside_length_cap": skipped,
+        "frozen_reader_agreement": agreement,
+        "upstream_max_abs_nats": worst_upstream,
+        "upstream_is_exactly_zero": bool(worst_upstream == 0.0),
+        "site_term": {
+            "n": int(sites.size),
+            "mean_nats": float(sites.mean()) if sites.size else None,
+            "mean_absolute_nats": float(np.abs(sites).mean()) if sites.size else None,
+            "note": (
+                "the mutated residue's own term, where the two states hold the "
+                "likelihood of different residues; not a response and never profiled"
+            ),
+        },
+        "profile": {"downstream": downstream.profile(), "upstream": upstream.profile()},
+        "structural_receivers": len(structural),
+    }, structural
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--extraction", type=Path, action="append", required=True,
+                        help="an extract_position_likelihood.py output directory; repeatable")
+    parser.add_argument("--cohort", type=Path, required=True)
+    parser.add_argument("--structures", type=Path, required=True)
+    parser.add_argument("--coverage", type=Path, required=True,
+                        help="the structural coverage receipt paired with --structures")
+    parser.add_argument("--contact-angstrom", type=float, default=CONTACT_ANGSTROM)
+    parser.add_argument("--min-separation", type=int, default=MIN_SEQUENCE_SEPARATION)
+    parser.add_argument("--min-support", type=int, default=20)
+    parser.add_argument("--max-residues", type=int, default=0,
+                        help="restrict every arm to assays at or below this wild-type length, so "
+                             "that arms extracted on different scopes are compared on one assay "
+                             "set; 0 uses whatever each arm carries")
+    parser.add_argument("--max-separation", type=int, default=0,
+                        help="0 keeps every separation the cohort offers")
+    parser.add_argument("--device", default="cpu", help="accepted for queue injection; unused")
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+
+    cohort = read_json(args.cohort)
+    cohort_rows = {row["assay"]: row for row in cohort["assays"]}
+    sites = read_json(args.structures)
+    site_rows = sites["sites"] if isinstance(sites, dict) else sites
+    coverage = read_json(args.coverage)
+    admitted = {row["assay_id"] for row in site_rows if row["status"] == "admitted"}
+    cache: dict[str, tuple] = {}
+
+    def geometry_source(assay: str, row):
+        if assay not in admitted:
+            return None, None
+        if assay not in cache:
+            geometry = admitted_geometry(
+                site_rows, assay=assay, family=row["cluster"], wildtype=row["wildtype"],
+                coverage=coverage,
+            )
+            require_geometry(geometry, assay=assay)
+            cache[assay] = (
+                geometry,
+                contact_pairs(
+                    geometry, cutoff=args.contact_angstrom, min_separation=args.min_separation
+                ),
+            )
+        return cache[assay]
+
+    arms, contrasts = [], []
+    for directory in args.extraction:
+        block, structural = analyse_arm(
+            directory, cohort_rows, geometry_source,
+            min_support=args.min_support,
+            max_separation=args.max_separation or None,
+            max_residues=args.max_residues or None,
+        )
+        for direction in ("downstream", "upstream"):
+            if not any(row["direction"] == direction for row in structural):
+                continue
+            for outcome in ("absolute_response", "response"):
+                contrast = stratified_contact_contrast(
+                    structural, outcome=outcome, direction=direction
+                )
+                contrast["arm"] = block["arm"]
+                contrasts.append(contrast)
+        arms.append(block)
+        del structural
+
+    write_json(args.out / COMPLETION, {
+        "schema": SCHEMA,
+        "status": "complete",
+        "created_utc": _now(),
+        "experiment": "E01",
+        "question": (
+            "how far along the sequence a single substitution moves the position-wise "
+            "log likelihood, and whether the residues that move are the ones in "
+            "three-dimensional contact with the substituted site"
+        ),
+        "contact_definition": CONTACT_DEFINITION,
+        "settings": {
+            "contact_angstrom": float(args.contact_angstrom),
+            "min_separation": int(args.min_separation),
+            "stratum_labels": (
+                "sequence-separation strata reuse the frozen edges of this project's own "
+                "structural pair census, so the first label reads 3-8 while the separation "
+                "floor truncates that stratum to [min_separation, 8]"
+            ),
+            "min_support": int(args.min_support),
+            "max_separation": int(args.max_separation) or None,
+            "max_residues": int(args.max_residues) or None,
+        },
+        "causal_asymmetry": (
+            "for a left-to-right arm the response at every position before the "
+            "substitution is identically zero, because the prefix that predicts it is "
+            "unchanged; propagation is therefore measurable downstream only, and the "
+            "upstream block records the assertion rather than an estimate. A masked arm "
+            "responds on both sides and is the comparison that makes the one-sided "
+            "causal profile readable"
+        ),
+        "sources": {
+            name: {"path": str(path), "sha256": sha256_file(path)}
+            for name, path in (("cohort", args.cohort), ("structures", args.structures),
+                               ("coverage", args.coverage))
+        },
+        "arms": arms,
+        "contact_contrasts": contrasts,
+    })
+
+
+if __name__ == "__main__":
+    main()
