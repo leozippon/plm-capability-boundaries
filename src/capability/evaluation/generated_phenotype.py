@@ -477,6 +477,194 @@ def mean_pairwise_kmer_distance(sequences: Sequence[str], k: int = DIVERSITY_KME
     return float(total / pairs)
 
 
+#: A residue repeated at least this many times in a row marks a sequence as
+#: carrying a homopolymer run. Eight is well beyond what natural protein
+#: composition produces at any appreciable rate and well inside what a degenerate
+#: decoder produces, so the fraction of a selected set above it is a direct
+#: reading of whether selection is concentrating on repeats.
+HOMOPOLYMER_RUN_THRESHOLD = 8
+
+#: How many independent random keys the size-matched diversity reference averages
+#: over. Fewer than the yield baseline uses, because each key costs an
+#: all-pairs distance over the selected set.
+DIVERSITY_REFERENCE_KEYS = 16
+
+
+def longest_homopolymer_run(sequence: str) -> int:
+    """The longest run of one repeated residue."""
+
+    if not sequence:
+        raise ValueError("a run length needs a sequence")
+    best = run = 1
+    for previous, current in zip(sequence, sequence[1:]):
+        run = run + 1 if current == previous else 1
+        best = max(best, run)
+    return best
+
+
+def selected_set_profile(
+    sequences: Sequence[str],
+    family_sets: Sequence[Sequence[str]],
+    *,
+    kmer: int = DIVERSITY_KMER,
+) -> dict[str, Any]:
+    """Everything about a selected set other than its yield.
+
+    One function, because the question the user put hardest -- whether an
+    apparent gain comes from concentrating selections in a few families or in
+    repetitive sequences -- cannot be answered from a yield and a family count
+    read in different places. Repertoire breadth, duplication, low-complexity
+    content and length all travel together, and length is here because every
+    structural evaluator rises with it, so a selector that quietly prefers long
+    sequences would otherwise look like a selector that prefers good ones.
+    """
+
+    if len(sequences) != len(family_sets):
+        raise ValueError("the sequences and their family sets must align")
+    if not sequences:
+        raise ValueError("an empty selected set has no profile")
+    lengths = np.asarray([len(sequence) for sequence in sequences], dtype=np.float64)
+    entropies = np.asarray(
+        [
+            float(
+                -sum(
+                    share * math.log(share)
+                    for share in (
+                        Counter(sequence)[residue] / len(sequence) for residue in set(sequence)
+                    )
+                    if share > 0.0
+                )
+            )
+            for sequence in sequences
+        ],
+        dtype=np.float64,
+    )
+    runs = np.asarray([longest_homopolymer_run(sequence) for sequence in sequences])
+    profile: dict[str, Any] = {
+        "n_sequences": len(sequences),
+        "n_distinct_sequences": len(set(sequences)),
+        "duplicate_fraction": 1.0 - len(set(sequences)) / len(sequences),
+        "mean_length": float(lengths.mean()),
+        "min_length": int(lengths.min()),
+        "max_length": int(lengths.max()),
+        "mean_composition_entropy_nats": float(entropies.mean()),
+        "min_composition_entropy_nats": float(entropies.min()),
+        "longest_homopolymer_run_max": int(runs.max()),
+        "homopolymer_run_threshold": int(HOMOPOLYMER_RUN_THRESHOLD),
+        "fraction_with_homopolymer_run": float(np.mean(runs >= HOMOPOLYMER_RUN_THRESHOLD)),
+        **family_repertoire(family_sets),
+    }
+    profile["mean_pairwise_kmer_distance"] = (
+        mean_pairwise_kmer_distance(list(sequences), kmer) if len(sequences) >= 2 else None
+    )
+    return profile
+
+
+def diversity_reference(
+    sequences: Sequence[str],
+    family_sets: Sequence[Sequence[str]],
+    *,
+    fraction: float,
+    seed: int,
+    n_keys: int = DIVERSITY_REFERENCE_KEYS,
+) -> dict[str, Any]:
+    """The diversity a *random* set of the same size has, as the reference.
+
+    Size-matched, because every repertoire measure falls as a set shrinks: a
+    twelve-sequence selection covers fewer families than a six-hundred-sequence
+    pool whatever the selector did. Comparing a method's selected set against the
+    pool would therefore report a collapse at every small fraction. The honest
+    reference is a random draw of the same size.
+    """
+
+    keys = [
+        selection_indices(random_key(len(sequences), seed=seed + index), fraction=fraction)
+        for index in range(n_keys)
+    ]
+    profiles = [
+        selected_set_profile(
+            [sequences[i] for i in chosen], [family_sets[i] for i in chosen]
+        )
+        for chosen in keys
+    ]
+    summary: dict[str, Any] = {"n_keys": int(n_keys), "fraction": float(fraction)}
+    for field in (
+        "distinct_families",
+        "effective_families",
+        "mean_pairwise_kmer_distance",
+        "mean_composition_entropy_nats",
+        "fraction_with_homopolymer_run",
+        "mean_length",
+        "duplicate_fraction",
+    ):
+        values = [profile[field] for profile in profiles if profile[field] is not None]
+        summary[field] = (
+            {"mean": float(np.mean(values)), "interval": mean_interval(values)["interval"]}
+            if len(values) >= 2
+            else None
+        )
+    return summary
+
+
+#: The diversity axes a yield gain is checked against, and the direction that
+#: counts as a collapse on each.
+COLLAPSE_AXES: dict[str, str] = {
+    "effective_families": "below",
+    "mean_pairwise_kmer_distance": "below",
+    "mean_composition_entropy_nats": "below",
+    "fraction_with_homopolymer_run": "above",
+}
+
+
+def collapse_check(
+    profile: Mapping[str, Any], reference: Mapping[str, Any], *, yield_difference: float | None
+) -> dict[str, Any]:
+    """Whether a yield gain at this operating point was bought with a collapse.
+
+    A computed verdict, not a remark, because the question is whether to believe
+    the gain at all. An axis is flagged when the selected set falls outside the
+    size-matched random reference's interval in the collapsing direction. A
+    positive yield difference with any axis flagged is reported as
+    ``gain_is_not_a_gain``: more recognised or better-folding candidates drawn
+    from a narrower, more repetitive repertoire is a different product, not a
+    better one.
+    """
+
+    flagged: dict[str, Any] = {}
+    for axis, direction in COLLAPSE_AXES.items():
+        observed = profile.get(axis)
+        band = reference.get(axis)
+        if observed is None or band is None:
+            continue
+        low, high = band["interval"]
+        if direction == "below" and observed < low:
+            flagged[axis] = {"observed": observed, "random_interval": [low, high], "moved": "below"}
+        elif direction == "above" and observed > high:
+            flagged[axis] = {"observed": observed, "random_interval": [low, high], "moved": "above"}
+    gain = yield_difference is not None and yield_difference > 0.0
+    return {
+        "axes_checked": sorted(COLLAPSE_AXES),
+        "axes_flagged": flagged,
+        "collapsed": bool(flagged),
+        "yield_gain": bool(gain),
+        "gain_is_not_a_gain": bool(gain and flagged),
+        "verdict": (
+            "a positive yield difference accompanied by a repertoire or complexity "
+            "collapse relative to a size-matched random selection. The selected set is "
+            "a narrower product, not a better one"
+            if gain and flagged
+            else (
+                "yield gain with no collapse detected on the checked axes"
+                if gain
+                else (
+                    "no yield gain at this operating point; the diversity axes are "
+                    "reported for completeness"
+                )
+            )
+        ),
+    }
+
+
 def family_repertoire(family_sets: Sequence[Sequence[str]]) -> dict[str, Any]:
     """Breadth of the Pfam repertoire a set of sequences covers.
 

@@ -90,7 +90,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     # break the matching that makes the contrast a matched one.
     by_pair: dict[str, dict[str, dict[str, Any]]] = collections.defaultdict(dict)
     for row in in_band:
-        by_pair[str(row["pair_id"])][str(row["role"])] = row
+        if row.get("pair_id") and row.get("role") in ("generated", "natural"):
+            by_pair[str(row["pair_id"])][str(row["role"])] = row
     pairs = {
         pair_id: members
         for pair_id, members in by_pair.items()
@@ -99,7 +100,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     passed = {name: bool(gate["passed"]) for name, gate in gates.items()}
     applied: dict[str, Any] = {}
-    if passed.get("plm") and pairs:
+    if passed.get("plm") and in_band:
         model = np.load(args.fit / "model_plm.npz")
         loaded = {
             "coefficients": model["coefficients"],
@@ -111,7 +112,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         embeddings = np.load(args.embeddings / "embeddings.npy", mmap_mode="r")
         position = {identifier: i for i, identifier in enumerate(index["ids"])}
         ordered = sorted(pairs)
-        members = [pairs[pair_id][role] for pair_id in ordered for role in ("generated", "natural")]
+        # Every in-band row is predicted, pool members included, so the selection
+        # experiment can read free energy for the part of its pool the instrument
+        # licenses. The matched contrasts below use only the paired rows.
+        members = sorted(in_band, key=lambda row: str(row["id"]))
         ds.require_in_band([int(row["length"]) for row in members], band, label="generated cohort")
         cheap = np.stack([ds.composition_features(str(row["sequence"])) for row in members])
         block = np.asarray(embeddings[[position[row["id"]] for row in members]], dtype=np.float64)
@@ -151,15 +155,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         applied["plm"] = {
             "quantity": "predicted_delta_g",
             "quantity_declaration": dict(ds.QUANTITIES["predicted_delta_g"]),
+            "n_predicted": len(members),
+            "n_predicted_by_role": dict(
+                collections.Counter(str(row.get("role")) for row in members)
+            ),
             "n_pairs": len(ordered),
             "per_arm": per_arm,
             "pool_summary": {
                 "generated_mean": float(
                     np.mean([values[pairs[p]["generated"]["id"]] for p in ordered])
-                ),
+                )
+                if ordered
+                else None,
                 "natural_mean": float(
                     np.mean([values[pairs[p]["natural"]["id"]] for p in ordered])
-                ),
+                )
+                if ordered
+                else None,
                 "unit": ds.QUANTITIES["predicted_delta_g"]["unit"],
             },
         }
@@ -169,10 +181,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 json.dumps(
                     {
                         "id": str(row["id"]),
-                        "pair_id": row["pair_id"],
-                        "role": row["role"],
-                        "arm": row["arm"],
-                        "stratum": row["stratum"],
+                        "pair_id": row.get("pair_id"),
+                        "role": row.get("role"),
+                        "arm": row.get("arm"),
+                        "stratum": row.get("stratum"),
                         "length": int(row["length"]),
                         "predicted_delta_g_kcal_per_mol": values[str(row["id"])],
                     },
@@ -185,7 +197,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         applied["plm"]["predictions_jsonl"] = str(sidecar)
         applied["plm"]["predictions_sha256"] = sha256_file(sidecar)
-    elif pairs:
+    elif in_band:
         applied["plm"] = {
             "status": "refused_by_validation_gate",
             "gate": gates.get("plm"),
@@ -235,6 +247,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "n_in_licensed_band": len(in_band),
             "n_outside_licensed_band_unscored": len(out_of_band),
             "n_matched_pairs_in_band": len(pairs),
+            "n_in_band_by_role": dict(
+                collections.Counter(str(row.get("role")) for row in in_band)
+            ),
             "per_arm_stratum": {f"{arm}::{stratum}": count for (arm, stratum), count in sorted(stratum_counts.items())},
             "usable_above_unit_floor": sorted(
                 f"{arm}::{stratum}"

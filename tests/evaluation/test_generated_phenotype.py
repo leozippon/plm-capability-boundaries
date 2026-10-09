@@ -362,12 +362,14 @@ def test_output_directory_policy_tolerates_the_queue_and_refuses_prior_work(tmp_
         gp.require_fresh_out(occupied, "done.json")
 
 
-def test_stability_is_declared_unavailable_and_never_substituted():
-    """The one substitution this experiment must not make, asserted.
+def test_stability_enters_only_as_a_separately_validated_quantity():
+    """Confidence is still never relabelled as stability.
 
-    Predicted confidence is not stability. The declaration has to say so, name
-    reasons, and say what would lift the limitation, and no evaluator the
-    aggregator computes may be labelled a stability quantity.
+    E14 reported stability as unavailable and that declaration stands, with its
+    reasons. A free-energy evaluator now exists, but it is a different quantity
+    produced by a separately validated instrument, it is restricted to a
+    sub-pool, and the guard in :mod:`domain_stability` refuses any comparison
+    between it and a structural confidence.
     """
 
     assert gp.STABILITY_UNAVAILABLE["status"] == "unavailable"
@@ -376,10 +378,19 @@ def test_stability_is_declared_unavailable_and_never_substituted():
         "confidence_is_not_stability",
         "ddG_predictors_do_not_apply",
         "what_would_lift_it",
+        "why_it_would_still_not_answer_this_question",
     ):
         assert gp.STABILITY_UNAVAILABLE[key].strip()
-    from scripts.capability.evaluation.aggregate_generated_evaluation import EVALUATORS
 
+    from src.capability.evaluation import domain_stability as ds
+    from scripts.capability.evaluation.aggregate_generated_evaluation import (
+        EVALUATOR_QUANTITY,
+        EVALUATORS,
+        SUB_POOL_EVALUATORS,
+    )
+
+    # No evaluator smuggles a confidence in under a stability name, and the one
+    # free-energy evaluator is declared as such and as a sub-pool quantity.
     assert not [name for name in EVALUATORS if "stab" in name.lower()]
     assert set(EVALUATORS) == {
         "mean_ca_plddt",
@@ -388,7 +399,15 @@ def test_stability_is_declared_unavailable_and_never_substituted():
         "neg_mean_pae_angstrom",
         "complete_domain",
         "any_family",
+        "predicted_delta_g",
     }
+    assert SUB_POOL_EVALUATORS == {"predicted_delta_g": SUB_POOL_EVALUATORS["predicted_delta_g"]}
+    assert ds.QUANTITIES[EVALUATOR_QUANTITY["predicted_delta_g"]]["kind"] == "folding_free_energy"
+    for confidence in ("mean_ca_plddt", "ptm"):
+        quantity = EVALUATOR_QUANTITY[confidence]
+        assert ds.QUANTITIES[quantity]["kind"] == "structure_confidence"
+        with pytest.raises(ValueError):
+            ds.require_comparable("predicted_delta_g", quantity)
 
 
 def test_declared_independence_records_the_residual_dependence_it_cannot_remove():
@@ -396,3 +415,124 @@ def test_declared_independence_records_the_residual_dependence_it_cannot_remove(
     assert record["selectors"] == ["likelihood"]
     assert "not claimed" in record["residual_dependence"]
     assert json.dumps(record)  # serialisable into the artefact
+
+
+# ------------------------------------------- selected-set profile and collapse
+
+
+def test_homopolymer_runs_are_measured_not_guessed():
+    assert gp.longest_homopolymer_run("ACDE") == 1
+    assert gp.longest_homopolymer_run("AAABBBBBBBBCC") == 8
+    assert gp.longest_homopolymer_run("G" * 40) == 40
+    with pytest.raises(ValueError):
+        gp.longest_homopolymer_run("")
+
+
+def test_a_selected_set_profile_carries_every_axis_a_gain_must_be_checked_against():
+    """Repertoire, duplication, complexity and length travel together.
+
+    The question is whether a yield gain came from concentrating on a few
+    families or on repetitive sequences, and that cannot be answered from numbers
+    read out of different places.
+    """
+
+    sequences = ["MKWVTFISLLLLFSSAYSRGV", "GQPRTEEDNIQKVLDTVAKYQ", "G" * 21, "ACDEFGHIKLMNPQRSTVWYA"]
+    families = [["PF1"], ["PF2"], [], ["PF1", "PF3"]]
+    profile = gp.selected_set_profile(sequences, families)
+    assert profile["n_sequences"] == 4
+    assert profile["n_distinct_sequences"] == 4
+    assert profile["duplicate_fraction"] == pytest.approx(0.0)
+    assert profile["distinct_families"] == 3
+    assert profile["n_with_any_family"] == 3
+    assert profile["fraction_with_homopolymer_run"] == pytest.approx(0.25)
+    assert profile["longest_homopolymer_run_max"] == 21
+    assert profile["min_composition_entropy_nats"] == pytest.approx(0.0)
+    assert profile["mean_length"] == pytest.approx(21.0)
+    assert 0.0 <= profile["mean_pairwise_kmer_distance"] <= 1.0
+
+    repeated = gp.selected_set_profile(["G" * 21, "G" * 21], [[], []])
+    assert repeated["duplicate_fraction"] == pytest.approx(0.5)
+    assert repeated["n_distinct_sequences"] == 1
+    with pytest.raises(ValueError):
+        gp.selected_set_profile([], [])
+    with pytest.raises(ValueError):
+        gp.selected_set_profile(["AAA"], [])
+
+
+def test_the_diversity_reference_is_size_matched_not_pool_matched():
+    """Every repertoire measure falls as a set shrinks.
+
+    Comparing a small selected set against the whole pool would report a collapse
+    at every small fraction, so the reference is a random draw of the same size.
+    """
+
+    rng = np.random.default_rng(5)
+    sequences = [
+        "".join(rng.choice(list(gp.AA20), size=60)) for _ in range(120)
+    ]
+    families = [[f"PF{index % 30}"] for index in range(120)]
+    small = gp.diversity_reference(sequences, families, fraction=0.1, seed=1, n_keys=8)
+    large = gp.diversity_reference(sequences, families, fraction=1.0, seed=1, n_keys=8)
+    assert small["distinct_families"]["mean"] < large["distinct_families"]["mean"]
+    assert small["fraction"] == 0.1 and small["n_keys"] == 8
+    low, high = small["distinct_families"]["interval"]
+    assert low <= small["distinct_families"]["mean"] <= high
+
+
+def test_a_yield_gain_bought_with_a_collapse_is_reported_as_not_a_gain():
+    """The verdict the user asked for hardest, as a computed field."""
+
+    rng = np.random.default_rng(7)
+    sequences = ["".join(rng.choice(list(gp.AA20), size=60)) for _ in range(120)]
+    families = [[f"PF{index % 30}"] for index in range(120)]
+    reference = gp.diversity_reference(sequences, families, fraction=0.1, seed=1, n_keys=8)
+    collapsed = gp.selected_set_profile(["G" * 60, "G" * 59 + "A"], [[], []])
+
+    verdict = gp.collapse_check(collapsed, reference, yield_difference=0.25)
+    assert verdict["collapsed"] is True
+    assert verdict["gain_is_not_a_gain"] is True
+    assert "narrower product" in verdict["verdict"]
+    assert set(verdict["axes_flagged"]) <= set(gp.COLLAPSE_AXES)
+
+    # A collapse without a gain is not relabelled as a gain, and a gain without a
+    # collapse is left standing.
+    assert gp.collapse_check(collapsed, reference, yield_difference=-0.1)["gain_is_not_a_gain"] is False
+    healthy = gp.selected_set_profile(sequences[:12], families[:12])
+    standing = gp.collapse_check(healthy, reference, yield_difference=0.25)
+    assert standing["yield_gain"] is True
+    assert standing["gain_is_not_a_gain"] is False
+
+
+def test_the_collapse_axes_cover_both_failure_shapes_the_user_named():
+    """Concentrating on few families, and concentrating on repetitive sequences."""
+
+    assert gp.COLLAPSE_AXES["effective_families"] == "below"
+    assert gp.COLLAPSE_AXES["fraction_with_homopolymer_run"] == "above"
+    assert gp.COLLAPSE_AXES["mean_composition_entropy_nats"] == "below"
+    assert gp.COLLAPSE_AXES["mean_pairwise_kmer_distance"] == "below"
+
+
+def test_the_length_control_and_sub_pool_declarations_are_present():
+    """A length selector is required, because every structural score rises with length."""
+
+    from scripts.capability.evaluation.aggregate_generated_evaluation import (
+        EVALUATOR_QUANTITY,
+        EVALUATORS,
+        RENDERING_RISK,
+        SELECTOR_DECLARATION,
+        SUB_POOL_EVALUATORS,
+    )
+
+    assert set(SELECTOR_DECLARATION) == {"random", "likelihood", "composition", "length", "combined"}
+    assert "length" in SELECTOR_DECLARATION["length"]
+    assert set(EVALUATORS) <= set(EVALUATOR_QUANTITY)
+    # Predicted free energy is a sub-pool evaluator and must say so, because its
+    # licensed band would otherwise select the pool silently.
+    assert "predicted_delta_g" in SUB_POOL_EVALUATORS
+    assert "licensed" in SUB_POOL_EVALUATORS["predicted_delta_g"]
+    assert EVALUATOR_QUANTITY["predicted_delta_g"] == "predicted_delta_g"
+    assert EVALUATOR_QUANTITY["mean_ca_plddt"] == "esmfold2_mean_ca_plddt"
+    # The two prior rendering measurements that bound how much a layout mistake
+    # could have moved the likelihood selector.
+    assert RENDERING_RISK["protgpt2_unwrapped_penalty_nats_per_token"] == 1.42
+    assert RENDERING_RISK["zymctrl_tag_leak_nats"] == 1.73

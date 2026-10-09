@@ -256,9 +256,51 @@ def read_apply_table(cohort_dir: Path) -> tuple[list[dict[str, Any]], dict[str, 
                 }
             )
             counts[f"kept:{role}"] += 1
+    # The E17 selection pool as well. Stability can only enter that experiment
+    # for pool members inside the licensed band, and which members those are is a
+    # fact about the instrument that has to be visible rather than discovered by
+    # a join failing later.
+    for record in records.values():
+        if "pool" not in record.get("roles", []):
+            continue
+        sequence = str(record["sequence"]).upper()
+        if set(sequence) - AA20:
+            counts["pool_non_canonical_dropped"] += 1
+            continue
+        if not CANDIDATE_BAND[0] <= len(sequence) <= CANDIDATE_BAND[1]:
+            counts["pool_outside_candidate_band_dropped"] += 1
+            continue
+        rows.append(
+            {
+                "id": str(record["id"]),
+                "sequence": sequence,
+                "length": len(sequence),
+                "measured_delta_g": None,
+                "split": "apply",
+                "dataset": "generation_evaluation_20261008",
+                "role": "pool",
+                "arm": record.get("arm"),
+                "stratum": record.get("stratum"),
+                "pair_id": None,
+                "group": str(record["id"]),
+                "table": "apply",
+            }
+        )
+        counts["kept:pool"] += 1
     if not rows:
         raise SystemExit(f"{cohort_dir} yielded no applicable row")
-    return rows, dict(sorted(counts.items()))
+    seen_ids: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        # One attempt can be both an E14 target and an E17 pool member. It is
+        # embedded and predicted once, under the role it first appears in, and the
+        # pool join reads it by identifier either way.
+        if row["id"] in seen_ids:
+            counts["already_present_under_another_role"] += 1
+            continue
+        seen_ids.add(row["id"])
+        unique.append(row)
+    return unique, dict(sorted(counts.items()))
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:

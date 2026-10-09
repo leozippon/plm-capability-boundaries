@@ -23,6 +23,7 @@ Stability appears in the output exactly once, as unavailable, with its reasons.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import sys
 from collections import defaultdict
@@ -57,12 +58,84 @@ EVALUATORS: tuple[str, ...] = (
     "neg_mean_pae_angstrom",
     "complete_domain",
     "any_family",
+    "predicted_delta_g",
 )
 
 EVALUATOR_ORIENTATION = (
     "every evaluator is oriented so that a larger value is better, including "
     "neg_mean_pae_angstrom, which is the negated mean predicted aligned error in angstrom"
 )
+
+#: Which declared quantity each evaluator reports. Folding confidence and
+#: predicted free energy are different physical quantities and never stand in for
+#: one another; the mapping is here so the artefact states which is which.
+EVALUATOR_QUANTITY: dict[str, str] = {
+    "mean_ca_plddt": "esmfold2_mean_ca_plddt",
+    "ptm": "esmfold2_ptm",
+    "confident_fold": "esmfold2_confidence_event",
+    "neg_mean_pae_angstrom": "esmfold2_predicted_aligned_error",
+    "complete_domain": "pfam_complete_domain",
+    "any_family": "pfam_any_family",
+    "predicted_delta_g": "predicted_delta_g",
+}
+
+#: Evaluators that exist for only part of the pool, with the reason. A curve on a
+#: sub-pool is a selection experiment on that sub-pool; it is reported as such and
+#: never read as the pool's result.
+SUB_POOL_EVALUATORS: dict[str, str] = {
+    "predicted_delta_g": (
+        "the validated stability head is licensed only inside the residue band its "
+        "training fold covers, so pool members outside that band carry no free-energy "
+        "prediction at all. The band was not chosen to suit this pool and must not be "
+        "allowed to select it silently"
+    ),
+}
+
+#: What each selector reads. The two controls are the point of the design: a gain
+#: that a composition score or a length score reproduces is not evidence that the
+#: model's likelihood carries usable information.
+SELECTOR_DECLARATION: dict[str, str] = {
+    "random": "a seeded uniform key; the baseline that must be beaten",
+    "likelihood": (
+        "the generating model's own mean negative log-likelihood per scored token on "
+        "its own product, recomputed under the arm's native rendering"
+    ),
+    "composition": (
+        "nats per residue of the sequence's composition under a Swiss-Prot unigram "
+        "background. The cheap external control"
+    ),
+    "length": (
+        "sequence length, longest first. The second control: every structural "
+        "confidence rises with length, so a length selector prices how much of any "
+        "gain is a length effect"
+    ),
+    "combined": "the within-pool average rank of likelihood and composition",
+}
+
+#: Prior measurements from this repository that bound how much a rendering mistake
+#: could have moved the likelihood selector. They are quoted, not re-measured
+#: here, and they are reported beside the result because the selector would be
+#: meaningless if the rendering were wrong by more than the effect being sought.
+RENDERING_RISK: dict[str, Any] = {
+    "protgpt2_unwrapped_penalty_nats_per_token": 1.42,
+    "protgpt2_note": (
+        "ProtGPT2 scored as one unwrapped line instead of the 60-column FASTA layout "
+        "it was pretrained on costs 1.42 nats/token, measured on 80 Swiss-Prot records "
+        "(8.046 raw versus 6.652 wrapped). The rendering used here is the wrapped one, "
+        "resolved from the arm declaration rather than spelled at the call site"
+    ),
+    "zymctrl_tag_leak_nats": 1.73,
+    "zymctrl_note": (
+        "ZymCTRL's EC conditioning prompt leaks 1.73 nats if it is scored as cohort "
+        "content instead of as a prompt (EXP-R2-034). The scoring here masks the span "
+        "between the declared <start> and <end> boundary ids, so the tag is not scored"
+    ),
+    "why_this_is_reported": (
+        "both numbers are larger than any selection effect this experiment could find, "
+        "so they bound the damage a rendering error would do. The per-arm rendering "
+        "actually used is recorded in each likelihood stage's own artefact"
+    ),
+}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -127,6 +200,7 @@ def evaluator_vector(
     structure: dict[str, dict[str, Any]],
     recognition: dict[str, dict[str, Any]],
     name: str,
+    stability: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """One evaluator's values over ``identifiers``, with the dropped rows named.
 
@@ -140,6 +214,16 @@ def evaluator_vector(
     kept: list[str] = []
     dropped: list[str] = []
     for identifier in identifiers:
+        if name == "predicted_delta_g":
+            # Absent means "outside the licensed band", which is a statement about
+            # the instrument's support and never a low free energy.
+            value = (stability or {}).get(identifier)
+            if value is None:
+                dropped.append(identifier)
+                continue
+            values.append(float(value))
+            kept.append(identifier)
+            continue
         if name in ("complete_domain", "any_family"):
             block = recognition.get(identifier)
             if block is None:
@@ -195,6 +279,7 @@ def paired_vectors(
     structure: dict[str, dict[str, Any]],
     recognition: dict[str, dict[str, Any]],
     evaluator: str,
+    stability: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]], dict[str, int]]:
     """Generated and natural evaluator values over the pairs both sides survive.
 
@@ -209,10 +294,10 @@ def paired_vectors(
     dropped = {"generated": 0, "natural": 0}
     for pair in pairs:
         generated, missing_g = evaluator_vector(
-            [pair["generated_id"]], structure, recognition, evaluator
+            [pair["generated_id"]], structure, recognition, evaluator, stability
         )
         natural, missing_n = evaluator_vector(
-            [pair["natural_id"]], structure, recognition, evaluator
+            [pair["natural_id"]], structure, recognition, evaluator, stability
         )
         dropped["generated"] += len(missing_g)
         dropped["natural"] += len(missing_n)
@@ -248,6 +333,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "the family-recognition oracle's control did not pass, so its recognition "
             "set is not evidence and no function-related number is computed from it"
         )
+    stability: dict[str, float] = {}
+    stability_receipt: dict[str, Any] | None = None
+    if args.stability is not None:
+        stability_receipt = json.loads(
+            (args.stability / "domain_stability_evaluation.json").read_text(encoding="utf-8")
+        )
+        gate = (stability_receipt.get("gates") or {}).get("plm") or {}
+        if gate.get("passed"):
+            sidecar = args.stability / "generated_stability.jsonl"
+            for row in read_jsonl(sidecar):
+                stability[str(row["id"])] = float(row["predicted_delta_g_kcal_per_mol"])
+        else:
+            # A failed gate blocks the *use* of the instrument, not the rest of the
+            # experiment. The free-energy evaluator then reports itself unavailable
+            # with the gate's reason, and every other evaluator is unaffected.
+            stability_withheld = {
+                "withheld": True,
+                "reason": gate.get("reason"),
+                "consequence": (
+                    "no free-energy evaluator is reported. The structural and family "
+                    "evaluators are unaffected"
+                ),
+            }
+            stability_receipt = dict(stability_receipt, stability_withheld=stability_withheld)
+            print(json.dumps({"stability": "withheld", "reason": gate.get("reason")}), flush=True)
+
     likelihood: dict[str, dict[str, Any]] = {}
     likelihood_receipts: list[dict[str, Any]] = []
     for directory in args.likelihood:
@@ -285,7 +396,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             for evaluator in EVALUATORS:
                 left, right, usable, dropped = paired_vectors(
-                    members, structure, recognition, evaluator
+                    members, structure, recognition, evaluator, stability
                 )
                 if len(usable) < 2:
                     block["contrasts"][evaluator] = {"status": "no_usable_pair", "dropped": dropped}
@@ -301,7 +412,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         # The difference of the two strata's gaps: how much is truncation.
         gap_difference: dict[str, Any] = {}
         for evaluator in EVALUATORS:
-            left, right, usable, _ = paired_vectors(pairs, structure, recognition, evaluator)
+            left, right, usable, _ = paired_vectors(
+                pairs, structure, recognition, evaluator, stability
+            )
             if len(usable) < 2:
                 gap_difference[evaluator] = {"resolved": False, "reason": "no usable pair"}
                 continue
@@ -325,12 +438,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if row.get("arm") == arm and "pool" in row.get("roles", [])
         ]
         members.sort(key=lambda row: str(row["id"]))
-        missing = [row["id"] for row in members if row["id"] not in likelihood]
-        if missing:
+        absent = [row["id"] for row in members if row["id"] not in likelihood]
+        if absent:
             raise SystemExit(
-                f"{len(missing)} pool members of {arm!r} carry no recomputed likelihood "
-                f"(first {missing[:3]}); the selector is incomplete and no curve is reported"
+                f"{len(absent)} pool members of {arm!r} carry no recomputed likelihood "
+                f"(first {absent[:3]}); the selector is incomplete and no curve is reported"
             )
+        lengths = np.asarray([int(row["length"]) for row in members], dtype=np.float64)
         selectors = {
             "likelihood": np.asarray(
                 [likelihood[row["id"]]["mean_nll_per_token_nats"] for row in members],
@@ -343,31 +457,91 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ],
                 dtype=np.float64,
             ),
+            # The length control. Every structural confidence rises with length,
+            # so a selector that quietly prefers long sequences would look like a
+            # selector that prefers good ones. Selecting by length alone prices
+            # exactly that, and any likelihood gain it reproduces is a length gain.
+            "length": -lengths,
         }
         selectors["combined"] = gp.rank_average(selectors["likelihood"], selectors["composition"])
         selectors["random"] = gp.random_key(len(members), seed=args.seed + 991)
         correlations = {
             "likelihood_vs_composition_spearman": spearman(
                 selectors["likelihood"], selectors["composition"]
-            )
+            ),
+            "likelihood_vs_length_spearman": spearman(selectors["likelihood"], lengths),
+            "composition_vs_length_spearman": spearman(selectors["composition"], lengths),
         }
+        termination = collections.Counter(str(row.get("decoder_stop")) for row in members)
+        strata = collections.Counter(str(row.get("stratum")) for row in members)
+
+        # Diversity is a property of a selected set, not of an evaluator, so each
+        # distinct evaluator support set is profiled once and shared.
+        profile_cache: dict[tuple[str, str, float], dict[str, Any]] = {}
+        reference_cache: dict[tuple[str, float], dict[str, Any]] = {}
+
+        def profiles_for(support_key, kept_rows, families, name, fraction, scored):
+            key = (support_key, name, fraction)
+            if key not in profile_cache:
+                chosen = gp.selection_indices(scored, fraction=fraction)
+                profile_cache[key] = gp.selected_set_profile(
+                    [str(kept_rows[i]["sequence"]) for i in chosen],
+                    [families[i] for i in chosen],
+                )
+            reference_key = (support_key, fraction)
+            if reference_key not in reference_cache:
+                reference_cache[reference_key] = gp.diversity_reference(
+                    [str(row["sequence"]) for row in kept_rows],
+                    families,
+                    fraction=fraction,
+                    seed=args.seed + 991,
+                )
+            return profile_cache[key], reference_cache[reference_key]
 
         per_evaluator: dict[str, Any] = {}
         for evaluator in EVALUATORS:
             values, dropped = evaluator_vector(
-                [row["id"] for row in members], structure, recognition, evaluator
+                [row["id"] for row in members], structure, recognition, evaluator, stability
             )
             missing = set(dropped)
             kept = [row for row in members if row["id"] not in missing]
-            if len(kept) < MINIMUM_BOOTSTRAP_UNITS:
-                per_evaluator[evaluator] = {
-                    "status": "no_usable_pool",
-                    "n_dropped": len(dropped),
+            block: dict[str, Any] = {
+                "n_dropped": len(dropped),
+                "quantity": EVALUATOR_QUANTITY[evaluator],
+            }
+            if evaluator in SUB_POOL_EVALUATORS:
+                block["sub_pool"] = {
+                    "n_pool": len(members),
+                    "n_evaluable": len(kept),
+                    "coverage_fraction": len(kept) / len(members),
+                    "why": SUB_POOL_EVALUATORS[evaluator],
+                    "selection_is_re_ranked_within_the_sub_pool": True,
+                    "warning": (
+                        "this evaluator exists for only part of the pool, so its curve is "
+                        "a selection experiment on that sub-pool and not on the pool the "
+                        "other evaluators use. The two are not interchangeable"
+                    ),
                 }
+                if kept:
+                    sub_lengths = np.asarray([int(row["length"]) for row in kept])
+                    block["sub_pool"]["length"] = {
+                        "min": int(sub_lengths.min()),
+                        "max": int(sub_lengths.max()),
+                        "mean": float(sub_lengths.mean()),
+                    }
+            if len(kept) < MINIMUM_BOOTSTRAP_UNITS:
+                block["status"] = "unavailable_on_this_pool"
+                block["reason"] = (
+                    f"{len(kept)} of {len(members)} pool members are evaluable, below the "
+                    f"{MINIMUM_BOOTSTRAP_UNITS}-unit floor. Reported as unavailable rather "
+                    "than estimated on a remnant"
+                )
+                per_evaluator[evaluator] = block
                 continue
             mask = np.asarray([row["id"] not in missing for row in members], dtype=bool)
             units = [str(row.get(unit) if unit != "id" else row["id"]) for row in kept]
             families = [recognition.get(row["id"], {}).get("pfam_families", []) for row in kept]
+            support_key = f"{evaluator}:{len(kept)}" if evaluator in SUB_POOL_EVALUATORS else f"shared:{len(kept)}"
             curves: dict[str, Any] = {}
             for name, score in sorted(selectors.items()):
                 scored = score[mask]
@@ -376,33 +550,52 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     contrast = gp.selection_contrast(
                         values, scored, units, fraction=fraction, seed=args.seed, n_bootstrap=args.draws
                     )
-                    chosen = gp.selection_indices(scored, fraction=fraction)
-                    contrast["repertoire"] = gp.family_repertoire([families[i] for i in chosen])
-                    if len(chosen) >= 2:
-                        contrast["repertoire"]["mean_pairwise_kmer_distance"] = (
-                            gp.mean_pairwise_kmer_distance([kept[i]["sequence"] for i in chosen])
-                        )
+                    profile, reference = profiles_for(
+                        support_key, kept, families, name, fraction, scored
+                    )
+                    contrast["selected_set"] = profile
+                    contrast["size_matched_random_reference"] = reference
+                    contrast["collapse"] = gp.collapse_check(
+                        profile, reference, yield_difference=contrast.get("difference_vs_random")
+                    )
                     points.append(contrast)
                 curves[name] = points
-            per_evaluator[evaluator] = {
-                "status": "measured",
-                "n_pool": int(mask.sum()),
-                "n_dropped": len(dropped),
-                "pool_mean": float(values.mean()),
-                "random_baseline": [
+            block.update(
+                status="measured",
+                n_pool=int(mask.sum()),
+                pool_mean=float(values.mean()),
+                pool_profile=gp.selected_set_profile(
+                    [str(row["sequence"]) for row in kept], families
+                ),
+                random_baseline=[
                     gp.random_baseline(values, fraction=fraction, seed=args.seed + 991)
                     for fraction in gp.SELECTION_FRACTIONS
                 ],
-                "curves": curves,
-                "selector_evaluator_spearman": {
-                    name: spearman(score[mask], values)
-                    for name, score in sorted(selectors.items())
+                curves=curves,
+                selector_evaluator_spearman={
+                    name: spearman(score[mask], values) for name, score in sorted(selectors.items())
                 },
-            }
+            )
+            per_evaluator[evaluator] = block
         e17_results[arm] = {
             "declaration": declaration,
             "n_members": len(members),
             "selector_correlations": correlations,
+            "selectors": dict(SELECTOR_DECLARATION),
+            "termination": {
+                "decoder_stop": dict(termination),
+                "strata": dict(strata),
+                "statement": (
+                    "the pool is natively terminated by construction, so selection here "
+                    "cannot be rescuing budget-censored continuations and no part of any "
+                    "gain is a truncation effect"
+                ),
+            },
+            "length": {
+                "min": int(lengths.min()),
+                "max": int(lengths.max()),
+                "mean": float(lengths.mean()),
+            },
             "evaluators": per_evaluator,
         }
 
@@ -415,6 +608,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "structure": [str(path) for path in args.structure],
             "recognition": str(args.recognition),
             "likelihood": [str(path) for path in args.likelihood],
+            "stability": None if args.stability is None else str(args.stability),
         },
         "structure_receipts": folded["receipts"],
         "likelihood_receipts": likelihood_receipts,
@@ -430,6 +624,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "e17": {
             "arms": e17_results,
+            "rendering_risk": RENDERING_RISK,
+            "evaluator_quantities": dict(EVALUATOR_QUANTITY),
+            "sub_pool_evaluators": dict(SUB_POOL_EVALUATORS),
+            "stability_receipt": stability_receipt
+            and {
+                key: stability_receipt[key]
+                for key in ("licensed_band", "gates", "limitations", "support", "stability_withheld")
+                if key in stability_receipt
+            },
             "pool_digest": e17["pool_digest"],
             "selection_fractions": list(gp.SELECTION_FRACTIONS),
             "independence": e17["independence"],
@@ -446,7 +649,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "the quantity for that comparison",
             "an E17 method that beats random at one fraction and not across the curve "
             "is not a method, and a yield gain accompanied by a repertoire collapse is "
-            "not a gain",
+            "not a gain: the collapse verdict beside each point is the computed form of "
+            "that judgement",
+            "the composition and length selectors are controls, not competitors. A "
+            "likelihood gain either of them reproduces is not evidence that the model's "
+            "likelihood carries usable information",
+            "predicted free energy covers only the sub-pool inside the stability "
+            "instrument's licensed band and is a prediction in kcal/mol, never a "
+            "measurement and never interchangeable with a folding confidence",
         ],
     }
     write_json(args.out / COMPLETION, record)
@@ -459,6 +669,15 @@ def main() -> None:
     parser.add_argument("--structure", type=Path, nargs="+", required=True, help="ESMFold2 shard output dirs")
     parser.add_argument("--recognition", type=Path, required=True, help="the Pfam oracle output dir")
     parser.add_argument("--likelihood", type=Path, nargs="+", required=True, help="likelihood output dirs")
+    parser.add_argument(
+        "--stability",
+        type=Path,
+        default=None,
+        help=(
+            "the validated stability application dir; its gate must have passed and its "
+            "predictions are read only inside the licensed residue band"
+        ),
+    )
     parser.add_argument("--draws", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=20261008)
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")
