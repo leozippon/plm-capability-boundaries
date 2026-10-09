@@ -536,3 +536,220 @@ def test_the_length_control_and_sub_pool_declarations_are_present():
     # could have moved the likelihood selector.
     assert RENDERING_RISK["protgpt2_unwrapped_penalty_nats_per_token"] == 1.42
     assert RENDERING_RISK["zymctrl_tag_leak_nats"] == 1.73
+
+
+# ------------------------------------------------- length-conditional contrast
+
+
+def test_length_bins_are_equal_count_not_equal_width():
+    lengths = [50] * 40 + [51, 52, 300, 310]
+    binning = gp.length_bins(lengths, n_bins=4)
+    assert binning["n_bins_requested"] == 4
+    assert binning["bin_of_row"].shape == (44,)
+    assert sum(binning["bin_counts"].values()) == 44
+    with pytest.raises(ValueError):
+        gp.length_bins([60, 61], n_bins=8)
+
+
+def _length_confounded_pool(n: int = 600, seed: int = 0):
+    """A pool whose evaluator is length-driven, plus three selectors.
+
+    ``proxy`` is the realistic case: a noisy length proxy, like a model
+    likelihood whose rank correlation with length is around a half rather than
+    one. ``signal`` carries information orthogonal to length. The pure length
+    vector is the degenerate case.
+    """
+
+    rng = np.random.default_rng(seed)
+    lengths = rng.integers(50, 320, n)
+    signal = rng.normal(0.0, 1.0, n)
+    units = [f"u{index}" for index in range(n)]
+    length_only = lengths / 100.0 + rng.normal(0.0, 0.05, n)
+    with_signal = lengths / 100.0 + signal + rng.normal(0.0, 0.05, n)
+    proxy = -(lengths.astype(float) / 100.0 + rng.normal(0.0, 1.6, n))
+    return {
+        "lengths": lengths,
+        "signal": signal,
+        "units": units,
+        "length_only": length_only,
+        "with_signal": with_signal,
+        "proxy": proxy,
+    }
+
+
+def test_a_noisy_length_proxy_loses_its_whole_gain_to_a_length_matched_draw():
+    """The contrast that separates protein knowledge from a length proxy.
+
+    This is the realistic shape of the confound: a selector correlated with
+    length but not identical to it beats an unrestricted random draw on any
+    length-sensitive evaluator while knowing nothing about proteins. Matching the
+    comparator on length composition has to remove that.
+    """
+
+    pool = _length_confounded_pool()
+    unconditional = gp.selection_contrast(
+        pool["length_only"], pool["proxy"], pool["units"], fraction=0.1, seed=1, n_bootstrap=2000
+    )
+    conditional = gp.length_conditional_contrast(
+        pool["length_only"],
+        pool["proxy"],
+        pool["lengths"],
+        pool["units"],
+        fraction=0.1,
+        seed=1,
+        n_bootstrap=2000,
+    )
+    # Large and resolved against plain random ...
+    assert unconditional["difference_vs_random"] > 0.25
+    assert unconditional["excludes_zero"] is True
+    # ... and nothing once length composition is held fixed.
+    assert conditional["resolved"] is True
+    assert conditional["beats_length"] is False
+    low, high = conditional["difference_ci95"]
+    assert low <= 0.0 <= high
+    assert abs(conditional["gain_over_length_matched_random"]) < 0.1
+
+
+def test_information_beyond_length_does_survive_the_matched_draw():
+    pool = _length_confounded_pool()
+    conditional = gp.length_conditional_contrast(
+        pool["with_signal"],
+        -pool["signal"],
+        pool["lengths"],
+        pool["units"],
+        fraction=0.1,
+        seed=1,
+        n_bootstrap=2000,
+    )
+    assert conditional["resolved"] is True
+    assert conditional["beats_length"] is True
+    assert conditional["difference_ci95"][0] > 0.0
+    # The unrestricted random key run through the same metric is the null's scale.
+    assert abs(conditional["random_selector_control"]) < 0.5
+
+
+def test_a_pure_length_selector_has_no_length_matched_comparator_at_all():
+    """Selecting the longest sequences *is* selecting a length stratum.
+
+    There is no random set of the same size and the same length composition other
+    than that stratum itself, so the honest verdict is that the contrast cannot be
+    formed -- not that the selector fails it.
+    """
+
+    pool = _length_confounded_pool()
+    conditional = gp.length_conditional_contrast(
+        pool["length_only"],
+        -pool["lengths"].astype(float),
+        pool["lengths"],
+        pool["units"],
+        fraction=0.1,
+        seed=1,
+        n_bootstrap=2000,
+    )
+    assert conditional["resolved"] is False
+    assert conditional["forced_match_share"] == pytest.approx(1.0)
+    assert conditional["difference_ci95"] is None
+    assert "unselected rows" in conditional["reason"]
+
+
+def test_the_contrast_refuses_where_length_matching_has_no_room():
+    """At a large fraction each bin holds about as many selected as unselected rows.
+
+    The matched draw then has to redraw the selected rows and the contrast
+    collapses toward zero. Reporting that as "does not beat length" would
+    discredit a real effect for an arithmetic reason, so it is refused instead.
+    """
+
+    pool = _length_confounded_pool()
+    forced = gp.length_conditional_contrast(
+        pool["with_signal"],
+        -pool["signal"],
+        pool["lengths"],
+        pool["units"],
+        fraction=0.5,
+        seed=1,
+        n_bootstrap=2000,
+    )
+    assert forced["resolved"] is False
+    assert forced["forced_match_share"] > gp.MAX_FORCED_MATCH_SHARE
+    assert forced["difference_ci95"] is None
+
+    whole = gp.length_conditional_contrast(
+        pool["with_signal"],
+        -pool["signal"],
+        pool["lengths"],
+        pool["units"],
+        fraction=1.0,
+        seed=1,
+        n_bootstrap=2000,
+    )
+    assert whole["resolved"] is False
+    assert "whole pool" in whole["reason"]
+
+
+def test_the_contrast_refuses_misaligned_or_non_finite_input():
+    pool = _length_confounded_pool(n=40)
+    with pytest.raises(ValueError):
+        gp.length_conditional_contrast(
+            pool["with_signal"][:20],
+            -pool["signal"],
+            pool["lengths"],
+            pool["units"],
+            fraction=0.1,
+            seed=1,
+        )
+    broken = pool["with_signal"].copy()
+    broken[0] = np.nan
+    with pytest.raises(ValueError):
+        gp.length_conditional_contrast(
+            broken, -pool["signal"], pool["lengths"], pool["units"], fraction=0.1, seed=1
+        )
+
+
+# --------------------------------------------------------------- novelty axis
+
+
+def test_corpus_identity_enters_the_profile_and_the_collapse_axes():
+    """Drifting toward the corpus is the other way a gain fails to be a gain."""
+
+    assert gp.COLLAPSE_AXES["nearest_corpus_identity"] == "above"
+    sequences = ["MKWVTFISLLLLFSSAYSRGV", "GQPRTEEDNIQKVLDTVAKYQ", "ACDEFGHIKLMNPQRSTVWYA"]
+    families = [["PF1"], ["PF2"], ["PF3"]]
+    bare = gp.selected_set_profile(sequences, families)
+    assert bare["nearest_corpus_identity"] is None
+    assert "no homology search" in bare["nearest_corpus_identity_note"]
+
+    scored = gp.selected_set_profile(
+        sequences, families, corpus_identity=[12.0, 40.0, 99.0]
+    )
+    assert scored["nearest_corpus_identity"] == pytest.approx(50.3333, abs=1e-3)
+    assert scored["max_nearest_corpus_identity"] == pytest.approx(99.0)
+    assert scored["fraction_near_duplicate_of_corpus"] == pytest.approx(1 / 3)
+    with pytest.raises(ValueError):
+        gp.selected_set_profile(sequences, families, corpus_identity=[1.0])
+
+
+def test_a_selection_drifting_toward_the_corpus_is_flagged():
+    rng = np.random.default_rng(11)
+    sequences = ["".join(rng.choice(list(gp.AA20), size=60)) for _ in range(120)]
+    families = [[f"PF{index % 30}"] for index in range(120)]
+    identities = list(rng.uniform(5.0, 30.0, 120))
+    reference = gp.diversity_reference(
+        sequences, families, fraction=0.1, seed=1, n_keys=8, corpus_identity=identities
+    )
+    assert reference["nearest_corpus_identity"] is not None
+    retrieved = gp.selected_set_profile(
+        sequences[:12], families[:12], corpus_identity=[97.0] * 12
+    )
+    verdict = gp.collapse_check(retrieved, reference, yield_difference=0.2)
+    assert "nearest_corpus_identity" in verdict["axes_flagged"]
+    assert verdict["axes_flagged"]["nearest_corpus_identity"]["moved"] == "above"
+    assert verdict["gain_is_not_a_gain"] is True
+
+
+def test_the_novelty_stage_declares_the_masking_rationale_where_it_reports():
+    from scripts.capability.evaluation.search_generated_novelty import MASKING_RATIONALE
+
+    assert "--masking 0" in MASKING_RATIONALE
+    assert "82.9" in MASKING_RATIONALE
+    assert "flattering" in MASKING_RATIONALE

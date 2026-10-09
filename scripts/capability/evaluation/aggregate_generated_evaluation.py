@@ -79,6 +79,17 @@ EVALUATOR_QUANTITY: dict[str, str] = {
     "predicted_delta_g": "predicted_delta_g",
 }
 
+#: The evaluators the length-conditional contrast is computed for. Not all of
+#: them: it is the most expensive quantity here and the question it answers is
+#: about candidate quality, so it runs on the structural confidence, the
+#: structural event and the family call, which are the three endpoints a reader
+#: would act on.
+LENGTH_CONDITIONAL_EVALUATORS: tuple[str, ...] = (
+    "mean_ca_plddt",
+    "confident_fold",
+    "complete_domain",
+)
+
 #: Evaluators that exist for only part of the pool, with the reason. A curve on a
 #: sub-pool is a selection experiment on that sub-pool; it is reported as such and
 #: never read as the pool's result.
@@ -333,6 +344,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "the family-recognition oracle's control did not pass, so its recognition "
             "set is not evidence and no function-related number is computed from it"
         )
+    novelty: dict[str, float] = {}
+    novelty_receipt: dict[str, Any] | None = None
+    if args.novelty is not None:
+        novelty_receipt = json.loads(
+            (args.novelty / "generated_novelty.json").read_text(encoding="utf-8")
+        )
+        for row in read_jsonl(args.novelty / "generated_novelty.jsonl"):
+            novelty[str(row["id"])] = float(row["nearest_corpus_identity"])
+
     stability: dict[str, float] = {}
     stability_receipt: dict[str, Any] | None = None
     if args.stability is not None:
@@ -480,13 +500,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         profile_cache: dict[tuple[str, str, float], dict[str, Any]] = {}
         reference_cache: dict[tuple[str, float], dict[str, Any]] = {}
 
-        def profiles_for(support_key, kept_rows, families, name, fraction, scored):
+        def profiles_for(support_key, kept_rows, families, identities, name, fraction, scored):
             key = (support_key, name, fraction)
             if key not in profile_cache:
                 chosen = gp.selection_indices(scored, fraction=fraction)
                 profile_cache[key] = gp.selected_set_profile(
                     [str(kept_rows[i]["sequence"]) for i in chosen],
                     [families[i] for i in chosen],
+                    corpus_identity=None
+                    if identities is None
+                    else [identities[i] for i in chosen],
                 )
             reference_key = (support_key, fraction)
             if reference_key not in reference_cache:
@@ -495,6 +518,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     families,
                     fraction=fraction,
                     seed=args.seed + 991,
+                    corpus_identity=identities,
                 )
             return profile_cache[key], reference_cache[reference_key]
 
@@ -541,6 +565,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             mask = np.asarray([row["id"] not in missing for row in members], dtype=bool)
             units = [str(row.get(unit) if unit != "id" else row["id"]) for row in kept]
             families = [recognition.get(row["id"], {}).get("pfam_families", []) for row in kept]
+            identities = (
+                [novelty[row["id"]] for row in kept]
+                if novelty and all(row["id"] in novelty for row in kept)
+                else None
+            )
+            kept_lengths = [int(row["length"]) for row in kept]
             support_key = f"{evaluator}:{len(kept)}" if evaluator in SUB_POOL_EVALUATORS else f"shared:{len(kept)}"
             curves: dict[str, Any] = {}
             for name, score in sorted(selectors.items()):
@@ -551,13 +581,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         values, scored, units, fraction=fraction, seed=args.seed, n_bootstrap=args.draws
                     )
                     profile, reference = profiles_for(
-                        support_key, kept, families, name, fraction, scored
+                        support_key, kept, families, identities, name, fraction, scored
                     )
                     contrast["selected_set"] = profile
                     contrast["size_matched_random_reference"] = reference
                     contrast["collapse"] = gp.collapse_check(
                         profile, reference, yield_difference=contrast.get("difference_vs_random")
                     )
+                    # The number that separates protein knowledge from a length
+                    # proxy. Skipped for the random arm, where it has no meaning,
+                    # and for evaluators outside the declared set, where it would
+                    # cost more than it tells.
+                    if name != "random" and evaluator in LENGTH_CONDITIONAL_EVALUATORS:
+                        contrast["length_conditional"] = gp.length_conditional_contrast(
+                            values,
+                            scored,
+                            kept_lengths,
+                            units,
+                            fraction=fraction,
+                            seed=args.seed,
+                            n_bootstrap=args.draws,
+                        )
                     points.append(contrast)
                 curves[name] = points
             block.update(
@@ -609,6 +653,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "recognition": str(args.recognition),
             "likelihood": [str(path) for path in args.likelihood],
             "stability": None if args.stability is None else str(args.stability),
+            "novelty": None if args.novelty is None else str(args.novelty),
         },
         "structure_receipts": folded["receipts"],
         "likelihood_receipts": likelihood_receipts,
@@ -625,6 +670,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "e17": {
             "arms": e17_results,
             "rendering_risk": RENDERING_RISK,
+            "length_conditional_evaluators": list(LENGTH_CONDITIONAL_EVALUATORS),
+            "length_conditional_question": (
+                "a selector correlated with length beats an unrestricted random draw "
+                "without knowing anything about proteins, because every structural "
+                "confidence rises with length. The length_conditional block beside each "
+                "point compares the selected set against a random set of the same size "
+                "AND the same length composition. A selector that beats that carries "
+                "information beyond length; one that does not is a length proxy"
+            ),
+            "novelty_receipt": novelty_receipt
+            and {
+                key: novelty_receipt[key]
+                for key in (
+                    "n_searched",
+                    "n_with_any_hit",
+                    "identity_over_query",
+                    "identity_strata",
+                    "masking_rationale",
+                    "database",
+                    "ceiling",
+                )
+                if key in novelty_receipt
+            },
             "evaluator_quantities": dict(EVALUATOR_QUANTITY),
             "sub_pool_evaluators": dict(SUB_POOL_EVALUATORS),
             "stability_receipt": stability_receipt
@@ -657,6 +725,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "predicted free energy covers only the sub-pool inside the stability "
             "instrument's licensed band and is a prediction in kcal/mol, never a "
             "measurement and never interchangeable with a folding confidence",
+            "read the length_conditional block before the difference_vs_random one: "
+            "the second answers whether a selector beats chance, the first whether it "
+            "beats length, and only the first bears on whether the model's likelihood "
+            "carries protein knowledge",
         ],
     }
     write_json(args.out / COMPLETION, record)
@@ -669,6 +741,12 @@ def main() -> None:
     parser.add_argument("--structure", type=Path, nargs="+", required=True, help="ESMFold2 shard output dirs")
     parser.add_argument("--recognition", type=Path, required=True, help="the Pfam oracle output dir")
     parser.add_argument("--likelihood", type=Path, nargs="+", required=True, help="likelihood output dirs")
+    parser.add_argument(
+        "--novelty",
+        type=Path,
+        default=None,
+        help="the homology-search output dir supplying each sequence's nearest corpus identity",
+    )
     parser.add_argument(
         "--stability",
         type=Path,

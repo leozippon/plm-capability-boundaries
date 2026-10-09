@@ -507,6 +507,7 @@ def selected_set_profile(
     family_sets: Sequence[Sequence[str]],
     *,
     kmer: int = DIVERSITY_KMER,
+    corpus_identity: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Everything about a selected set other than its yield.
 
@@ -557,6 +558,16 @@ def selected_set_profile(
     profile["mean_pairwise_kmer_distance"] = (
         mean_pairwise_kmer_distance(list(sequences), kmer) if len(sequences) >= 2 else None
     )
+    if corpus_identity is None:
+        profile["nearest_corpus_identity"] = None
+        profile["nearest_corpus_identity_note"] = "no homology search was supplied"
+    else:
+        identity = np.asarray(corpus_identity, dtype=np.float64)
+        if identity.size != len(sequences):
+            raise ValueError("the corpus identities must align with the sequences")
+        profile["nearest_corpus_identity"] = float(identity.mean())
+        profile["max_nearest_corpus_identity"] = float(identity.max())
+        profile["fraction_near_duplicate_of_corpus"] = float(np.mean(identity >= 95.0))
     return profile
 
 
@@ -567,6 +578,7 @@ def diversity_reference(
     fraction: float,
     seed: int,
     n_keys: int = DIVERSITY_REFERENCE_KEYS,
+    corpus_identity: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """The diversity a *random* set of the same size has, as the reference.
 
@@ -583,7 +595,11 @@ def diversity_reference(
     ]
     profiles = [
         selected_set_profile(
-            [sequences[i] for i in chosen], [family_sets[i] for i in chosen]
+            [sequences[i] for i in chosen],
+            [family_sets[i] for i in chosen],
+            corpus_identity=None
+            if corpus_identity is None
+            else [corpus_identity[i] for i in chosen],
         )
         for chosen in keys
     ]
@@ -596,6 +612,7 @@ def diversity_reference(
         "fraction_with_homopolymer_run",
         "mean_length",
         "duplicate_fraction",
+        "nearest_corpus_identity",
     ):
         values = [profile[field] for profile in profiles if profile[field] is not None]
         summary[field] = (
@@ -613,6 +630,10 @@ COLLAPSE_AXES: dict[str, str] = {
     "mean_pairwise_kmer_distance": "below",
     "mean_composition_entropy_nats": "below",
     "fraction_with_homopolymer_run": "above",
+    # A selected set more similar to the corpus than a size-matched random draw is
+    # drifting toward retrieval of natural sequences, which is the other way an
+    # apparent gain can fail to be a gain.
+    "nearest_corpus_identity": "above",
 }
 
 
@@ -992,6 +1013,212 @@ def selection_contrast(
         bootstrap["difference_ci95"][0] > 0.0 or bootstrap["difference_ci95"][1] < 0.0
     )
     return record
+
+
+#: The largest share of a selected set that may come from under-matched length
+#: bins. A bin is under-matched when it holds fewer unselected rows than the
+#: selection took from it, so the matched comparator must largely redraw the
+#: selected rows themselves and the contrast is pushed toward zero by
+#: construction. Above this ceiling a ``beats_length`` of false would carry no
+#: information, so the contrast is reported as unresolved instead.
+MAX_FORCED_MATCH_SHARE = 0.5
+
+#: How many equal-count length bins the length-conditional comparator matches on.
+#: Few enough that each bin holds a usable number of alternatives, many enough
+#: that matching is real: with too many bins the matched draw is forced to be the
+#: selected set itself and the contrast collapses to zero by construction.
+LENGTH_MATCH_BINS = 8
+
+
+def length_bins(lengths: Sequence[int], *, n_bins: int = LENGTH_MATCH_BINS) -> dict[str, Any]:
+    """Equal-count length bins over the pool, and each row's bin.
+
+    Quantile bins rather than equal-width ones, because a pool whose lengths pile
+    up at one end would leave equal-width bins almost empty and make the matched
+    comparator draw from a handful of rows.
+    """
+
+    array = np.asarray(lengths, dtype=np.float64)
+    if array.ndim != 1 or array.size < n_bins:
+        raise ValueError(f"length matching needs at least {n_bins} rows")
+    quantiles = np.linspace(0.0, 1.0, n_bins + 1)[1:-1]
+    edges = np.unique(np.quantile(array, quantiles))
+    assignment = np.searchsorted(edges, array, side="right")
+    counts = Counter(int(value) for value in assignment)
+    return {
+        "bin_of_row": assignment.astype(np.int64),
+        "edges": [float(edge) for edge in edges],
+        "n_bins_realised": int(len(set(assignment.tolist()))),
+        "n_bins_requested": int(n_bins),
+        "bin_counts": {str(key): int(value) for key, value in sorted(counts.items())},
+    }
+
+
+def length_conditional_contrast(
+    evaluator: Sequence[float],
+    score: Sequence[float],
+    lengths: Sequence[int],
+    groups: Sequence[Any],
+    *,
+    fraction: float,
+    seed: int,
+    n_bootstrap: int = 10000,
+    n_bins: int = LENGTH_MATCH_BINS,
+) -> dict[str, Any]:
+    """Does this selector beat a *length-matched* random draw at the same budget?
+
+    The question that separates protein knowledge from a length proxy. Every
+    structural confidence rises with length, so a selector correlated with length
+    beats an unrestricted random draw without knowing anything about proteins. The
+    comparator here is therefore not a random set of the same size but a random
+    set of the same size *and the same length composition*: the selected set's
+    per-bin counts are reproduced, drawing from the same bins.
+
+    A positive interval means the selector carries information beyond length. An
+    interval containing zero means that, at this budget, what the selector found
+    is recoverable from length alone.
+
+    The resampled row indices ride in the bootstrap's first argument, which
+    :func:`src.capability.core.statistics.paired_group_bootstrap` passes to the
+    metric untouched; the evaluator values and lengths are then read positionally.
+    That indirection exists because the metric needs two aligned vectors and the
+    bootstrap hands it one.
+    """
+
+    values = np.asarray(evaluator, dtype=np.float64)
+    keys = np.asarray(score, dtype=np.float64)
+    lengths_array = np.asarray(lengths, dtype=np.int64)
+    if not (values.shape == keys.shape == lengths_array.shape) or values.ndim != 1:
+        raise ValueError("the evaluator, selector and length vectors must align")
+    if not np.isfinite(values).all() or not np.isfinite(keys).all():
+        raise ValueError("a length-conditional contrast was given a non-finite value")
+    unit_ids = [str(group) for group in groups]
+    if len(unit_ids) != values.size:
+        raise ValueError("the independence units must align with the pool")
+    binning = length_bins(lengths_array, n_bins=n_bins)
+    bin_of_row = binning["bin_of_row"]
+    take = selection_count(values.size, fraction)
+    record: dict[str, Any] = {
+        "fraction": float(fraction),
+        "n_pool": int(values.size),
+        "n_selected": take,
+        "length_bins": {key: binning[key] for key in ("edges", "n_bins_realised", "bin_counts")},
+    }
+    floor = bootstrap_unit_floor(len({*unit_ids}))
+    record["unit_floor"] = floor
+
+    # How much room the comparator actually has. A bin the selection exhausts
+    # leaves nothing else to match against, so those rows contribute a forced
+    # zero and a contrast built mostly from them is not a measurement.
+    chosen_full = np.argsort(keys, kind="stable")[:take]
+    per_bin_selected = Counter(bin_of_row[chosen_full].tolist())
+    per_bin_available = Counter(bin_of_row.tolist())
+    forced = sum(
+        count
+        for bin_id, count in per_bin_selected.items()
+        if per_bin_available[bin_id] - count < count
+    )
+    record["forced_match_share"] = forced / take
+    record["max_forced_match_share"] = float(MAX_FORCED_MATCH_SHARE)
+
+    if floor["degenerate"] or take == values.size or record["forced_match_share"] > MAX_FORCED_MATCH_SHARE:
+        record["resolved"] = False
+        if floor["degenerate"]:
+            record["reason"] = floor["degenerate_reason"]
+        elif take == values.size:
+            record["reason"] = (
+                "at full selection every method takes the whole pool, so there is "
+                "nothing for a length-matched comparator to differ from"
+            )
+        else:
+            record["reason"] = (
+                f"{record['forced_match_share']:.0%} of the selected set comes from "
+                "length bins holding fewer unselected rows than the selection took, "
+                "above the "
+                f"{MAX_FORCED_MATCH_SHARE:.0%} ceiling. A matched comparator has almost "
+                "nothing else to draw from, so the contrast would be driven to zero by "
+                "construction and a negative verdict would carry no information"
+            )
+        record["difference_ci95"] = None
+        return record
+
+    # One generator for the whole contrast, so the matched draw is independent
+    # from one bootstrap iteration to the next. Re-seeding inside the metric
+    # would freeze the comparator and integrate over nothing, leaving the
+    # interval conditioned on a single arbitrary matched draw.
+    generator = np.random.default_rng(seed + 104729)
+
+    def metric(row_indices: np.ndarray, selector: np.ndarray) -> float:
+        rows = row_indices.astype(np.int64)
+        local_values = values[rows]
+        local_bins = bin_of_row[rows]
+        size = selector.size
+        wanted = selection_count(size, fraction)
+        chosen = np.argsort(selector, kind="stable")[:wanted]
+        matched: list[int] = []
+        for bin_id, needed in Counter(local_bins[chosen].tolist()).items():
+            available = np.flatnonzero(local_bins == bin_id)
+            if available.size == 0:
+                return float("nan")
+            # With replacement: inside a resample a bin can hold fewer rows than
+            # the selected set drew from it, and refusing there would condition
+            # the interval on the draws that happened to be easy.
+            matched.extend(generator.choice(available, size=needed, replace=True).tolist())
+        if not matched:
+            return float("nan")
+        return float(local_values[chosen].mean() - local_values[np.asarray(matched)].mean())
+
+    bootstrap = paired_group_bootstrap(
+        np.arange(values.size, dtype=np.float64),
+        keys,
+        random_key(values.size, seed=seed + 7919),
+        unit_ids,
+        metric,
+        seed=seed,
+        n_bootstrap=n_bootstrap,
+        derived_statistic=_left_selector_score,
+    )
+    low, high = bootstrap["derived_ci95"]
+    point = bootstrap["derived_score"]
+    outside = bool(point < low or point > high)
+    record.update(
+        resolved=True,
+        n_groups=bootstrap["n_groups"],
+        n_finite_draws=bootstrap["n_finite_draws"],
+        gain_over_length_matched_random=point,
+        difference_ci95=[low, high],
+        excludes_zero=bool(low > 0.0 or high < 0.0),
+        beats_length=bool(low > 0.0),
+        random_selector_control=bootstrap["right_score"],
+        point_outside_interval=outside,
+        interpretation=(
+            "the selected set's mean evaluator value minus that of a random set of "
+            "the same size and the same length composition. Positive with an interval "
+            "excluding zero means the selector carries information beyond length; an "
+            "interval containing zero means that at this budget the gain is "
+            "recoverable from length alone. The verdict is read from the interval, "
+            "which is the bootstrap distribution, not from the point"
+        ),
+        random_selector_control_note=(
+            "the same quantity computed for an unrestricted random key. It is the "
+            "null's realised scale on this pool and carries its own sampling noise, "
+            "so it is reported rather than assumed to be zero"
+        ),
+    )
+    if outside:
+        record["point_outside_interval_note"] = (
+            "the full-sample estimate falls outside its own percentile interval. A "
+            "top-fraction mean is an extreme order statistic, and resampling groups "
+            "with replacement leaves about two thirds of the rows distinct, so the "
+            "resampled selections are systematically less extreme than the original. "
+            "The interval is still the inferential object; the point is reported "
+            "beside it rather than reconciled by adjusting either"
+        )
+    return record
+
+
+def _left_selector_score(left: float, _right: float) -> float:
+    return left
 
 
 def declared_independence(selectors: Sequence[str], evaluators: Sequence[str]) -> dict[str, Any]:
