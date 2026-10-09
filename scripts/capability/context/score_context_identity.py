@@ -588,6 +588,7 @@ def family_matrix(records: list[dict], *, referent: str, bins: list[str], target
     """
 
     rows: dict[tuple[str, str], dict[int, list[float]]] = {}
+    depth: dict[tuple[str, str], dict[str, int]] = {}
     families: set[int] = set()
     for record in records:
         arm = record["arm"]
@@ -605,6 +606,16 @@ def family_matrix(records: list[dict], *, referent: str, bins: list[str], target
                 rows.setdefault((arm, name), {}).setdefault(int(assay["cluster"]), []).append(
                     float(value) - float(reference)
                 )
+                # Depth, not only group count: the phenotype programme found that
+                # variants per unit, rather than number of units, decided which of
+                # its cohorts resolved. Here depth is fixed at the cohort's own
+                # 128-variant draw, so what varies is how many assays and variants
+                # stand behind each bin.
+                cell = depth.setdefault(
+                    (arm, name), {"assays": 0, "variants": 0, "clusters": 0}
+                )
+                cell["assays"] += 1
+                cell["variants"] += int(assay["variants"])
     order = sorted(families)
     columns = [(record["arm"], name) for record in records for name in bins]
     matrix = np.full((len(order), len(columns)), np.nan)
@@ -614,7 +625,7 @@ def family_matrix(records: list[dict], *, referent: str, bins: list[str], target
             values = per_family.get(family)
             if values:
                 matrix[position, index] = float(np.mean(values))
-    return order, columns, matrix
+    return order, columns, matrix, depth
 
 
 def columns_for(referent: str, admitted: list[str]) -> list[str]:
@@ -633,9 +644,17 @@ def columns_for(referent: str, admitted: list[str]) -> list[str]:
 def panel_statistics(records: list[dict], *, referent: str, bins: list[str], targets, label: str):
     from src.capability.extensions.phenotype_strata import shared_bootstrap
 
-    families, columns, matrix = family_matrix(
+    families, columns, matrix, depth = family_matrix(
         records, referent=referent, bins=bins, targets=targets
     )
+    for column, cell in depth.items():
+        cell["clusters"] = int(np.isfinite(matrix[:, columns.index(column)]).sum())
+        cell["variants_per_cluster"] = (
+            cell["variants"] / cell["clusters"] if cell["clusters"] else None
+        )
+        cell["assays_per_cluster"] = (
+            cell["assays"] / cell["clusters"] if cell["clusters"] else None
+        )
     keep = [index for index in range(matrix.shape[1]) if np.isfinite(matrix[:, index]).sum() >= 2]
     dropped = [
         {"arm": columns[index][0], "bin": columns[index][1], "reason": "fewer than two families"}
@@ -673,7 +692,11 @@ def panel_statistics(records: list[dict], *, referent: str, bins: list[str], tar
             else {"bin": name, **H.power_record(**shared)}
         )
         per_arm.setdefault(arm, []).append(
-            record | {"pointwise_interval": statistics["pointwise_interval"][position]}
+            record
+            | {
+                "pointwise_interval": statistics["pointwise_interval"][position],
+                "support": depth.get((arm, name), {}),
+            }
         )
     return {
         "panel": label,
@@ -833,6 +856,67 @@ def mechanism(records: list[dict]) -> dict:
     return out
 
 
+def protocol_comparison(records: list[dict], priors: list[Path]) -> dict:
+    """Measure what a numerics change did, on the assays both protocols scored.
+
+    When the scoring protocol changes, the numbers move for two reasons at once --
+    the arithmetic and the support -- and a record that does not separate them
+    invites the reader to attribute the whole move to whichever one is being
+    discussed. So the overlap is compared directly: for every assay and condition
+    both protocols scored, the difference in the per-assay rank correlation and in
+    the wild-type summed log likelihood. A change in a headline larger than what
+    this measures cannot be the arithmetic.
+    """
+
+    current = {record["arm"]: {row["assay"]: row for row in record["assays"]} for record in records}
+    out = []
+    for path in priors:
+        prior = json.loads(Path(path).read_text(encoding="utf-8"))
+        arm = prior["arm"]
+        if arm not in current:
+            continue
+        theirs = {row["assay"]: row for row in prior["assays"]}
+        shared = sorted(set(theirs) & set(current[arm]))
+        spearman, wild = [], []
+        for assay in shared:
+            mine, other = current[arm][assay], theirs[assay]
+            for condition, value in other["spearman"].items():
+                observed = mine["spearman"].get(condition)
+                if value is not None and observed is not None:
+                    spearman.append(abs(float(value) - float(observed)))
+            for condition, value in other["wt_log_likelihood"].items():
+                observed = mine["wt_log_likelihood"].get(condition)
+                if observed is not None:
+                    wild.append(abs(float(value) - float(observed)))
+        out.append(
+            {
+                "arm": arm,
+                "prior_record": str(path),
+                "prior_rows_per_forward": prior.get("rows_per_forward", prior.get("batch_size")),
+                "current_rows_per_forward": H.SCORING_ROWS_PER_FORWARD,
+                "prior_assays": prior["assays_scored"],
+                "shared_assays": len(shared),
+                "compared_condition_cells": len(spearman),
+                "max_per_assay_spearman_difference": max(spearman) if spearman else None,
+                "mean_per_assay_spearman_difference": (
+                    float(np.mean(spearman)) if spearman else None
+                ),
+                "max_wild_type_log_likelihood_difference_nats": max(wild) if wild else None,
+                "reads": (
+                    "an upper bound on how much of any change between the two readings the "
+                    "arithmetic can account for; a larger move is support, not protocol"
+                ),
+            }
+        )
+    return {
+        "note": (
+            "the prior records are not pooled with these; the analysis refuses that. They "
+            "are read only to bound the size of the protocol change."
+        ),
+        "arms": out,
+    }
+
+
 def analyse(args: argparse.Namespace) -> None:
     records = []
     for path in sorted(args.scores):
@@ -947,6 +1031,11 @@ def analyse(args: argparse.Namespace) -> None:
             "realised_identity_by_bin": realised,
             "panels": panels,
             "reading_referent": H.READING_REFERENT,
+            "protocol_comparison": (
+                protocol_comparison(records, args.prior_protocol_scores)
+                if args.prior_protocol_scores
+                else None
+            ),
             "mechanism": mechanism(records),
             "ceiling": ceiling,
             "limitations": list(H.LIMITATIONS),
@@ -970,6 +1059,14 @@ def main() -> None:
     parser.add_argument("--arm")
     parser.add_argument("--homologs", type=Path)
     parser.add_argument("--scores", type=Path, nargs="*", default=[])
+    parser.add_argument(
+        "--prior-protocol-scores",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="records from a superseded numerics protocol, read only to bound how much "
+        "of any change between the two readings the arithmetic can account for",
+    )
     parser.add_argument("--budget", type=int, default=H.POSITION_BUDGET)
     parser.add_argument(
         "--batch-size",
