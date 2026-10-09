@@ -228,6 +228,61 @@ def test_length_matching_reports_a_generated_product_it_cannot_match():
     assert matched["balance"]["pairs"] == 1
 
 
+def test_two_arm_matching_retains_only_products_served_by_both_pools():
+    generated = [_record(f"ge_{index}", SEQ_A[: 60 + index]) for index in range(3)]
+    # the low pool can serve every length, the high pool only the first
+    low = [SEQ_B[: 60 + index] for index in range(3)]
+    high = [SEQ_B[:60]]
+    matched = gm.match_two_arms(
+        generated, {"natural_low_homology": low, "natural_high_homology": high}
+    )
+    assert matched["retained"] == 1
+    assert matched["requested"] == 3
+    assert [row["id"] for row in matched["generated"]] == ["ge_0"]
+    assert matched["balance"]["natural_high_homology"]["pairs"] == 1
+    assert len(matched["unmatched"]["natural_high_homology"]) == 2
+
+
+def test_relabelled_pair_selects_two_arms_and_refuses_nonsense():
+    rows = [
+        {"origin": "generated", "v": 1},
+        {"origin": "natural_low_homology", "v": 2},
+        {"origin": "natural_high_homology", "v": 3},
+    ]
+    out = gm.relabelled_pair(rows, "natural_low_homology", "natural_high_homology")
+    assert [row["origin"] for row in out] == ["generated", "natural"]
+    assert [row["v"] for row in out] == [2, 3]
+    assert rows[1]["origin"] == "natural_low_homology"  # the input is not mutated
+    with pytest.raises(ValueError, match="distinct triad arms"):
+        gm.relabelled_pair(rows, "generated", "generated")
+    with pytest.raises(ValueError, match="distinct triad arms"):
+        gm.relabelled_pair(rows, "generated", "nonsense")
+
+
+def test_the_triad_decomposition_is_an_identity_on_a_shared_support():
+    # Three arms, every triple complete on its own group: the original contrast
+    # must be exactly the sum of the generation and retrievability contrasts.
+    rows = []
+    for index, (g, low, high) in enumerate(((5.0, 3.0, 1.0), (9.0, 4.0, 2.0), (7.0, 6.0, 2.5))):
+        group = f"g{index}"
+        rows += [
+            {"group": group, "origin": "generated", "sequence_id": f"s{index}g", "v": g},
+            {"group": group, "origin": "natural_low_homology",
+             "sequence_id": f"s{index}l", "v": low},
+            {"group": group, "origin": "natural_high_homology",
+             "sequence_id": f"s{index}h", "v": high},
+        ]
+    point = lambda left, right: gm.paired_origin_contrast(  # noqa: E731
+        gm.relabelled_pair(rows, left, right), value="v", draws=50
+    )["difference"]["point"]
+    generation = point("generated", "natural_low_homology")
+    retrievability = point("natural_low_homology", "natural_high_homology")
+    original = point("generated", "natural_high_homology")
+    assert generation + retrievability == pytest.approx(original)
+    assert generation == pytest.approx(np.mean([2.0, 5.0, 1.0]))
+    assert retrievability == pytest.approx(np.mean([2.0, 2.0, 3.5]))
+
+
 def test_independence_groups_join_near_duplicates():
     names, record = gm.independence_groups([SEQ_A, SEQ_A, SEQ_B])
     assert names[0] == names[1]

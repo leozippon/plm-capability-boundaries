@@ -126,6 +126,56 @@ DEGENERATE_RUN_RESIDUES = 10
 
 ORIGINS = ("generated", "natural")
 
+#: The three arms of the retrievability-controlled design, and the three contrasts
+#: that decompose the original confounded comparison.
+#:
+#: A generated product has essentially no retrievable relatives and a curated
+#: natural protein always has, so "generated minus natural" on a Swiss-Prot
+#: comparator is one number carrying two effects. Adding a *natural* arm that
+#: occupies the same identity band splits them: the generation effect is read at
+#: matched retrievability, the retrievability effect is read within natural
+#: sequence, and the original contrast is their sum. Neither new arm is a
+#: correction to the other -- they answer different questions and both are
+#: reported.
+TRIAD_ORIGINS = ("generated", "natural_low_homology", "natural_high_homology")
+
+TRIAD_CONTRASTS = (
+    ("generated", "natural_low_homology", "generation effect at matched retrievability"),
+    (
+        "natural_low_homology",
+        "natural_high_homology",
+        "retrievability effect within natural sequence",
+    ),
+    (
+        "generated",
+        "natural_high_homology",
+        "the original confounded contrast, which is the sum of the other two",
+    ),
+)
+
+
+def relabelled_pair(
+    rows: Sequence[Mapping[str, Any]], left: str, right: str
+) -> list[dict[str, Any]]:
+    """Two triad arms, relabelled onto the paired estimator's own two origins.
+
+    The estimator is not generalised to three arms, because it is a *paired*
+    estimator and the pairing is what makes it work: every arm member is matched
+    one to one to the same generated anchor and carries that anchor's independence
+    group, so any two arms are paired through it. Relabelling is therefore exact
+    rather than a convenience, and it keeps one bootstrap in one place.
+    """
+
+    if left == right or left not in TRIAD_ORIGINS or right not in TRIAD_ORIGINS:
+        raise ValueError(f"{left!r} and {right!r} are not two distinct triad arms")
+    out = []
+    for row in rows:
+        if row["origin"] == left:
+            out.append(dict(row, origin="generated"))
+        elif row["origin"] == right:
+            out.append(dict(row, origin="natural"))
+    return out
+
 
 # --------------------------------------------------------------- the sequences
 
@@ -316,6 +366,42 @@ def match_natural(
                 f"{LENGTH_CALIPER_FRACTION:g} x generated length)"
             ),
         },
+    }
+
+
+def match_two_arms(
+    generated: Sequence[Mapping[str, Any]],
+    pools: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
+    """One partner from each pool per generated product, matched on length.
+
+    Each pool is drawn independently by :func:`match_natural`, so a generated
+    product keeps a partner from a pool that can serve it even when the other
+    pool cannot. A product is retained in the triad only when **both** partners
+    exist, because the three contrasts have to be read on one support or the
+    decomposition identity does not hold; the products lost at each pool are
+    reported separately so the attrition is attributable.
+    """
+
+    drawn = {name: match_natural(generated, pool) for name, pool in pools.items()}
+    complete = [
+        row
+        for row in generated
+        if all(
+            any(item["matched_to"] == row["id"] for item in drawn[name]["matched"])
+            for name in pools
+        )
+    ]
+    partners = {
+        name: {item["matched_to"]: item for item in drawn[name]["matched"]} for name in pools
+    }
+    return {
+        "generated": complete,
+        "partners": partners,
+        "balance": {name: drawn[name]["balance"] for name in pools},
+        "unmatched": {name: drawn[name]["unmatched"] for name in pools},
+        "retained": len(complete),
+        "requested": len(generated),
     }
 
 

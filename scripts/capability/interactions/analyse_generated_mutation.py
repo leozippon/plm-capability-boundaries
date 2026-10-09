@@ -189,12 +189,65 @@ def profile_control_block(rows: list, strata: list, control: dict, assays: dict,
     return block
 
 
+def triad_block(rows: list, strata: list, contrasts, *, draws: int, seed: int) -> dict:
+    """The three contrasts of the retrievability-controlled design, and their identity.
+
+    The original comparison carried two effects at once. Here the generation
+    effect is read against a natural arm in the same identity band, the
+    retrievability effect is read between two natural arms, and the original
+    contrast is read unchanged. Because every triple is retained only when both
+    natural partners exist, the three are on one group support and the third
+    point estimate is arithmetically the sum of the first two -- which is checked,
+    not assumed, and a nonzero residual means the supports have diverged.
+    """
+
+    out: dict = {"contrasts": {}}
+    for left, right, question in gm.TRIAD_CONTRASTS:
+        key = f"{left}__minus__{right}"
+        selected = gm.relabelled_pair(rows, left, right)
+        selected_strata = gm.relabelled_pair(strata, left, right)
+        record = contrasts(selected, selected_strata)
+        record["question"] = question
+        record["left"], record["right"] = left, right
+        out["contrasts"][key] = record
+
+    residuals = {}
+    for endpoint in SCALAR_ENDPOINTS + ALIGNED_ENDPOINTS:
+        def point(pair: tuple[str, str]) -> float | None:
+            record = out["contrasts"][f"{pair[0]}__minus__{pair[1]}"][endpoint]
+            return record["difference"]["point"]
+
+        parts = [
+            point(("generated", "natural_low_homology")),
+            point(("natural_low_homology", "natural_high_homology")),
+            point(("generated", "natural_high_homology")),
+        ]
+        if any(value is None for value in parts):
+            residuals[endpoint] = {"checked": False, "reason": "a contrast has no point estimate"}
+            continue
+        residuals[endpoint] = {
+            "checked": True,
+            "generation_plus_retrievability": parts[0] + parts[1],
+            "original_contrast": parts[2],
+            "residual": parts[0] + parts[1] - parts[2],
+        }
+    out["decomposition_identity"] = residuals
+    out["reading"] = (
+        "the generation contrast is the one that answers whether a model behaves "
+        "differently on its own products once retrievability is matched; the "
+        "retrievability contrast measures how much of the original difference was "
+        "reference-database coverage rather than generation"
+    )
+    return out
+
+
 def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
-                *, draws: int, seed: int) -> dict:
+                *, draws: int, seed: int, triad: bool = False) -> dict:
     """Every endpoint of one arm over the whole cohort."""
 
     per_mutation: list[dict] = []
-    profiles = {origin: ProfileAccumulator(direction="downstream") for origin in gm.ORIGINS}
+    origins = gm.TRIAD_ORIGINS if triad else gm.ORIGINS
+    profiles = {origin: ProfileAccumulator(direction="downstream") for origin in origins}
     cells: dict[tuple, dict[str, float]] = {}
     aligned = unaligned = 0
     worst_upstream = 0.0
@@ -345,9 +398,21 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
         "retention_max_abs_nats": float(
             extraction.completion["totals"]["retention_max_abs_nats"]
         ),
-        "primary": contrasts(per_mutation, stratum_rows),
+        "primary": (
+            triad_block(per_mutation, stratum_rows, contrasts, draws=draws, seed=seed)
+            if triad
+            else contrasts(per_mutation, stratum_rows)
+        ),
         "profile_control": (
-            profile_control_block(
+            {
+                "by_design": (
+                    "this cohort matches retrievability by construction; the measured band "
+                    "and admissible-relative count of every arm are in the cohort design's "
+                    "retrievability census, so no post-hoc covariate adjustment is applied"
+                )
+            }
+            if triad
+            else profile_control_block(
                 per_mutation, stratum_rows, control, assays, contrasts, draws=draws, seed=seed
             )
             if control is not None
@@ -359,15 +424,21 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
             }
         ),
         "non_degenerate": dict(
-            contrasts(
-                [row for row in per_mutation if row["sequence_id"] in non_degenerate],
-                [row for row in stratum_rows if row["sequence_id"] in non_degenerate],
+            (
+                triad_block(
+                    [row for row in per_mutation if row["sequence_id"] in non_degenerate],
+                    [row for row in stratum_rows if row["sequence_id"] in non_degenerate],
+                    contrasts, draws=draws, seed=seed,
+                )
+                if triad
+                else contrasts(
+                    [row for row in per_mutation if row["sequence_id"] in non_degenerate],
+                    [row for row in stratum_rows if row["sequence_id"] in non_degenerate],
+                )
             ),
             sequences=len(non_degenerate),
         ),
-        "decay": {
-            origin: profiles[origin].profile() for origin in gm.ORIGINS
-        },
+        "decay": {origin: profiles[origin].profile() for origin in origins},
     }
 
 
@@ -392,8 +463,9 @@ def main() -> None:
 
     out = gm.prepare_output_directory(args.out, COMPLETION)
     cohort = json.loads(Path(args.cohort).read_text())
-    if cohort.get("schema") != gm.COHORT_SCHEMA or cohort.get("mode") != "singles":
-        raise SystemExit(f"{args.cohort}: not a singles cohort of {gm.COHORT_SCHEMA}")
+    if cohort.get("schema") != gm.COHORT_SCHEMA or cohort.get("mode") not in ("singles", "triad"):
+        raise SystemExit(f"{args.cohort}: not a singles or triad cohort of {gm.COHORT_SCHEMA}")
+    triad = cohort["mode"] == "triad"
     assays = {row["assay"]: row for row in cohort["assays"]}
     if len(assays) != len(cohort["assays"]):
         raise SystemExit("the cohort carries a duplicate assay identity")
@@ -410,7 +482,8 @@ def main() -> None:
     arms = []
     for root in args.archives:
         extraction = gm.open_extraction(root)
-        arms.append(analyse_arm(extraction, assays, control, draws=args.draws, seed=args.seed))
+        arms.append(analyse_arm(extraction, assays, control, draws=args.draws,
+                                seed=args.seed, triad=triad))
     if len({record["arm"] for record in arms}) != len(arms):
         raise SystemExit("two extraction directories report the same arm")
 
@@ -424,10 +497,16 @@ def main() -> None:
         ),
         "design": cohort["design"],
         "cohort": {"path": str(args.cohort), "sha256": sha256_file(args.cohort)},
+        "mode": cohort["mode"],
         "endpoints": {
             "scalar": list(SCALAR_ENDPOINTS),
             "aligned": list(ALIGNED_ENDPOINTS),
-            "contrast": "generated minus matched natural, independence group as the paired unit",
+            "contrast": (
+                "three paired contrasts decomposing generation from retrievability, "
+                "independence group as the paired unit"
+                if triad
+                else "generated minus matched natural, independence group as the paired unit"
+            ),
         },
         "bootstrap": {"draws": args.draws, "seed": args.seed,
                       "method": "group percentile bootstrap on the group-equal mean"},

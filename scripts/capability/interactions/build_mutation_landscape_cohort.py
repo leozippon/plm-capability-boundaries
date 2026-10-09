@@ -50,7 +50,16 @@ from src.capability.interactions import generated_mutation as gm  # noqa: E402
 
 COMPLETION = "mutation_landscape_cohort.json"
 COHORT = "cohort.json"
-MODES = ("singles", "pairs", "cycles")
+MODES = ("singles", "pairs", "cycles", "triad")
+
+#: Sources of the triad's two natural arms, read out of the comparator screen.
+#: The low-homology arm is metagenome-assembled natural sequence selected for the
+#: identity band a generated product occupies; the high-homology arm is the
+#: curated corpus the first comparator came from. Both are natural; they differ
+#: in retrievability against one named reference, which is the whole point.
+LOW_HOMOLOGY_SOURCES = ("mgnify_natural", "remote_gate")
+HIGH_HOMOLOGY_SOURCE = "swissprot"
+TARGET_BAND = "lt30_no_detectable_homology"
 
 
 def _now() -> str:
@@ -157,6 +166,160 @@ def build_singles(args) -> dict:
             stream: sum(1 for row in paired if row["stream"] == stream)
             for stream in sorted({row["stream"] for row in paired})
         },
+    }
+    return {"assays": assays, "design": design}
+
+
+# --------------------------------------------------------------------- triad
+
+
+def build_triad(args) -> dict:
+    """Generated products against two natural arms that differ in retrievability."""
+
+    screen = json.loads(Path(args.screen).read_text())
+    if screen.get("schema") != "comparator_homology_screen_v1":
+        raise SystemExit(f"{args.screen}: not a comparator homology screen")
+    low_band, high_band = args.min_residues, args.max_residues
+    by_source: dict[str, list[dict]] = {}
+    for row in screen["sequences"]:
+        if low_band <= int(row["length"]) <= high_band:
+            by_source.setdefault(row["source"], []).append(row)
+
+    low_pool = [
+        row["sequence"]
+        for source in LOW_HOMOLOGY_SOURCES
+        for row in by_source.get(source, ())
+        if row["band"] == TARGET_BAND and row["admissible_relatives"] == 0
+    ]
+    high_pool = [row["sequence"] for row in by_source.get(HIGH_HOMOLOGY_SOURCE, ())]
+    if not low_pool:
+        raise SystemExit(
+            "the screen found no natural sequence in the target identity band with no "
+            f"admissible relative; sources screened were {sorted(by_source)}. A "
+            "retrievability-matched natural arm cannot be built from these sources and the "
+            "generated-versus-natural contrast remains non-identifiable."
+        )
+    if not high_pool:
+        raise SystemExit(f"the screen carries no {HIGH_HOMOLOGY_SOURCE} sequence in this band")
+
+    records = [
+        row
+        for row in gm.read_generated(args.generated)
+        if low_band <= int(row["length"]) <= high_band
+    ]
+    if not records:
+        raise SystemExit(f"no generated product lies in [{low_band}, {high_band}] residues")
+    chosen = gm.stratified_subsample(records, per_stage=args.per_stage)
+    matched = gm.match_two_arms(
+        chosen, {"natural_low_homology": low_pool, "natural_high_homology": high_pool}
+    )
+    paired = matched["generated"]
+    if not paired:
+        raise SystemExit("no generated product found a partner in both natural arms")
+
+    members: list[tuple[str, str, str, str | None]] = []
+    for row in paired:
+        members.append(("generated", row["id"], row["sequence"], None))
+        for arm in ("natural_low_homology", "natural_high_homology"):
+            partner = matched["partners"][arm][row["id"]]
+            members.append((arm, partner["id"], partner["sequence"], row["id"]))
+    names, grouping = gm.independence_groups([sequence for _a, _i, sequence, _p in members])
+    group_of: dict[str, str] = {}
+    anchor_group: dict[str, str] = {}
+    for (arm, identity, _sequence, anchor), name in zip(members, names):
+        if arm == "generated":
+            anchor_group[identity] = name
+    for (arm, identity, _sequence, anchor), name in zip(members, names):
+        # Both natural partners carry their generated anchor's group, so the three
+        # arms are paired through it and a resample takes a whole triple.
+        group_of[identity] = anchor_group[anchor] if anchor is not None else name
+
+    screen_rows = {row["sequence"]: row for row in screen["sequences"]}
+    assays = []
+    for arm, identity, sequence, anchor in members:
+        scan = gm.scan_mutations(sequence, sites=args.sites, subs=args.subs)
+        source = next(
+            (row["source"] for key, row in screen_rows.items() if key == sequence), None
+        )
+        banded = screen_rows.get(sequence)
+        origin_row = next((row for row in paired if row["id"] == (anchor or identity)), None)
+        assays.append(
+            gm.cohort_assay(
+                assay=identity,
+                wildtype=sequence,
+                mutants=[item["label"] for item in scan],
+                sequences=[item["sequence"] for item in scan],
+                cluster=group_of[identity],
+                extra={
+                    "origin": arm,
+                    "group": group_of[identity],
+                    "anchor": anchor or identity,
+                    "paired_with": anchor or identity,
+                    "length": len(sequence),
+                    "source": source,
+                    "band": None if banded is None else banded["band"],
+                    "admissible_relatives": (
+                        None if banded is None else int(banded["admissible_relatives"])
+                    ),
+                    "max_identity_over_query": (
+                        None if banded is None else float(banded["max_identity_over_query"])
+                    ),
+                    "stage": origin_row["stage"] if arm == "generated" and origin_row else None,
+                    "stream": origin_row["stream"] if arm == "generated" and origin_row else None,
+                    "degenerate": (
+                        gm.degenerate(origin_row)
+                        if arm == "generated" and origin_row is not None
+                        else None
+                    ),
+                    "sites": [int(item["site"]) for item in scan],
+                },
+            )
+        )
+
+    def band_census(arm: str) -> dict:
+        rows = [row for row in assays if row["origin"] == arm]
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[str(row["band"])] = counts.get(str(row["band"]), 0) + 1
+        relatives = [row["admissible_relatives"] for row in rows
+                     if row["admissible_relatives"] is not None]
+        return {
+            "sequences": len(rows),
+            "bands": counts,
+            "median_admissible_relatives": (
+                int(np.median(relatives)) if relatives else None
+            ),
+            "sources": sorted({str(row["source"]) for row in rows}),
+            "lengths": _length_summary(row["length"] for row in rows),
+        }
+
+    design = {
+        "mode": "triad",
+        "selection_seed": gm.SELECTION_SEED,
+        "arms": list(gm.TRIAD_ORIGINS),
+        "contrasts": [
+            {"left": left, "right": right, "question": question}
+            for left, right, question in gm.TRIAD_CONTRASTS
+        ],
+        "band_residues": [low_band, high_band],
+        "per_stage": args.per_stage,
+        "sites_per_sequence": args.sites,
+        "substitutions_per_site": args.subs,
+        "target_band": TARGET_BAND,
+        "low_homology_sources": list(LOW_HOMOLOGY_SOURCES),
+        "high_homology_source": HIGH_HOMOLOGY_SOURCE,
+        "pool_sizes": {"natural_low_homology": len(low_pool),
+                       "natural_high_homology": len(high_pool)},
+        "triples": len(paired),
+        "requested_generated": matched["requested"],
+        "length_matching": matched["balance"],
+        "unmatched": matched["unmatched"],
+        "independence": {key: value for key, value in grouping.items() if key != "detail"},
+        "independence_detail": grouping["detail"],
+        "retrievability": {arm: band_census(arm) for arm in gm.TRIAD_ORIGINS},
+        "states": sum(len(row["mutants"]) for row in assays),
+        "screen": {"path": str(args.screen), "sha256": sha256_file(args.screen),
+                   "caveat": screen.get("caveat")},
     }
     return {"assays": assays, "design": design}
 
@@ -375,12 +538,21 @@ def main() -> None:
                         help="matched contact/control pairs drawn per separation stratum")
     parser.add_argument("--pairwise-cohort", type=Path,
                         help="the frozen MegaScale double-mutant cohort JSON (cycles)")
+    parser.add_argument("--screen", type=Path,
+                        help="the comparator homology screen table (triad)")
+    parser.add_argument("--min-residues", type=int, default=55,
+                        help="triad length band floor; the natural low-homology source is "
+                             "a small-domain library and cannot populate longer lengths")
+    parser.add_argument("--max-residues", type=int, default=85,
+                        help="triad length band ceiling")
     parser.add_argument("--device", default="cpu",
                         help="accepted because the campaign queue injects it; unused")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    if args.mode in ("singles", "pairs") and args.generated is None:
+    if args.mode == "triad" and (args.generated is None or args.screen is None):
+        parser.error("triad needs --generated and --screen")
+    if args.mode in ("singles", "pairs", "triad") and args.generated is None:
         parser.error(f"--generated is required for {args.mode}")
     if args.mode == "pairs" and args.contacts_dir is None:
         parser.error("--contacts-dir is required for pairs")
@@ -390,13 +562,15 @@ def main() -> None:
         parser.error("--per-stage, --sites, --subs and --pairs-per-stratum are positive")
 
     out = gm.prepare_output_directory(args.out, COMPLETION)
-    built = {"singles": build_singles, "pairs": build_pairs, "cycles": build_cycles}[args.mode](args)
+    built = {"singles": build_singles, "pairs": build_pairs, "cycles": build_cycles,
+             "triad": build_triad}[args.mode](args)
     # The producer's half of the identity contract: every mode passes through here,
     # so no cohort this builder writes can be one the extraction stage refuses.
     gm.require_unique_assays(built["assays"])
 
     sources = {}
-    for name, path in (("generated", args.generated), ("pairwise_cohort", args.pairwise_cohort)):
+    for name, path in (("generated", args.generated), ("pairwise_cohort", args.pairwise_cohort),
+                       ("screen", args.screen)):
         if path is not None:
             sources[name] = {"path": str(path), "sha256": sha256_file(path)}
     cohort = {
