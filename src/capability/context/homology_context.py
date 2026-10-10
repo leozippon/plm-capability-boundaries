@@ -141,7 +141,7 @@ import numpy as np
 
 from .homology import Hit, STRATUM_EDGES, STRATUM_NAMES
 from ..core.amino_acids import AA20
-from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS
+from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor, mean_interval
 
 SCHEMA_VERSION = "homology_context_v1"
 
@@ -401,6 +401,157 @@ STRUCTURE_COMPARISON_RULE = (
     "per-band length distribution and the same comparison after excluding copies. "
     "A band that any condition cannot populate is reported unused, not pooled"
 )
+
+# ------------------------- E11's conditions, and the 2026-10-10 reading of them
+
+#: The four generation conditions of E11, each naming a declared E09 condition so
+#: the two experiments are built from one retrieval artefact and one set of edges.
+#: Declared here rather than in the generation stage because the structural
+#: comparison, the copying diagnostic and the generation stage all name them.
+CLOSE_HOMOLOG = "close_homolog"
+REMOTE_HOMOLOG = "remote_homolog"
+GENERATION_CONDITIONS: dict[str, str] = {
+    NO_CONTEXT: NO_CONTEXT,
+    UNRELATED: UNRELATED,
+    CLOSE_HOMOLOG: "id_70_90",
+    REMOTE_HOMOLOG: "id_30_50",
+}
+
+#: The contrast family the structural panel is read on, and the only one. Five
+#: contrasts, each with its own estimand:
+#:
+#: * against :data:`UNRELATED` -- the primary referent, which holds position
+#:   occupancy, item count, item length and bulk composition fixed and varies
+#:   only homology, so this is the homology-specific contrast;
+#: * against :data:`NO_CONTEXT` -- the reading referent, which differs in how
+#:   much of the window is occupied as well as in what occupies it, so a gain
+#:   here mixes homology with the mere presence of a prefix;
+#: * ``unrelated`` against ``no_context`` -- the price of having a prefix at all,
+#:   estimated rather than argued about, and the column that separates the first
+#:   two readings.
+#:
+#: Simultaneous inference is taken over this family and the strata it is read in,
+#: jointly, because the claim made from it is panel-wide.
+STRUCTURE_CONTRASTS: tuple[tuple[str, str], ...] = (
+    (CLOSE_HOMOLOG, UNRELATED),
+    (REMOTE_HOMOLOG, UNRELATED),
+    (CLOSE_HOMOLOG, NO_CONTEXT),
+    (REMOTE_HOMOLOG, NO_CONTEXT),
+    (UNRELATED, NO_CONTEXT),
+)
+
+#: Predicted-confidence endpoints, and which way each one reads. Each is a panel
+#: of its own: a simultaneous statement over pLDDT columns says nothing about the
+#: pTM columns, and the three are never pooled into one family.
+STRUCTURE_CONFIDENCE_FIELDS: tuple[str, ...] = ("plddt", "ptm", "pae")
+STRUCTURE_PRIMARY_CONFIDENCE = "plddt"
+STRUCTURE_CONFIDENCE_HIGHER_IS_BETTER: dict[str, bool] = {
+    "plddt": True,
+    "ptm": True,
+    "pae": False,
+}
+
+#: The pairwise confidence fields kept per folded product. They are kept as
+#: arrays, not reduced to a scalar: a mean PAE of 21 A describes neither which
+#: pairs the model is confident about nor whether the uncertainty is diffuse or
+#: confined to one terminus, and a generated product's confidence is usually the
+#: second. The scalar means stay in the record beside them for the panel.
+STRUCTURE_PAIRWISE_FIELDS: tuple[str, ...] = ("pae", "pde", "distogram_logits")
+
+#: Products drawn per condition for the unmatched comparison.
+STRUCTURE_UNMATCHED_SAMPLES = 32
+
+#: The second structural draw, and what it is for.
+#:
+#: The length-matched draw answers "at equal length, does homologous context
+#: produce a product the folding model is more confident about". It cannot answer
+#: "are the products of homologous context better", because matching on length
+#: discards the way the conditions differ in length -- and they do differ: under
+#: an empty context this arm reaches a native terminator in 4% of attempts
+#: against 35% under a close homologue. The unmatched draw therefore takes the
+#: same number of products from each condition's *own* generation distribution,
+#: so the count confound is removed and the length confound is deliberately left
+#: in, named, and reported beside the matched estimate rather than instead of it.
+STRUCTURE_UNMATCHED_RULE = (
+    "draw the same number of products from every condition -- the minimum "
+    "availability across conditions, capped at STRUCTURE_UNMATCHED_SAMPLES -- "
+    "under a seeded permutation of each condition's own products, with no length "
+    "stratification; this estimates the difference in predicted confidence "
+    "between the conditions as they generate, length included, and is reported "
+    "beside the length-matched estimate, never in place of it"
+)
+
+#: The structural extension's own declaration date. It is published under its own
+#: digest and adds nothing to :func:`declaration`, so every artefact frozen under
+#: the 2026-10-08 declaration still validates byte for byte; what was added after
+#: the fact is visible as having been added after the fact.
+STRUCTURE_EXTENSION_PREDECLARED_UTC = "2026-10-10"
+
+
+def structure_extension() -> dict[str, Any]:
+    """The structural reading declared on 2026-10-10, as one serialisable record.
+
+    Separate from :func:`declaration` on purpose. The frozen declaration governs
+    what was generated and scored; this governs how the predicted structures are
+    compared, which was fixed only once the products existed. Mixing the two
+    would silently invalidate every artefact that carries the frozen digest.
+    """
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "predeclared_utc": STRUCTURE_EXTENSION_PREDECLARED_UTC,
+        "extends": "the frozen homology_context declaration; it alters nothing in it",
+        "generation_conditions": dict(GENERATION_CONDITIONS),
+        "contrasts": [list(pair) for pair in STRUCTURE_CONTRASTS],
+        "confidence_fields": list(STRUCTURE_CONFIDENCE_FIELDS),
+        "primary_confidence": STRUCTURE_PRIMARY_CONFIDENCE,
+        "confidence_higher_is_better": dict(STRUCTURE_CONFIDENCE_HIGHER_IS_BETTER),
+        "pairwise_fields": list(STRUCTURE_PAIRWISE_FIELDS),
+        "matched_rule": STRUCTURE_COMPARISON_RULE,
+        "unmatched_rule": STRUCTURE_UNMATCHED_RULE,
+        "unmatched_samples": STRUCTURE_UNMATCHED_SAMPLES,
+        "samples_per_band": STRUCTURE_SAMPLES_PER_BAND,
+        "length_bands": [list(band) for band in STRUCTURE_LENGTH_BANDS],
+        "unit": "wild-type family group, paired within the group",
+        "group_floor": GROUP_FLOOR,
+        "bootstrap_draws": BOOTSTRAP_DRAWS,
+        "bootstrap_seed": BOOTSTRAP_SEED,
+        "draw_seed": DRAW_SEED,
+        "copies_excluded": (
+            "a product that is a copy of its context is excluded from every "
+            "structural comparison, because a copy of a real relative folds like a "
+            "real relative; the excluded members are counted and the rule that "
+            "fired is named for each"
+        ),
+        "estimands": {
+            "length_matched": (
+                "the within-band, equal-count difference in predicted confidence "
+                "between two conditions, paired inside the wild-type family group. "
+                "It estimates what homologous context does at a fixed product "
+                "length, and it is silent about the conditions' different length "
+                "and termination behaviour, which the matching removes"
+            ),
+            "unmatched": (
+                "the equal-count difference in predicted confidence between two "
+                "conditions over each condition's own generation distribution. It "
+                "estimates what the conditions deliver as they generate, and it "
+                "confounds homology with product length and completeness, which "
+                "differ between the conditions by construction"
+            ),
+        },
+        "not_stability": (
+            "every field here is the folding model's own confidence. None of them "
+            "is thermodynamic stability, none is function, and none is measured: "
+            "no wet-lab result supports any statement in this panel"
+        ),
+    }
+
+
+def structure_extension_digest() -> str:
+    """Digest of the structural extension, written into every artefact using it."""
+
+    return _digest(structure_extension(), None)
+
 
 # ------------------------------------------------------------------- inference
 
@@ -1333,6 +1484,38 @@ def vanishing_point(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 # ------------------------------------------------------- copying endpoints (E11)
 
 
+def summarise_structure_cell(selected: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """One (condition, stratum) cell of a structural comparison, descriptively.
+
+    Length and completeness travel with every confidence number here because
+    predicted confidence depends on both, and a cell whose products are truncated
+    at the generation budget is a cell of incomplete products whatever its mean
+    pLDDT says.
+    """
+
+    rows = list(selected)
+    residues = [int(row["residues"]) for row in rows]
+
+    def mean_of(field: str) -> float | None:
+        values = [row.get(field) for row in rows]
+        if not values or any(value is None for value in values):
+            return None
+        return float(np.mean([float(value) for value in values]))
+
+    return {
+        "folded": len(rows),
+        "targets": len({row.get("target_id") for row in rows}),
+        "native_terminal": sum(1 for row in rows if row.get("stop_status") == "native_terminal"),
+        "budget_censored": sum(1 for row in rows if row.get("stop_status") == "budget_censored"),
+        "mean_plddt": mean_of("plddt"),
+        "mean_ptm": mean_of("ptm"),
+        "mean_pae": mean_of("pae"),
+        "mean_residues": float(np.mean(residues)) if residues else None,
+        "median_residues": float(np.median(residues)) if residues else None,
+        "residue_range": [min(residues), max(residues)] if residues else None,
+    }
+
+
 def structure_comparison(
     products: Sequence[Mapping[str, Any]], *, conditions: Sequence[str]
 ) -> dict[str, Any]:
@@ -1362,23 +1545,10 @@ def structure_comparison(
             ]
             clean = [row for row in rows if not row.get("copy_verdict", {}).get("is_copy")]
 
-            def summarise(selected: list[Mapping[str, Any]]) -> dict[str, Any]:
-                return {
-                    "folded": len(selected),
-                    "mean_plddt": (
-                        float(np.mean([row["plddt"] for row in selected])) if selected else None
-                    ),
-                    "mean_ptm": (
-                        float(np.mean([row["ptm"] for row in selected]))
-                        if selected and all(row.get("ptm") is not None for row in selected)
-                        else None
-                    ),
-                    "mean_residues": (
-                        float(np.mean([row["residues"] for row in selected])) if selected else None
-                    ),
-                }
-
-            cell[condition] = {**summarise(rows), "non_copy": summarise(clean)}
+            cell[condition] = {
+                **summarise_structure_cell(rows),
+                "non_copy": summarise_structure_cell(clean),
+            }
         counts = {value["folded"] for value in cell.values()}
         comparable = len(counts) == 1 and counts != {0}
         out[band] = {
@@ -1517,4 +1687,360 @@ def copy_verdict(statistics: Mapping[str, Any], *, identity_percent: float | Non
         "is_copy": bool(fired),
         "fired": fired,
         "identity_rule_evaluated": rules["alignment_identity"] is not None,
+    }
+
+
+def select_unmatched_structure_products(
+    attempts: Sequence[Mapping[str, Any]],
+    *,
+    conditions: Sequence[str],
+    samples: int = STRUCTURE_UNMATCHED_SAMPLES,
+    seed: int = DRAW_SEED,
+) -> tuple[set[str], dict[str, Any]]:
+    """An equal-count draw from each condition's **own** length distribution.
+
+    The counterpart to :func:`select_structure_products`, and deliberately not a
+    replacement for it: this draw keeps the length difference between the
+    conditions, which the length-matched draw removes. Both are needed, because
+    "at equal length homologous context helps" and "homologous context yields
+    better products" are different claims and this design can separate them.
+
+    Returns the selected attempt identifiers and the record of how the draw was
+    made, with each condition's own length distribution so the confound the draw
+    leaves in is visible in the artefact rather than only in this docstring.
+    """
+
+    if samples < 1:
+        raise ValueError("samples must be positive")
+    pools: dict[str, list[str]] = {}
+    lengths: dict[str, list[int]] = {}
+    for attempt in attempts:
+        if int(attempt["residues"]) < MIN_PRODUCT_RESIDUES:
+            continue
+        condition = str(attempt["condition"])
+        if condition not in conditions:
+            continue
+        pools.setdefault(condition, []).append(str(attempt["attempt_id"]))
+        lengths.setdefault(condition, []).append(int(attempt["residues"]))
+    available = {condition: sorted(pools.get(condition, ())) for condition in conditions}
+    drawn = min(min((len(value) for value in available.values()), default=0), samples)
+
+    rng = np.random.default_rng(seed)
+    selected: set[str] = set()
+    for condition in conditions:
+        identifiers = available[condition]
+        if not drawn:
+            continue
+        order = rng.permutation(len(identifiers))[:drawn]
+        selected.update(identifiers[index] for index in sorted(order))
+    return selected, {
+        "rule": STRUCTURE_UNMATCHED_RULE,
+        "seed": seed,
+        "samples": samples,
+        "min_product_residues": MIN_PRODUCT_RESIDUES,
+        "available_per_condition": {
+            condition: len(value) for condition, value in available.items()
+        },
+        "drawn_per_condition": drawn,
+        "status": "used" if drawn else "unused",
+        "reason": None if drawn else "at least one condition supplies no product",
+        "length_distribution_per_condition": {
+            condition: {
+                "n": len(values),
+                "median_residues": float(np.median(values)) if values else None,
+                "mean_residues": float(np.mean(values)) if values else None,
+                "residue_range": [min(values), max(values)] if values else None,
+            }
+            for condition, values in sorted(lengths.items())
+        },
+        "selected": len(selected),
+    }
+
+
+def context_identity_distribution(
+    products: Sequence[Mapping[str, Any]], *, conditions: Sequence[str]
+) -> dict[str, Any]:
+    """How much of each product is its own conditioning context, as a distribution.
+
+    The copying endpoint is not a verdict count. A condition could leave every
+    product under the 50% copy threshold and still be reproducing half of its
+    prompt, so the quantity reported here is the identity of each product to the
+    context it was generated under, summarised as a distribution over the whole
+    product set, beside the two substring statistics that answer differently.
+
+    A product whose context the aligner finds no alignment to at all is recorded
+    as ``unaligned``: the distribution is reported both over the aligned products
+    and with the unaligned counted at zero identity, because those are different
+    quantities and the second is the one the copy rule is read on. The empty
+    context has no counterpart to be identical to, so its cell is
+    ``not applicable`` rather than zero -- an undefined contrast is named, not
+    manufactured.
+    """
+
+    quantiles = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0)
+
+    def spread(values: Sequence[float]) -> dict[str, Any]:
+        array = np.asarray(values, dtype=float)
+        if array.size == 0:
+            return {"n": 0, "quantiles": None, "mean": None}
+        return {
+            "n": int(array.size),
+            "mean": float(array.mean()),
+            "quantiles": {
+                f"q{int(level * 100):02d}": float(np.quantile(array, level))
+                for level in quantiles
+            },
+        }
+
+    out: dict[str, Any] = {}
+    for condition in conditions:
+        rows = [
+            row
+            for row in products
+            if str(row.get("condition")) == condition
+            and int(row["residues"]) >= MIN_PRODUCT_RESIDUES
+        ]
+        with_context = [row for row in rows if int(row.get("context_items") or 0) > 0]
+        identities = [
+            row.get("context_alignment_identity")
+            for row in with_context
+            if row.get("context_alignment_identity") is not None
+        ]
+        evaluated = any("context_alignment_identity" in row for row in with_context)
+        lcs = [int(row["copy_statistics"]["max_lcs_to_context"]) for row in rows]
+        containment = [float(row["copy_statistics"]["max_kmer_containment"]) for row in rows]
+        cell: dict[str, Any] = {
+            "products": len(rows),
+            "products_with_context": len(with_context),
+            "max_lcs_to_context": spread(lcs),
+            "max_kmer_containment": spread(containment),
+            "copy_rules_fired": {
+                rule: sum(
+                    1
+                    for row in rows
+                    if (row.get("copy_verdict") or {}).get("rules", {}).get(rule) is True
+                )
+                for rule in ("long_verbatim_run", "kmer_containment", "alignment_identity")
+            },
+            "copies": sum(1 for row in rows if (row.get("copy_verdict") or {}).get("is_copy")),
+        }
+        if not with_context:
+            cell["context_alignment_identity"] = {
+                "status": "not applicable",
+                "reason": (
+                    "this condition supplies no context, so there is nothing for its "
+                    "products to be identical to"
+                ),
+            }
+        elif not evaluated:
+            cell["context_alignment_identity"] = {
+                "status": "not evaluated",
+                "reason": "no aligner has annotated these products against their context",
+            }
+        else:
+            unaligned = len(with_context) - len(identities)
+            with_zeros = list(identities) + [0.0] * unaligned
+            cell["context_alignment_identity"] = {
+                "status": "evaluated",
+                "aligned": len(identities),
+                "unaligned": unaligned,
+                "unaligned_meaning": (
+                    f"DIAMOND at e <= {EVALUE:g} found no alignment between the product "
+                    "and any item of its own context"
+                ),
+                "among_aligned_percent": spread(identities),
+                "unaligned_as_zero_percent": spread(with_zeros),
+                "at_or_over_copy_threshold": sum(
+                    1 for value in identities if float(value) >= COPY_IDENTITY_PERCENT
+                ),
+                "copy_threshold_percent": COPY_IDENTITY_PERCENT,
+            }
+        out[condition] = cell
+    return out
+
+
+def structure_contrast_panel(
+    strata: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    contrasts: Sequence[Sequence[str]] = STRUCTURE_CONTRASTS,
+    field: str = STRUCTURE_PRIMARY_CONFIDENCE,
+    group_key: str = "target_id",
+    draws: int = BOOTSTRAP_DRAWS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """One confidence field's contrast panel, paired inside the family group.
+
+    ``strata`` maps a stratum name -- a length band, or the single stratum of the
+    unmatched draw -- to the folded products in it. A column of the panel is one
+    (stratum, contrast) pair, and a row is one wild-type family group: the cell
+    is that group's mean confidence under the left condition minus its mean under
+    the right, so a target that happens to fold well cannot move the contrast.
+    A group that supplies no product to one side of a contrast is missing, never
+    zero, which is what restricts every contrast to the groups both conditions
+    actually populate.
+
+    Intervals come from the shared family bootstrap the context lane already uses
+    for its per-bin panel, so the simultaneous statement spans this whole panel
+    rather than each column separately. The pointwise interval is reported beside
+    it and is explicitly the weaker reading.
+    """
+
+    if field not in STRUCTURE_CONFIDENCE_FIELDS:
+        raise ValueError(f"{field} is not a declared confidence field")
+    # Imported here, not at module scope: this module is the context lane's
+    # declaration and must stay importable without the extensions package.
+    from ..extensions.phenotype_strata import shared_bootstrap
+
+    groups = sorted(
+        {
+            str(row[group_key])
+            for rows in strata.values()
+            for row in rows
+            if row.get(field) is not None
+        }
+    )
+    columns: list[dict[str, Any]] = []
+    cells: list[list[float]] = []
+    for stratum, rows in strata.items():
+        per_condition: dict[str, dict[str, list[float]]] = {}
+        for row in rows:
+            if row.get(field) is None:
+                continue
+            per_condition.setdefault(str(row["condition"]), {}).setdefault(
+                str(row[group_key]), []
+            ).append(float(row[field]))
+        for left, right in contrasts:
+            left_groups = per_condition.get(left, {})
+            right_groups = per_condition.get(right, {})
+            shared = sorted(set(left_groups) & set(right_groups))
+            column = [
+                float(np.mean(left_groups[group])) - float(np.mean(right_groups[group]))
+                if group in left_groups and group in right_groups
+                else np.nan
+                for group in groups
+            ]
+            columns.append(
+                {
+                    "stratum": stratum,
+                    "contrast": f"{left}_minus_{right}",
+                    "left": left,
+                    "right": right,
+                    "field": field,
+                    "higher_is_better": STRUCTURE_CONFIDENCE_HIGHER_IS_BETTER[field],
+                    "paired_groups": len(shared),
+                    "left_products": sum(len(value) for value in left_groups.values()),
+                    "right_products": sum(len(value) for value in right_groups.values()),
+                    **bootstrap_unit_floor(len(shared), minimum_units=GROUP_FLOOR),
+                }
+            )
+            cells.append(column)
+    matrix = np.asarray(cells, dtype=float).T if cells else np.zeros((0, 0))
+    keep = [
+        index
+        for index in range(matrix.shape[1])
+        if int(np.isfinite(matrix[:, index]).sum()) >= 2
+    ]
+    dropped = [
+        {
+            **columns[index],
+            "status": "not estimable",
+            "reason": "fewer than two family groups supply both sides of this contrast",
+        }
+        for index in range(matrix.shape[1])
+        if index not in keep
+    ]
+    if not keep or matrix.shape[0] < 2:
+        return {
+            "field": field,
+            "unit": "wild-type family group, paired within the group",
+            "groups": len(groups),
+            "status": "no estimable contrast",
+            "columns": dropped,
+            "bootstrap": None,
+        }
+    statistics, _ = shared_bootstrap(matrix[:, keep], draws=draws, seed=seed)
+    estimated = []
+    for position, index in enumerate(keep):
+        estimated.append(
+            {
+                **columns[index],
+                "status": "estimated",
+                "point": float(statistics["point"][position]),
+                "standard_error": float(statistics["se"][position]),
+                "pointwise_interval": list(statistics["pointwise_interval"][position]),
+                "simultaneous_interval": list(statistics["simultaneous_interval"][position]),
+                "bootstrap_groups": int(statistics["supported_families"][position]),
+            }
+        )
+    return {
+        "field": field,
+        "unit": "wild-type family group, paired within the group",
+        "groups": len(groups),
+        "status": "estimated",
+        "family_size": len(keep),
+        "critical_value": float(statistics["critical_value"]),
+        "interval_reading": (
+            "the simultaneous interval is the panel-wide statement over every "
+            "estimated column of this field; the pointwise interval is marginal and "
+            "does not control the family"
+        ),
+        "columns": [*estimated, *dropped],
+        "bootstrap": {
+            "draws": int(statistics["draws"]),
+            "seed": int(statistics["seed"]),
+            "method": statistics["method"],
+            "missing_category_policy": statistics["missing_category_policy"],
+            "jointly_rejected_draws": int(statistics["jointly_rejected_draws"]),
+        },
+    }
+
+
+def condition_level_summary(
+    strata: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    conditions: Sequence[str],
+    field: str = STRUCTURE_PRIMARY_CONFIDENCE,
+    group_key: str = "target_id",
+) -> dict[str, Any]:
+    """Each condition's own confidence level, over family groups rather than products.
+
+    The contrast panel reports differences; this reports the levels those
+    differences are taken between, as a t-interval over the family-group means so
+    that the unit matches the panel's. It is descriptive: the levels are not
+    paired, so their intervals must not be read against each other.
+    """
+
+    out: dict[str, Any] = {}
+    for stratum, rows in strata.items():
+        cell: dict[str, Any] = {}
+        for condition in conditions:
+            per_group: dict[str, list[float]] = {}
+            for row in rows:
+                if str(row["condition"]) != condition or row.get(field) is None:
+                    continue
+                per_group.setdefault(str(row[group_key]), []).append(float(row[field]))
+            means = [float(np.mean(values)) for values in per_group.values()]
+            if len(means) < 2:
+                cell[condition] = {
+                    "groups": len(means),
+                    "status": "no interval",
+                    "reason": "fewer than two family groups",
+                    "mean": float(means[0]) if means else None,
+                }
+                continue
+            cell[condition] = {
+                "groups": len(means),
+                "status": "estimated",
+                **mean_interval(means),
+                **bootstrap_unit_floor(len(means), minimum_units=GROUP_FLOOR),
+            }
+        out[stratum] = cell
+    return {
+        "field": field,
+        "unit": "wild-type family group",
+        "note": (
+            "unpaired levels; read the contrast panel, not the overlap of these "
+            "intervals, for any difference between conditions"
+        ),
+        "per_stratum": out,
     }

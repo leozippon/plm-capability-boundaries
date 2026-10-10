@@ -22,6 +22,16 @@ truncated 64-residue fragment of a real protein scores far below its full-length
 form. Every record therefore carries its residue count, and the comparison that
 reads these numbers is the one declared in
 :data:`~src.capability.context.homology_context.STRUCTURE_COMPARISON_RULE`.
+
+**The pairwise fields are kept, not reduced.** ESMFold2 returns its confidence
+over residue *pairs* -- PAE, PDE and the distogram -- and over 32 diffusion
+samples. A mean PAE of 21 A describes neither which pairs the model is unsure
+about nor whether that uncertainty is diffuse or confined to one terminus, and
+for a generated product it is usually the second. Each folded product therefore
+gets an ``.npz`` holding the full ``(samples, residues, residues)`` PAE and PDE,
+the ``(1, residues, residues, bins)`` distogram logits and the per-sample pLDDT
+and pTM, at float16 for the pairwise arrays; the scalar means stay in the JSONL
+record beside them so the declared comparison still reads one number per product.
 """
 from __future__ import annotations
 
@@ -40,6 +50,17 @@ WEIGHTS_BASENAME = "ESMFold2-hf"
 
 EXPECT = "conditioned_structure.json"
 RECORDS = "structure_records.jsonl"
+PAIRWISE = "pairwise"
+
+#: The pairwise confidence this stage keeps per product, and the precision it
+#: keeps them at. float16 because the arrays dominate the artefact -- a
+#: 400-residue product's distogram alone is 20 MB at float16 -- and because PAE
+#: and PDE are reported in angstroms over a few tens of angstroms, where float16's
+#: three significant digits are far finer than the instrument's own spread across
+#: its 32 diffusion samples. The per-residue and per-sample fields stay float32.
+PAIRWISE_FIELDS: tuple[str, ...] = ("pae", "pde", "distogram_logits")
+PER_RESIDUE_FIELDS: tuple[str, ...] = ("plddt", "plddt_ca")
+PER_SAMPLE_FIELDS: tuple[str, ...] = ("ptm", "iptm", "complex_plddt", "complex_iplddt")
 
 
 def digest(path: Path) -> str:
@@ -88,6 +109,61 @@ def runtime(device: str) -> dict:
         "interpreter": sys.executable,
         "peak_rss_bytes": usage.ru_maxrss * 1024,
         "cpu_seconds": usage.ru_utime + usage.ru_stime,
+    }
+
+
+def save_pairwise(output, out: Path, attempt_id: str) -> Path:
+    """Write one product's pairwise confidence to its own compressed ``.npz``.
+
+    Nothing is averaged away here. A field the instrument did not return is
+    absent from the archive rather than written as zeros, and a field it did
+    return is written whole, so a later reading of, say, per-domain confidence
+    needs no refold.
+    """
+
+    import numpy as np
+
+    target = out / PAIRWISE / f"{attempt_id.replace('|', '__')}.npz"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    arrays: dict[str, object] = {}
+    for name in PAIRWISE_FIELDS:
+        if name in output:
+            arrays[name] = output[name].detach().float().cpu().numpy().astype(np.float16)
+    for name in (*PER_RESIDUE_FIELDS, *PER_SAMPLE_FIELDS):
+        if name in output:
+            arrays[name] = output[name].detach().float().cpu().numpy().astype(np.float32)
+    if not any(name in arrays for name in PAIRWISE_FIELDS):
+        raise RuntimeError(
+            f"the instrument returned none of {list(PAIRWISE_FIELDS)} for {attempt_id}; "
+            "refusing to record a fold whose pairwise confidence was not kept"
+        )
+    with target.open("wb") as handle:
+        np.savez_compressed(handle, **arrays)
+    return target
+
+
+def best_sample(output) -> dict[str, object]:
+    """The single diffusion sample the instrument is most confident about.
+
+    The scalar fields in each record are means over all 32 samples, which is the
+    quantity the declared comparison reads. This is the other common reading --
+    the best sample by whole-structure confidence -- recorded beside it so the two
+    are never confused for one number.
+    """
+
+    import torch
+
+    if "complex_plddt" in output:
+        ranking = output["complex_plddt"].float()
+    else:
+        ranking = output["plddt"].float().mean(dim=tuple(range(1, output["plddt"].dim())))
+    index = int(torch.argmax(ranking))
+    return {
+        "index": index,
+        "plddt": float(output["plddt"].float()[index].mean()),
+        "ptm": float(output["ptm"].float()[index]) if "ptm" in output else None,
+        "pae": float(output["pae"].float()[index].mean()) if "pae" in output else None,
+        "ranked_on": "complex_plddt" if "complex_plddt" in output else "mean plddt",
     }
 
 
@@ -161,15 +237,23 @@ def run(args: argparse.Namespace) -> None:
                 "arm": row.get("arm"),
                 "target_id": row.get("target_id"),
                 "condition": row.get("condition"),
+                "structure_set": row.get("structure_set"),
+                "stop_status": row.get("stop_status"),
                 "residues": len(sequence),
+                "samples": int(output["plddt"].shape[0]),
                 "plddt": float(output["plddt"].float().mean()),
                 "plddt_ca": float(output["plddt_ca"].float().mean())
                 if "plddt_ca" in output
                 else None,
                 "ptm": float(output["ptm"].float().mean()) if "ptm" in output else None,
                 "pae": float(output["pae"].float().mean()) if "pae" in output else None,
+                "pde": float(output["pde"].float().mean()) if "pde" in output else None,
                 "seconds": time.monotonic() - cell_started,
             }
+            record["best_sample"] = best_sample(output)
+            record["pairwise"] = str(
+                save_pairwise(output, args.out, row["attempt_id"]).relative_to(args.out)
+            )
             if args.write_pdb:
                 pdb = output_to_pdb(output, prepare_protein_features(sequence, device=device))
                 target = args.out / "pdb" / f"{row['attempt_id'].replace('|', '__')}.pdb"
@@ -211,6 +295,7 @@ def run(args: argparse.Namespace) -> None:
             "products": str(args.products),
             "products_sha256": digest(args.products),
             "declaration_sha256": products[0].get("declaration_sha256"),
+            "structure_set": products[0].get("structure_set"),
             "selection": {
                 "only_selected": bool(args.only_selected),
                 "offered": len(products),
@@ -220,6 +305,24 @@ def run(args: argparse.Namespace) -> None:
                     condition: sum(1 for row in selected if row.get("condition") == condition)
                     for condition in sorted({row.get("condition") for row in selected})
                 },
+            },
+            "pairwise": {
+                "directory": PAIRWISE,
+                "fields": list(PAIRWISE_FIELDS),
+                "pairwise_dtype": "float16",
+                "per_residue_fields": list(PER_RESIDUE_FIELDS),
+                "per_sample_fields": list(PER_SAMPLE_FIELDS),
+                "per_residue_dtype": "float32",
+                "archives": written,
+                "bytes": sum(
+                    path.stat().st_size for path in (args.out / PAIRWISE).glob("*.npz")
+                ),
+                "leading_axis": (
+                    "the first axis of pae, pde, plddt and the per-sample scalars is "
+                    "the instrument's 32 diffusion samples; the scalar fields in each "
+                    "record are means over all of them and best_sample names the one "
+                    "the instrument ranks highest"
+                ),
             },
             "failures": failures,
             "records": RECORDS,

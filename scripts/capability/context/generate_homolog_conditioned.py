@@ -64,12 +64,9 @@ PRODUCTS = "products.jsonl"
 
 #: The conditions of this experiment, each naming a declared E09 condition so the
 #: two experiments are built from one retrieval artefact and one set of edges.
-GENERATION_CONDITIONS: dict[str, str] = {
-    "no_context": H.NO_CONTEXT,
-    "unrelated": H.UNRELATED,
-    "close_homolog": "id_70_90",
-    "remote_homolog": "id_30_50",
-}
+#: Declared in the context module, because the structural comparison and the
+#: copying diagnostic name the same four labels and there must be one source.
+GENERATION_CONDITIONS: dict[str, str] = H.GENERATION_CONDITIONS
 
 #: The homologue conditions a target must supply to enter the panel. The two
 #: controls are required of every target, so the panel is complete-case by
@@ -593,6 +590,131 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def load_structure_set(path: Path) -> dict:
+    """One folding artefact, with the draw it folded named by the artefact itself.
+
+    The two draws are not interchangeable, so the set name is read from the
+    completion record rather than inferred from a filename or an argument order.
+    A fold of a product file that does not declare which draw it is cannot be
+    placed in either comparison and is refused.
+    """
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    name = record.get("structure_set")
+    if name not in {"length_matched", "unmatched"}:
+        raise SystemExit(
+            f"{path} folded a product set named {name!r}; the structural comparison "
+            "reads the length_matched and unmatched draws of draw_structure_sets.py "
+            "and cannot place anything else"
+        )
+    rows = read_jsonl(path.parent / record["records"])
+    if not rows:
+        raise SystemExit(f"{path} records no folded product")
+    return {"structure_set": name, "path": path, "record": record, "rows": rows}
+
+
+def structure_reading(fold: dict, index: dict[str, dict], *, conditions: list[str]) -> dict:
+    """One draw's structural reading: descriptive cells, then the contrast panels.
+
+    Every folded product is joined back onto its own product row, so the length,
+    the termination status and the copy verdict that travel with each confidence
+    number are the generation stage's, not a second opinion. Copies are then
+    excluded, because a copy of a real relative folds like a real relative, and
+    the exclusions are counted and named rather than quietly dropped.
+
+    The length-matched draw is read in its declared length bands. The unmatched
+    draw has one stratum by construction -- stratifying it would make it the
+    matched draw -- and its per-condition length distributions are reported beside
+    it, since those are exactly the confound it leaves in.
+    """
+
+    joined: list[dict] = []
+    missing: list[str] = []
+    for row in fold["rows"]:
+        product = index.get(str(row["attempt_id"]))
+        if product is None:
+            missing.append(str(row["attempt_id"]))
+            continue
+        joined.append(
+            {
+                **{
+                    key: product[key]
+                    for key in ("attempt_id", "arm", "target_id", "condition", "residues",
+                                "stop_status", "copy_verdict", "copy_statistics")
+                },
+                **{
+                    field: row.get(field)
+                    for field in H.STRUCTURE_CONFIDENCE_FIELDS
+                },
+                "best_sample": row.get("best_sample"),
+                "pairwise": row.get("pairwise"),
+            }
+        )
+    if missing:
+        raise SystemExit(
+            f"{fold['path']} folded {len(missing)} attempts the product file does not "
+            f"hold, the first being {missing[0]}; the two artefacts are from different runs"
+        )
+    excluded = [row for row in joined if row["copy_verdict"]["is_copy"]]
+    clean = [row for row in joined if not row["copy_verdict"]["is_copy"]]
+
+    if fold["structure_set"] == "length_matched":
+        strata = {
+            band: [row for row in clean if H.structure_length_band(int(row["residues"])) == band]
+            for band in (f"len_{low}_{high}" for low, high in H.STRUCTURE_LENGTH_BANDS)
+        }
+        strata = {band: rows for band, rows in strata.items() if rows}
+    else:
+        strata = {"all_lengths": clean}
+
+    usable = {}
+    unused = {}
+    for band, rows in strata.items():
+        counts = {
+            condition: sum(1 for row in rows if row["condition"] == condition)
+            for condition in conditions
+        }
+        if min(counts.values(), default=0) < 1:
+            unused[band] = {
+                "per_condition": counts,
+                "status": "unused",
+                "reason": "at least one condition supplies no folded product in this stratum",
+            }
+        else:
+            usable[band] = rows
+
+    return {
+        "structure_set": fold["structure_set"],
+        "estimand": H.structure_extension()["estimands"][
+            "length_matched" if fold["structure_set"] == "length_matched" else "unmatched"
+        ],
+        "folded": len(joined),
+        "copies_excluded": {
+            "count": len(excluded),
+            "attempts": [row["attempt_id"] for row in excluded],
+            "rules_fired": {
+                row["attempt_id"]: row["copy_verdict"]["fired"] for row in excluded
+            },
+            "rule": H.structure_extension()["copies_excluded"],
+        },
+        "per_stratum": {
+            band: {
+                condition: H.summarise_structure_cell(
+                    [row for row in rows if row["condition"] == condition]
+                )
+                for condition in conditions
+            }
+            for band, rows in usable.items()
+        },
+        "unused_strata": unused,
+        "levels": H.condition_level_summary(usable, conditions=conditions),
+        "contrasts": {
+            field: H.structure_contrast_panel(usable, field=field)
+            for field in H.STRUCTURE_CONFIDENCE_FIELDS
+        },
+    }
+
+
 def analyse(args: argparse.Namespace) -> None:
     """Join products, annotations and structures into the comparison E11 asks for.
 
@@ -615,26 +737,26 @@ def analyse(args: argparse.Namespace) -> None:
         for row in annotation_record["annotations"]:
             if row.get("attempt_id"):
                 annotations[row["attempt_id"]] = row
-    structures: dict[str, dict] = {}
-    structure_record = None
-    if args.structures is not None:
-        structure_record = json.loads(args.structures.read_text(encoding="utf-8"))
-        for row in read_jsonl(args.structures.parent / structure_record["records"]):
-            structures[row["attempt_id"]] = row
+    folds = [load_structure_set(path) for path in (args.structures or ())]
+    sets = {fold["structure_set"]: fold for fold in folds}
+    if len(sets) != len(folds):
+        raise SystemExit(
+            "two --structures artefacts name the same structure set; the matched and "
+            "unmatched draws estimate different things and are never merged"
+        )
 
     for row in products:
         annotation = annotations.get(row["attempt_id"])
         identity = None if annotation is None else annotation.get("context_alignment_identity")
         row["copy_verdict"] = H.copy_verdict(row["copy_statistics"], identity_percent=identity)
+        if annotations:
+            row["context_alignment_identity"] = identity
         row["prompt_family_recognised"] = (
             None if annotation is None else annotation["prompt_family_recognised"]
         )
         row["corpus_max_identity"] = (
             None if annotation is None else annotation.get("corpus_max_identity")
         )
-        structure = structures.get(row["attempt_id"])
-        row["plddt"] = None if structure is None else structure["plddt"]
-        row["ptm"] = None if structure is None else structure["ptm"]
 
     conditions = sorted({row["condition"] for row in products})
     table = {}
@@ -672,7 +794,11 @@ def analyse(args: argparse.Namespace) -> None:
             "denominator": "every attempt made in this cell",
         }
 
-    bands = H.structure_comparison(products, conditions=conditions)
+    index = {str(row["attempt_id"]): row for row in products}
+    structure = {
+        name: structure_reading(fold, index, conditions=conditions)
+        for name, fold in sorted(sets.items())
+    }
 
     args.out.mkdir(parents=True, exist_ok=True)
     write_json(
@@ -683,24 +809,29 @@ def analyse(args: argparse.Namespace) -> None:
             "status": "complete",
             **H.declaration_digests(),
             "declaration": H.declaration(),
+            "structure_extension_sha256": H.structure_extension_digest(),
+            "structure_extension": H.structure_extension(),
             "products": str(args.products),
             "products_sha256": sha256_file(args.products),
             "annotations": None if args.annotations is None else str(args.annotations),
-            "structures": None if args.structures is None else str(args.structures),
-            "structure_instrument": None
-            if structure_record is None
-            else structure_record.get("instrument"),
+            "structures": [str(path) for path in (args.structures or ())],
+            "structure_instrument": {
+                name: fold["record"].get("instrument") for name, fold in sorted(sets.items())
+            },
             "corpus_identity": None
             if annotation_record is None
             else annotation_record.get("corpus_identity"),
             "conditions": conditions,
             "yields": table,
-            "structure_by_length_band": bands,
+            "context_identity": H.context_identity_distribution(products, conditions=conditions),
+            "structure": structure,
             "structure_comparison_rule": H.STRUCTURE_COMPARISON_RULE,
+            "structure_unmatched_rule": H.STRUCTURE_UNMATCHED_RULE,
             "pending": {
-                "alignment_identity_copy_rule": args.annotations is None,
-                "corpus_novelty": args.annotations is None,
-                "predicted_structure": args.structures is None,
+                "alignment_identity_copy_rule": not annotations,
+                "corpus_novelty": annotation_record is None
+                or annotation_record.get("corpus_identity") is None,
+                "predicted_structure": sorted(set(("length_matched", "unmatched")) - set(sets)),
             },
             "limitations": list(H.LIMITATIONS),
             "runtime": runtime("cpu"),
@@ -723,7 +854,12 @@ def main() -> None:
     parser.add_argument("--target-limit", type=int, default=0)
     parser.add_argument("--products", type=Path, help="analyse phase: the products JSONL")
     parser.add_argument("--annotations", type=Path, help="analyse phase: generation_annotation.json")
-    parser.add_argument("--structures", type=Path, help="analyse phase: conditioned_structure.json")
+    parser.add_argument(
+        "--structures",
+        type=Path,
+        nargs="*",
+        help="analyse phase: one conditioned_structure.json per structure set",
+    )
     args = parser.parse_args()
     if args.budget != H.POSITION_BUDGET:
         raise SystemExit(f"the declaration fixes the position budget at {H.POSITION_BUDGET}")
