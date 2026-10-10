@@ -421,7 +421,8 @@ def test_a_simultaneous_band_is_wider_than_the_marginal_one_it_corrects():
     low_ten, high_ten = ten["simultaneous_interval"][0]
     assert low_ten < low_one and high_ten > high_one
     # And every band is strictly wider than its own pointwise interval.
-    for index in range(ten["columns"]):
+    assert ten["n_columns"] == 10
+    for index in range(ten["n_columns"]):
         point_low, point_high = ten["pointwise_interval"][index]
         band_low, band_high = ten["simultaneous_interval"][index]
         assert band_low < point_low and band_high > point_high
