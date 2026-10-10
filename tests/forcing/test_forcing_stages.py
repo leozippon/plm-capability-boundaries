@@ -235,3 +235,41 @@ class TestCoverageBands:
         assert not report["usable_as_a_stratum"]
         assert "not a control that was satisfied" in report["consequence"]
         assert report["counts"] == {"ge95_near_duplicate": 2}
+
+
+class TestMaskingIsOff:
+    """Low-complexity masking off is a correctness requirement in both searches.
+
+    DIAMOND's default masking truncates high-identity alignments, which
+    under-states identity over the query for exactly the near-verbatim pairs both
+    of this lane's searches turn on: the within-panel ceiling that must exclude
+    near-identical backbones, and the coverage band that must not read a verbatim
+    corpus member as mere close homology. The repository's shared search helper
+    documents the same hazard with its own measured example. These assertions
+    exist so that removing the flag as tidying fails loudly.
+    """
+
+    def test_the_within_panel_identity_screen_disables_masking(self):
+        builder = _stage("build_forcing_cohort")
+        source = Path(
+            ROOT / "scripts/capability/forcing/build_forcing_cohort.py"
+        ).read_text()
+        assert '"--masking", "0"' in source
+        assert builder.self_identity_exclusions.__doc__ is not None
+
+    def test_the_shared_search_helper_disables_masking(self):
+        import inspect
+
+        from src.capability.context import homology
+
+        source = inspect.getsource(homology.run_diamond_blastp)
+        assert '"--masking"' in source and '"0"' in source
+
+    def test_the_coverage_screen_searches_through_that_helper(self):
+        """So it inherits the flag rather than re-spelling it."""
+
+        source = Path(
+            ROOT / "scripts/capability/forcing/screen_forcing_coverage.py"
+        ).read_text()
+        assert "run_diamond_blastp(" in source
+        assert "--masking" not in source

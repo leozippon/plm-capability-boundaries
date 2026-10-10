@@ -134,14 +134,21 @@ def self_identity_exclusions(
     database = work / "cohort"
     hits = work / "cohort_hits.tsv"
     fields = ("qseqid", "sseqid", "nident", "qlen")
-    for command in (
+    commands = [
         [str(diamond), "makedb", "--in", str(fasta), "-d", str(database),
          "--threads", str(threads), "--quiet"],
+        # `--masking 0` is a correctness requirement, not a tuning choice, and it
+        # is recorded below rather than left to the source: DIAMOND's default
+        # low-complexity masking truncates high-identity alignments, which
+        # under-states identity over the query for exactly the near-verbatim
+        # pairs this ceiling exists to exclude. A truncated alignment would let
+        # two near-identical backbones both into the panel as one unit each.
         [str(diamond), "blastp", "--query", str(fasta), "--db", f"{database}.dmnd",
          "--out", str(hits), "--outfmt", "6", *fields,
          "--very-sensitive", "--masking", "0", "--evalue", "1e-3",
          "--max-target-seqs", str(len(records) + 1), "--threads", str(threads), "--quiet"],
-    ):
+    ]
+    for command in commands:
         subprocess.run(command, check=True, capture_output=True, text=True)
     neighbours: dict[str, set[str]] = defaultdict(set)
     for line in hits.read_text(encoding="utf-8").splitlines():
@@ -170,6 +177,10 @@ def self_identity_exclusions(
         "identity_definition": "percent of the query identically matched (nident / qlen)",
         "queries": len(records),
         "pairs_above_ceiling": sum(len(value) for value in neighbours.values()) // 2,
+        "commands": commands,
+        "masking_disabled": "--masking" in commands[1] and commands[1][
+            commands[1].index("--masking") + 1
+        ] == "0",
     }
 
 
