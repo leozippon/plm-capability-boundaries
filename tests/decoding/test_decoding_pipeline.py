@@ -147,13 +147,17 @@ def _natural_index(path: Path, *, seed: int = 13) -> None:
             }
         )
     for index, length in enumerate(list(range(60, 380, 4))):
+        # Half under each role the reference cohort gives an arm's own products:
+        # the conditioned arm's results carry only ``pool``, so an analysis that
+        # read ``generated`` alone would leave that arm with no band.
         rows.append(
             {
                 "id": f"old_{index:05d}",
                 "length": int(length),
                 "sequence": _sequence(rng, int(length)),
-                "role": "generated",
+                "role": "generated" if index % 2 else "pool",
                 "arm": ARM,
+                "condition": "unconditioned",
                 "sequence_sha256": f"{index + 900000:064d}",
             }
         )
@@ -270,6 +274,7 @@ def test_the_reference_band_and_the_existing_results_are_read_not_recomputed(ana
     block = analysed["report"]["arms"][ARM]
     assert block["natural_pool"]["n_records"] > 500
     assert block["existing_generation_results"]["n_records"] > 0
+    assert set(block["existing_generation_results"]["n_by_role"]) == {"generated", "pool"}
     # The existing generation results pass through the same length-matched
     # arithmetic, so the sweep can be placed beside them.
     gap = block["existing_generation_results"]["length_matched_gap"][ds.PRIMARY_EVALUATOR]

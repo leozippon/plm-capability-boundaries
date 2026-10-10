@@ -59,6 +59,10 @@ from src.capability.evaluation import generated_phenotype as gp  # noqa: E402
 
 COMPLETION = "decoding_sweep.json"
 
+#: The roles in the reference cohort that are this programme's own generated
+#: products. ``natural`` is the comparator band and is handled separately.
+EXISTING_RESULT_ROLES: frozenset[str] = frozenset({"generated", "pool"})
+
 #: The evaluators the whole table is built on. The primary is CA pLDDT because
 #: it is the quantity the existing generation results are stated in; the event is
 #: carried beside it because a mean can move without any candidate crossing the
@@ -140,6 +144,7 @@ def _natural_pool(
             "sequence": str(row["sequence"]),
             "role": str(row.get("role")),
             "arm": row.get("arm"),
+            "condition": row.get("condition"),
             "stratum": row.get("stratum"),
             **lifted,
         }
@@ -147,7 +152,12 @@ def _natural_pool(
             signatures.add(str(lifted["evaluation_signature"]))
         if record["role"] == "natural":
             natural.append(record)
-        elif record["role"] == "generated" and record["arm"] in ds.ARM_NAMES:
+        elif record["role"] in EXISTING_RESULT_ROLES and record["arm"] in ds.ARM_NAMES:
+            # Both roles are this programme's own generated products for the arm.
+            # ``pool`` is the role the selection experiment gave its candidate
+            # pool, and it is the ONLY role the conditioned arm's products carry,
+            # so reading ``generated`` alone would silently leave that arm with
+            # no existing-results band to be placed beside.
             existing.setdefault(str(record["arm"]), []).append(record)
     if not natural:
         raise SystemExit("the supplied natural indices carry no folded natural record")
@@ -252,6 +262,8 @@ def _arm_report(
     if existing:
         report["existing_generation_results"] = {
             "n_records": len(existing),
+            "n_by_role": dict(sorted(Counter(str(row["role"]) for row in existing).items())),
+            "conditions": sorted({str(row.get("condition")) for row in existing}),
             "source": "the generation evaluation cohort's folded products for this arm",
             "length_mean": float(np.mean([int(row["length"]) for row in existing])),
             "per_candidate": {
