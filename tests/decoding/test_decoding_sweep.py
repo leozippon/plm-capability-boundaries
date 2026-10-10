@@ -177,6 +177,35 @@ def test_a_collapsed_set_is_flagged_and_its_gain_is_not_a_gain():
     assert ds.set_profile(collapsed)["duplicate_fraction"] == pytest.approx(1.0 - 1 / 40)
 
 
+def test_a_departure_below_the_materiality_floor_is_recorded_but_not_a_collapse():
+    # The reference never produced a homopolymer run, so its realised range is
+    # zero-width and ANY repeat lies outside it. One sequence in a hundred is not
+    # a collapse, and treating it as one would discredit a real gain.
+    rng = np.random.default_rng(29)
+    clean = ["".join(rng.choice(list("ARNDCQEGHILKMFPSTWYV"), size=150)) for _ in range(100)]
+    reference = ds.size_matched_reference(clean, size=50, seed=2)
+    assert reference["fraction_with_homopolymer_run"]["span"] == [0.0, 0.0]
+
+    one_repeat = list(clean[:49]) + ["M" + "A" * 149]
+    verdict = ds.degeneracy_verdict(ds.set_profile(one_repeat), reference, gain=3.0)
+    assert "fraction_with_homopolymer_run" in verdict["axes_outside_range_but_immaterial"]
+    assert verdict["axes_flagged"] == {}
+    assert not verdict["degenerate"]
+    assert not verdict["gain_is_not_a_gain"]
+
+    many_repeats = list(clean[:40]) + ["M" + "A" * 149] * 10
+    harsh = ds.degeneracy_verdict(ds.set_profile(many_repeats), reference, gain=3.0)
+    assert "fraction_with_homopolymer_run" in harsh["axes_flagged"]
+    assert harsh["degenerate"] and harsh["gain_is_not_a_gain"]
+    entry = harsh["axes_flagged"]["fraction_with_homopolymer_run"]
+    assert entry["departure"] >= entry["materiality_floor"]
+
+
+def test_every_degeneracy_axis_carries_a_materiality_floor():
+    assert set(ds.DEGENERACY_MATERIALITY) == set(ds.DEGENERACY_AXES)
+    assert all(value > 0.0 for value in ds.DEGENERACY_MATERIALITY.values())
+
+
 def test_corpus_identity_enters_the_profile_and_flags_retrieval():
     rng = np.random.default_rng(11)
     sequences = ["".join(rng.choice(list("ARNDCQEGHILKMFPSTWYV"), size=120)) for _ in range(40)]

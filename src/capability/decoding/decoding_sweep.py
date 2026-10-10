@@ -884,36 +884,84 @@ DEGENERACY_AXES: dict[str, str] = {
 }
 
 
+#: The smallest departure that counts as degenerate on each axis, in the axis's
+#: own units. Outside the size-matched reference's realised range is necessary
+#: and not sufficient: a reference whose sixteen draws all returned exactly zero
+#: homopolymer runs has a zero-width range, so any single repeat anywhere in a
+#: configuration would otherwise be reported as a collapse and would discredit a
+#: real gain. These floors are what "materially" means here, declared once:
+#: five percentage points on a share, five percent identity, a tenth of a nat of
+#: composition entropy, and two hundredths of k-mer distance -- each roughly an
+#: order of magnitude below the departures the known failure modes produce (a
+#: collapsed configuration in this programme loses two nats of entropy and four
+#: tenths of k-mer distance) and above the drift between two healthy ones.
+DEGENERACY_MATERIALITY: dict[str, float] = {
+    "duplicate_fraction": 0.05,
+    "mean_pairwise_kmer_distance": 0.02,
+    "mean_composition_entropy_nats": 0.10,
+    "fraction_with_homopolymer_run": 0.05,
+    "nearest_corpus_identity": 5.0,
+    "fraction_near_duplicate_of_corpus": 0.05,
+}
+
+if set(DEGENERACY_MATERIALITY) != set(DEGENERACY_AXES):
+    raise AssertionError(
+        "every degeneracy axis needs a declared materiality floor, and a floor "
+        "without an axis is a floor on nothing"
+    )
+
+
 def degeneracy_verdict(
     profile: Mapping[str, Any], reference: Mapping[str, Any], *, gain: float | None
 ) -> dict[str, Any]:
     """Whether a configuration's apparent gain was bought with a collapse.
 
     An axis is flagged when the configuration falls outside the range a
-    size-matched random draw actually realised, in the degenerate direction. The
-    realised range and not a confidence interval for its mean: the comparison is
-    with one configuration's single realised value, and a confidence interval
-    would flag ordinary sampling noise between two healthy configurations. A
-    positive gain with any axis flagged is reported as ``gain_is_not_a_gain``:
+    size-matched random draw actually realised, in the degenerate direction, *and*
+    by at least that axis's declared materiality floor. The realised range and
+    not a confidence interval for its mean: the comparison is with one
+    configuration's single realised value, and a confidence interval would flag
+    ordinary sampling noise between two healthy configurations. The floor is what
+    stops the opposite failure: a reference range of zero width makes any
+    departure at all lie outside it, so one repeat in a hundred sequences would
+    be reported as a collapse and would discredit a real gain. Departures outside
+    the range but below the floor are still recorded, under
+    ``axes_outside_range_but_immaterial``, so nothing is hidden.
+
+    A positive gain with any axis flagged is reported as ``gain_is_not_a_gain``:
     better-folding candidates drawn from a narrower, more repetitive or more
     retrieved repertoire are a different product, not a better one.
     """
 
     flagged: dict[str, Any] = {}
+    immaterial: dict[str, Any] = {}
     for axis, direction in DEGENERACY_AXES.items():
         observed = profile.get(axis)
         band = reference.get(axis)
         if observed is None or band is None:
             continue
         low, high = band["span"]
+        floor = DEGENERACY_MATERIALITY[axis]
         if direction == "below" and observed < low:
-            flagged[axis] = {"observed": observed, "reference_span": [low, high], "moved": "below"}
+            departure, moved = low - observed, "below"
         elif direction == "above" and observed > high:
-            flagged[axis] = {"observed": observed, "reference_span": [low, high], "moved": "above"}
+            departure, moved = observed - high, "above"
+        else:
+            continue
+        record = {
+            "observed": observed,
+            "reference_span": [low, high],
+            "moved": moved,
+            "departure": float(departure),
+            "materiality_floor": float(floor),
+        }
+        (flagged if departure >= floor else immaterial)[axis] = record
     improved = gain is not None and gain > 0.0
     return {
         "axes_checked": sorted(DEGENERACY_AXES),
         "axes_flagged": flagged,
+        "axes_outside_range_but_immaterial": immaterial,
+        "materiality_floors": dict(DEGENERACY_MATERIALITY),
         "degenerate": bool(flagged),
         "improved": bool(improved),
         "gain_is_not_a_gain": bool(improved and flagged),
