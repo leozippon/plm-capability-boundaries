@@ -283,6 +283,38 @@ def test_the_triad_decomposition_is_an_identity_on_a_shared_support():
     assert retrievability == pytest.approx(np.mean([2.0, 2.0, 3.5]))
 
 
+def test_the_paired_unit_a_band_resamples_is_the_one_the_interval_reduces():
+    # A simultaneous band over several contrasts and a marginal interval on one of
+    # them have to resample the same numbers, or they are two estimates and not two
+    # readings of one. The group whose natural side is missing carries no difference
+    # for either of them.
+    rows = [
+        {"group": "g0", "origin": "generated", "sequence_id": "a", "v": 4.0},
+        {"group": "g0", "origin": "generated", "sequence_id": "b", "v": 6.0},
+        {"group": "g0", "origin": "natural", "sequence_id": "c", "v": 1.0},
+        {"group": "g1", "origin": "generated", "sequence_id": "d", "v": 3.0},
+        {"group": "g1", "origin": "natural", "sequence_id": "e", "v": 0.5},
+        {"group": "g2", "origin": "generated", "sequence_id": "f", "v": 9.0},
+    ]
+    differences = gm.paired_group_differences(rows, value="v")
+    assert differences == {"g0": pytest.approx(4.0), "g1": pytest.approx(2.5)}
+    estimate = gm.paired_origin_contrast(rows, value="v", draws=50)
+    assert estimate["paired_groups"] == 2
+    assert estimate["difference"]["point"] == pytest.approx(
+        float(np.mean([differences[group] for group in sorted(differences)]))
+    )
+
+
+def test_a_row_with_no_finite_value_leaves_the_paired_unit():
+    rows = [
+        {"group": "g0", "origin": "generated", "sequence_id": "a", "v": float("nan")},
+        {"group": "g0", "origin": "natural", "sequence_id": "b", "v": 1.0},
+        {"group": "g1", "origin": "generated", "sequence_id": "c", "v": 2.0},
+        {"group": "g1", "origin": "natural", "sequence_id": "d", "v": None},
+    ]
+    assert gm.paired_group_differences(rows, value="v") == {}
+
+
 def test_independence_groups_join_near_duplicates():
     names, record = gm.independence_groups([SEQ_A, SEQ_A, SEQ_B])
     assert names[0] == names[1]
@@ -521,3 +553,170 @@ def test_cohort_assay_refuses_an_inconsistent_row():
     with pytest.raises(ValueError, match="non-AA20"):
         gm.cohort_assay(assay="x", wildtype="XXXX", mutants=["X1G"], sequences=["G" * 4],
                         cluster="g")
+
+
+# ------------------------------------------- the triad's controls and its panel
+
+
+def _analysis():
+    path = ROOT / "scripts/capability/interactions/analyse_generated_mutation.py"
+    spec = importlib.util.spec_from_file_location("_analyse_generated_mutation", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _triad_assays(anchors: int, *, repeat: int) -> dict:
+    """Three arms over ``anchors`` triples, the generated arm deliberately repetitive.
+
+    Every arm is the same length, so the length row of the sequence control must
+    come out at zero; the generated arm carries a homopolymeric run the naturals
+    do not, so the repeat row must not.
+    """
+
+    assays = {}
+    for index in range(anchors):
+        anchor = f"ge_{index}"
+        generated = ("A" * repeat + SEQ_A[repeat:])[: len(SEQ_A)]
+        for origin, sequence in (
+            ("generated", generated),
+            ("natural_low_homology", SEQ_A[: len(SEQ_A) - 1] + "WY"[index % 2]),
+            ("natural_high_homology", SEQ_B[: len(SEQ_A)] if len(SEQ_B) >= len(SEQ_A)
+             else SEQ_B + SEQ_A[len(SEQ_B):]),
+        ):
+            identity = f"{origin}_{index}"
+            assays[identity] = {
+                "assay": identity,
+                "wildtype": sequence[: len(SEQ_A)],
+                "origin": origin,
+                "group": f"g{index}",
+                "paired_with": anchor,
+                "length": len(sequence[: len(SEQ_A)]),
+            }
+    return assays
+
+
+def test_the_sequence_control_shows_length_matched_and_repeat_content_kept():
+    module = _analysis()
+    block = module.sequence_control_block(_triad_assays(8, repeat=12), draws=80, seed=5)
+    assert block["sequences"] == {
+        "generated": 8, "natural_low_homology": 8, "natural_high_homology": 8
+    }
+    generation = block["contrasts"]["generated__minus__natural_low_homology"]
+    assert generation["length"]["difference"]["point"] == pytest.approx(0.0)
+    assert generation["longest_single_residue_run"]["difference"]["point"] > 0.0
+    assert generation["composition_entropy_nats"]["difference"]["point"] < 0.0
+    # the declaration is part of the result: a reader must be able to tell which
+    # difference was removed from which without reading the code
+    assert "length" in block["matched_away"]
+    assert "reference_database_retrievability" in block["matched_away"]
+    assert "composition_and_repeat_content" in block["kept"]
+
+
+def _predictability_rows(anchors: int, *, slope: float, extra: float,
+                         shift: float = 1.0) -> list[dict]:
+    """Endpoints that are ``slope`` times the background plus a flat ``extra``.
+
+    ``shift`` separates the natural arms' background from the generated arm's.
+    At ``shift=0`` the two origins share every covariate value, which is the only
+    condition under which a binned adjustment on that covariate is interpolation;
+    at ``shift=1`` they do not overlap at all, which is the condition the
+    common-support diagnostic exists to report.
+    """
+
+    rows = []
+    for index in range(anchors):
+        for origin, background in (
+            ("generated", 1.0 + 0.01 * index),
+            ("natural_low_homology", 1.0 + shift + 0.01 * index),
+            ("natural_high_homology", 1.0 + shift + 0.01 * index),
+        ):
+            identity = f"{origin}_{index}"
+            shared = {"group": f"g{index}", "origin": origin, "sequence_id": identity}
+            rows.append(dict(shared, mutation="<wild-type>",
+                             wild_type_nll_per_residue_nats=background,
+                             absolute_likelihood_nats=None, site_term_nats=None,
+                             downstream_absolute_nats=None, downstream_share=None))
+            for mutation in range(6):
+                value = slope * background + (extra if origin == "generated" else 0.0)
+                rows.append(dict(shared, mutation=f"A{mutation + 1}G",
+                                 wild_type_nll_per_residue_nats=None,
+                                 absolute_likelihood_nats=value,
+                                 site_term_nats=value, downstream_absolute_nats=value,
+                                 downstream_share=value))
+    return rows
+
+
+def test_the_predictability_control_removes_a_background_driven_contrast():
+    module = _analysis()
+    rows = _predictability_rows(16, slope=3.0, extra=0.0, shift=0.3)
+    raw = gm.paired_origin_contrast(
+        gm.relabelled_pair(rows, "generated", "natural_low_homology"),
+        value="absolute_likelihood_nats", draws=80,
+    )
+    assert raw["difference"]["point"] == pytest.approx(-0.9, abs=0.05)
+    block = module.predictability_control_block(rows, draws=80, seed=5)
+    adjusted = block["contrasts"]["generated__minus__natural_low_homology"]
+    point = adjusted["absolute_likelihood_nats"]["difference"]["point"]
+    assert abs(point) < 0.2 * abs(raw["difference"]["point"])
+
+
+def test_the_predictability_control_keeps_an_effect_the_background_cannot_explain():
+    module = _analysis()
+    block = module.predictability_control_block(
+        _predictability_rows(16, slope=1.0, extra=0.75, shift=0.0), draws=80, seed=5
+    )
+    adjusted = block["contrasts"]["generated__minus__natural_low_homology"]
+    for endpoint in module.ADJUSTED_ENDPOINTS:
+        assert adjusted[endpoint]["difference"]["point"] == pytest.approx(0.75, abs=0.05)
+        support = adjusted[endpoint]["common_support"]
+        assert support["bins"] == module.ADDITIVE_RESPONSE_BINS
+        assert support["bins_with_both_origins"] > 0
+        assert support["share_of_rows_in_shared_bins"] == pytest.approx(1.0)
+
+
+def test_the_predictability_control_reports_a_covariate_that_separates_the_origins():
+    # When the covariate perfectly separates the two arms, every bin mean is one
+    # arm's own mean and the adjustment removes the whole contrast by construction.
+    # That zero is extrapolation and not an identified null, so the diagnostic has
+    # to say that no bin held both origins rather than let the number stand alone.
+    module = _analysis()
+    block = module.predictability_control_block(
+        _predictability_rows(16, slope=0.0, extra=0.75, shift=1.0), draws=80, seed=5
+    )
+    adjusted = block["contrasts"]["generated__minus__natural_low_homology"]
+    estimate = adjusted["absolute_likelihood_nats"]
+    assert estimate["difference"]["point"] == pytest.approx(0.0, abs=1e-9)
+    assert estimate["common_support"]["bins_with_both_origins"] == 0
+    assert estimate["common_support"]["share_of_rows_in_shared_bins"] == 0.0
+
+
+def test_the_simultaneous_band_covers_the_point_every_marginal_interval_reports():
+    module = _analysis()
+    rows = _predictability_rows(16, slope=1.0, extra=0.5, shift=0.3)
+    panel = {
+        (f"{left}__minus__{right}", endpoint): gm.paired_group_differences(
+            gm.relabelled_pair(rows, left, right), value=endpoint
+        )
+        for left, right, _question in gm.TRIAD_CONTRASTS
+        for endpoint in ("absolute_likelihood_nats", "site_term_nats")
+    }
+    band = module.simultaneous_panel(
+        [("progen2-small", panel), ("prollama", panel)], draws=400, seed=5
+    )
+    assert band["groups"] == 16
+    assert len(band["contrasts"]) == 2 * len(panel)
+    assert band["critical_value"] >= 1.959963984540054
+    for record in band["contrasts"]:
+        marginal = gm.paired_origin_contrast(
+            gm.relabelled_pair(rows, *record["contrast"].split("__minus__")),
+            value=record["endpoint"], draws=80,
+        )
+        assert record["point"] == pytest.approx(marginal["difference"]["point"])
+        assert record["groups"] == marginal["paired_groups"]
+        assert record["interval"][0] <= record["point"] <= record["interval"][1]
+
+
+def test_the_simultaneous_band_refuses_an_empty_panel():
+    module = _analysis()
+    assert "undefined" in module.simultaneous_panel([], draws=100, seed=5)

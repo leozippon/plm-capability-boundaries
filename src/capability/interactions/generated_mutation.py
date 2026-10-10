@@ -1016,6 +1016,49 @@ def nested_mean(entries: Iterable[tuple[Any, float]]) -> float | None:
     return float(np.mean([float(np.mean(values)) for values in grouped.values()]))
 
 
+def _paired_cells(
+    rows: Sequence[Mapping[str, Any]], value: str
+) -> dict[Any, dict[str, list[tuple[Any, float]]]]:
+    """Rows bucketed by independence group and origin, non-finite values dropped."""
+
+    by_group: dict[Any, dict[str, list[tuple[Any, float]]]] = {}
+    for row in rows:
+        if row[value] is None or not np.isfinite(float(row[value])):
+            continue
+        cell = by_group.setdefault(row["group"], {origin: [] for origin in ORIGINS})
+        cell[row["origin"]].append((row["sequence_id"], float(row[value])))
+    return by_group
+
+
+def _group_difference(
+    cell: Mapping[str, Sequence[tuple[Any, float]]]
+) -> tuple[float | None, dict[str, float | None]]:
+    """One group's generated-minus-natural difference and the two sides it came from."""
+
+    means = {origin: nested_mean(cell[origin]) for origin in ORIGINS}
+    if means["generated"] is None or means["natural"] is None:
+        return None, means
+    return means["generated"] - means["natural"], means
+
+
+def paired_group_differences(
+    rows: Sequence[Mapping[str, Any]], *, value: str
+) -> dict[Any, float]:
+    """The quantity :func:`paired_origin_contrast` resamples, exposed per group.
+
+    A marginal interval and a simultaneous band over several contrasts have to
+    resample the *same* numbers or they are not two readings of one estimate, so
+    the paired unit is constructed in one place and both read it from here.
+    """
+
+    out: dict[Any, float] = {}
+    for group, cell in _paired_cells(rows, value).items():
+        difference, _ = _group_difference(cell)
+        if difference is not None:
+            out[group] = difference
+    return out
+
+
 def paired_origin_contrast(
     rows: Sequence[Mapping[str, Any]], *, value: str,
     draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED,
@@ -1030,21 +1073,15 @@ def paired_origin_contrast(
     neither member of it.
     """
 
-    by_group: dict[Any, dict[str, list[tuple[Any, float]]]] = {}
-    for row in rows:
-        if row[value] is None or not np.isfinite(float(row[value])):
-            continue
-        cell = by_group.setdefault(row["group"], {origin: [] for origin in ORIGINS})
-        cell[row["origin"]].append((row["sequence_id"], float(row[value])))
     differences: dict[Any, float] = {}
     sides: dict[str, dict[Any, float]] = {origin: {} for origin in ORIGINS}
-    for group, cell in by_group.items():
-        means = {origin: nested_mean(cell[origin]) for origin in ORIGINS}
+    for group, cell in _paired_cells(rows, value).items():
+        difference, means = _group_difference(cell)
         for origin in ORIGINS:
             if means[origin] is not None:
                 sides[origin][group] = means[origin]
-        if means["generated"] is not None and means["natural"] is not None:
-            differences[group] = means["generated"] - means["natural"]
+        if difference is not None:
+            differences[group] = difference
     record = {
         "value": value,
         "unit": "near-duplicate independence group, generated and matched natural paired",

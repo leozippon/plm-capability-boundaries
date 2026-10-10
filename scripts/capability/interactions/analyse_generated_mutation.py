@@ -37,6 +37,7 @@ primary estimate and are reported separately rather than quietly removed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from datetime import datetime, timezone
@@ -49,10 +50,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
+from src.capability.generation.stage_pair import sequence_properties  # noqa: E402
 from src.capability.interactions import generated_mutation as gm  # noqa: E402
 from src.capability.interactions.contact_enrichment import (  # noqa: E402
     ADDITIVE_RESPONSE_BINS,
     cross_fit_binned_residuals,
+    fit_binned_response,
 )
 from src.capability.position.contact_response import ProfileAccumulator  # noqa: E402
 
@@ -65,9 +68,97 @@ SCALAR_ENDPOINTS = ("absolute_likelihood_nats", "wild_type_nll_per_residue_nats"
 #: Position-resolved endpoints, defined only on an aligned mutation.
 ALIGNED_ENDPOINTS = ("site_term_nats", "downstream_absolute_nats", "downstream_share")
 
+#: Sequence-intrinsic covariates the triad design does **not** match on, read
+#: from the project's one sequence-property producer. Length is in the list to
+#: show that matching worked, not because it is unmatched. The rest are reported
+#: and adjusted for, never matched away: a model that writes lower-entropy, more
+#: repetitive sequence has written that, and removing the difference would remove
+#: the generation outcome the experiment is about.
+INTRINSIC_COVARIATES = (
+    "length",
+    "composition_entropy_nats",
+    "longest_single_residue_run",
+    "distinct_residues",
+    "mean_kyte_doolittle_hydropathy",
+)
+
+#: The endpoints the predictability control can adjust. The wild type's own
+#: per-residue negative log likelihood is absent because it *is* the covariate.
+ADJUSTED_ENDPOINTS = ("absolute_likelihood_nats",) + ALIGNED_ENDPOINTS
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def simultaneous_bands(matrix: np.ndarray, *, draws: int, seed: int) -> dict:
+    """The project's own shared-universe simultaneous band, not a second bootstrap."""
+
+    path = ROOT / "scripts/capability/position/position_simultaneous.py"
+    spec = importlib.util.spec_from_file_location("_triad_simultaneous", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"{path}: the simultaneous-band helper is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.bands(matrix, draws=draws, seed=seed)
+
+
+def simultaneous_panel(panels: list[tuple[str, dict]], *, draws: int, seed: int) -> dict:
+    """One simultaneous band over every triad contrast this stage reports.
+
+    A marginal percentile interval is a statement about one contrast. The claim
+    the decomposition exists to support -- that the retrievability confound
+    carries the original contrast in one arm and not in another -- is a statement
+    about the whole panel, and marginal intervals are not a simultaneous
+    statement about it. The rows here are the independence groups the marginal
+    estimator already resamples, read from it rather than rebuilt, and the draws
+    are shared across columns so the band keeps the dependence between arms that
+    scored the same sequences.
+    """
+
+    cells = [
+        (arm, key, endpoint, differences)
+        for arm, panel in panels
+        for (key, endpoint), differences in sorted(panel.items())
+    ]
+    if not cells:
+        return {"undefined": "the panel carries no triad contrast"}
+    groups = sorted({group for *_head, differences in cells for group in differences})
+    position = {group: index for index, group in enumerate(groups)}
+    matrix = np.full((len(groups), len(cells)), np.nan)
+    for column, (_arm, _key, _endpoint, differences) in enumerate(cells):
+        for group, value in differences.items():
+            matrix[position[group], column] = value
+
+    band = simultaneous_bands(matrix, draws=draws, seed=seed)
+    band["contrasts"] = [
+        {
+            "arm": arm,
+            "contrast": key,
+            "endpoint": endpoint,
+            "point": band["point"][column],
+            "interval": band["interval"][column],
+            "groups": band["available_families"][column],
+            "excludes_zero": bool(
+                band["interval"][column][0] > 0.0 or band["interval"][column][1] < 0.0
+            ),
+        }
+        for column, (arm, key, endpoint, _differences) in enumerate(cells)
+    ]
+    for key in ("point", "interval", "available_families", "conditional_on_fitted_predictions"):
+        band.pop(key, None)
+    band["groups"] = len(groups)
+    band["reading"] = (
+        "coverage is simultaneous over every arm, contrast and endpoint listed, so a "
+        "panel-wide statement may be read off these intervals and not off the marginal "
+        "ones; the three contrasts of an arm are linearly dependent by construction, "
+        "which the shared draws carry and which makes the band no wider than the "
+        "dependence allows"
+    )
+    band["conditions_on"] = (
+        "the extracted likelihoods; generation, sampling and checkpoint variation are omitted"
+    )
+    return band
 
 
 def _site_of(label: str) -> int:
@@ -189,6 +280,211 @@ def profile_control_block(rows: list, strata: list, control: dict, assays: dict,
     return block
 
 
+def sequence_control_block(assays: dict, *, draws: int, seed: int) -> dict:
+    """What one-to-one length matching left unbalanced between the three arms.
+
+    Length is matched by construction and retrievability is matched by the third
+    arm, but nothing in the design matches composition, repeat content or residue
+    class usage -- and those are the properties that could carry a likelihood
+    difference without anything about mutation being involved. So they are
+    measured here, on the same paired unit and with the same estimator as every
+    endpoint, once for the cohort rather than once per model arm: a sequence
+    property is a property of the sequence and does not depend on which model
+    scored it.
+
+    The measurement is deliberately not a correction. A generated product's
+    composition *is* a generation outcome; matching it away would remove the
+    effect along with the confound, and the triad would answer a question nobody
+    asked. The arithmetic control that belongs here instead is on the one channel
+    all of these properties act through -- how predictable the background is to
+    the arm doing the scoring -- and that is per-arm, in
+    :func:`predictability_control_block`.
+    """
+
+    rows: list[dict] = []
+    for row in assays.values():
+        properties = sequence_properties(row["wildtype"])
+        shares = {
+            f"class_share_{name}": float(value)
+            for name, value in properties["residue_class_shares"].items()
+        }
+        rows.append(
+            dict(
+                shares,
+                origin=row["origin"],
+                group=row["group"],
+                sequence_id=row["assay"],
+                **{name: float(properties[name]) for name in INTRINSIC_COVARIATES},
+            )
+        )
+    covariates = INTRINSIC_COVARIATES + tuple(
+        sorted(key for key in rows[0] if key.startswith("class_share_"))
+    )
+
+    contrasts: dict[str, dict] = {}
+    for left, right, question in gm.TRIAD_CONTRASTS:
+        selected = gm.relabelled_pair(rows, left, right)
+        record: dict = {"question": question, "left": left, "right": right}
+        for name in covariates:
+            estimate = gm.paired_origin_contrast(
+                selected, value=name, draws=draws, seed=seed
+            )
+            estimate["precision"] = gm.precision_record(estimate["difference"])
+            record[name] = estimate
+        contrasts[f"{left}__minus__{right}"] = record
+    return {
+        "sequences": {
+            origin: sum(1 for row in rows if row["origin"] == origin)
+            for origin in gm.TRIAD_ORIGINS
+        },
+        "covariates": list(covariates),
+        "contrasts": contrasts,
+        "matched_away": {
+            "length": (
+                "one to one inside a declared caliper, so the length row of each "
+                "contrast is the realised residual imbalance and not an assumption"
+            ),
+            "reference_database_retrievability": (
+                "by the third arm rather than by adjustment; the measured identity band "
+                "and admissible-relative count of every arm are in the cohort design"
+            ),
+            "redundancy": (
+                "each natural pool is drawn from its distinct sequences without "
+                "replacement, and the near-duplicate component of the generated anchor "
+                "is the bootstrap unit of its whole triple"
+            ),
+        },
+        "kept": {
+            "composition_and_repeat_content": (
+                "composition entropy, the longest single-residue run, the distinct-residue "
+                "count, hydropathy and the residue class shares are generation outcomes, "
+                "so they are measured and reported rather than matched or removed"
+            ),
+            "biological_content": (
+                "fold, family and function differ between a generated product and a natural "
+                "protein by construction; no design could match them and this analysis does "
+                "not claim to"
+            ),
+            "termination_behaviour": (
+                "not applicable: every arm is a frozen wild-type sequence inside one residue "
+                "band, and no quantity here depends on how a generation run ended"
+            ),
+        },
+    }
+
+
+def predictability_control_block(rows: list, *, draws: int, seed: int) -> dict:
+    """Every endpoint again, net of how predictable the background already was.
+
+    A substitution's likelihood response is read against a background the arm
+    assigns its own probability to, and the three arms differ in that: a model's
+    own product is more predictable to it than a natural protein is. Composition,
+    repeat content and low-complexity structure all act on the mutation endpoints
+    through exactly this channel, so residualising on it controls for them
+    together without needing one adjustment per property.
+
+    The residualizer is the project's own leave-one-group-out binned one, the
+    same one the singles-mode evolutionary-profile control uses. The reading is a
+    *bound* and not a better estimate: background predictability is itself partly
+    a generation outcome, so an effect that survives this adjustment is not
+    carried by the background, while an effect that does not survive it is not
+    thereby shown to be absent. The common-support diagnostic travels with it,
+    because an adjustment over bins only one arm occupies is extrapolation.
+    """
+
+    background = {
+        row["sequence_id"]: row["wild_type_nll_per_residue_nats"]
+        for row in rows
+        if row["mutation"] == "<wild-type>"
+    }
+    shaped = [
+        dict(row, background_nll_per_residue_nats=background.get(row["sequence_id"]))
+        for row in rows
+        if row["mutation"] != "<wild-type>"
+    ]
+
+    contrasts: dict[str, dict] = {}
+    for left, right, question in gm.TRIAD_CONTRASTS:
+        selected = [
+            row
+            for row in gm.relabelled_pair(shaped, left, right)
+            if row["background_nll_per_residue_nats"] is not None
+        ]
+        record: dict = {"question": question, "left": left, "right": right}
+        if len({row["group"] for row in selected}) < 2:
+            contrasts[f"{left}__minus__{right}"] = dict(
+                record, undefined="fewer than two independence groups carry a background"
+            )
+            continue
+        covariate = np.asarray(
+            [row["background_nll_per_residue_nats"] for row in selected], dtype=np.float64
+        )
+        groups = np.asarray([row["group"] for row in selected])
+        origins = np.asarray([row["origin"] for row in selected])
+        for endpoint in ADJUSTED_ENDPOINTS:
+            usable = [row for row in selected if row[endpoint] is not None]
+            if len({row["group"] for row in usable}) < 2:
+                record[endpoint] = {"undefined": "too few groups carry this endpoint"}
+                continue
+            mask = np.asarray([row[endpoint] is not None for row in selected])
+            residual = cross_fit_binned_residuals(
+                covariate[mask],
+                np.asarray([row[endpoint] for row in usable], dtype=np.float64),
+                groups[mask],
+                ADDITIVE_RESPONSE_BINS,
+            )
+            estimate = gm.paired_origin_contrast(
+                [dict(row, residual=float(value)) for row, value in zip(usable, residual)],
+                value="residual",
+                draws=draws,
+                seed=seed,
+            )
+            estimate["precision"] = gm.precision_record(estimate["difference"])
+            estimate["mutations"] = len(usable)
+            estimate["common_support"] = _common_support(covariate[mask], origins[mask])
+            record[endpoint] = estimate
+        contrasts[f"{left}__minus__{right}"] = record
+    return {
+        "covariate": "the wild-type negative log likelihood per residue of the row's own background",
+        "bins": ADDITIVE_RESPONSE_BINS,
+        "method": (
+            "endpoint minus the mean endpoint of its background-predictability quantile bin, "
+            "the curve fit on every independence group except the row's own"
+        ),
+        "reading": (
+            "an effect that survives here is not carried by how predictable the background "
+            "already was, and therefore not by the composition and repeat differences that "
+            "act through it; an effect that does not survive is not thereby shown absent, "
+            "because the covariate is itself partly a generation outcome"
+        ),
+        "contrasts": contrasts,
+    }
+
+
+def _common_support(covariate: np.ndarray, origins: np.ndarray) -> dict:
+    """How much of the adjusted sample lies in bins both origins occupy.
+
+    The bin rule is the residualizer's own, applied in sample: this is a
+    positivity diagnostic for the adjustment, not a second estimate.
+    """
+
+    index = fit_binned_response(
+        covariate, np.zeros_like(covariate), ADDITIVE_RESPONSE_BINS
+    )["bins"]
+    shared = {
+        int(value)
+        for value in set(index.tolist())
+        if len(set(origins[index == value].tolist())) == len(gm.ORIGINS)
+    }
+    return {
+        "bins": int(ADDITIVE_RESPONSE_BINS),
+        "bins_with_both_origins": len(shared),
+        "share_of_rows_in_shared_bins": (
+            float(np.isin(index, sorted(shared)).mean()) if shared else 0.0
+        ),
+    }
+
+
 def triad_block(rows: list, strata: list, contrasts, *, draws: int, seed: int) -> dict:
     """The three contrasts of the retrievability-controlled design, and their identity.
 
@@ -242,8 +538,15 @@ def triad_block(rows: list, strata: list, contrasts, *, draws: int, seed: int) -
 
 
 def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
-                *, draws: int, seed: int, triad: bool = False) -> dict:
-    """Every endpoint of one arm over the whole cohort."""
+                *, draws: int, seed: int, triad: bool = False,
+                target_band: str | None = None) -> tuple[dict, dict]:
+    """Every endpoint of one arm over the whole cohort.
+
+    Returns the arm's record and, in triad mode, the per-group difference of
+    every reported contrast and endpoint. The second return value is not written
+    to the artefact: it is the material the panel's simultaneous band resamples,
+    and it is taken from the estimator rather than recomputed beside it.
+    """
 
     per_mutation: list[dict] = []
     origins = gm.TRIAD_ORIGINS if triad else gm.ORIGINS
@@ -375,7 +678,38 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
             or assays.get(assays[assay].get("paired_with"), {}).get("degenerate")
         )
     }
-    return {
+    # Retrievability is matched by construction, but the generated arm is only as
+    # unretrievable as it measured: a product that does have a relative in the
+    # reference database carries the very confound the third arm exists to split
+    # off. The primary estimate stays outcome-blind over every triple and this
+    # sensitivity restricts to the triples whose generated member measured inside
+    # the target band with no admissible relative at all.
+    anchors = [assay for assay in present if assays[assay]["origin"] == "generated"]
+    exact_anchors = {
+        assay
+        for assay in anchors
+        if assays[assay].get("band") == target_band
+        and assays[assay].get("admissible_relatives") == 0
+    } if triad and target_band is not None else set()
+    band_exact = {
+        assay for assay in present if assays[assay]["paired_with"] in exact_anchors
+    }
+
+    def restricted(keep: set) -> tuple[list, list]:
+        return (
+            [row for row in per_mutation if row["sequence_id"] in keep],
+            [row for row in stratum_rows if row["sequence_id"] in keep],
+        )
+
+    panel = {
+        (f"{left}__minus__{right}", endpoint): gm.paired_group_differences(
+            gm.relabelled_pair(per_mutation, left, right), value=endpoint
+        )
+        for left, right, _question in gm.TRIAD_CONTRASTS
+        for endpoint in SCALAR_ENDPOINTS + ALIGNED_ENDPOINTS
+    } if triad else {}
+
+    record = {
         "arm": extraction.arm,
         "paradigm": extraction.paradigm,
         "dtype": extraction.completion["identity"]["dtype"],
@@ -423,23 +757,44 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, control: dict | None,
                 )
             }
         ),
+        "predictability_control": (
+            predictability_control_block(per_mutation, draws=draws, seed=seed)
+            if triad
+            else {"undefined": "the predictability control is defined on the triad design"}
+        ),
         "non_degenerate": dict(
             (
-                triad_block(
-                    [row for row in per_mutation if row["sequence_id"] in non_degenerate],
-                    [row for row in stratum_rows if row["sequence_id"] in non_degenerate],
-                    contrasts, draws=draws, seed=seed,
-                )
+                triad_block(*restricted(non_degenerate), contrasts, draws=draws, seed=seed)
                 if triad
-                else contrasts(
-                    [row for row in per_mutation if row["sequence_id"] in non_degenerate],
-                    [row for row in stratum_rows if row["sequence_id"] in non_degenerate],
-                )
+                else contrasts(*restricted(non_degenerate))
             ),
             sequences=len(non_degenerate),
+            degenerate_anchors=sum(
+                1
+                for assay in present
+                if assays[assay]["origin"] == "generated" and assays[assay].get("degenerate")
+            ),
         ),
         "decay": {origin: profiles[origin].profile() for origin in origins},
     }
+    if triad:
+        record["retrievability_exact"] = dict(
+            (
+                triad_block(*restricted(band_exact), contrasts, draws=draws, seed=seed)
+                if band_exact
+                else {
+                    "undefined": (
+                        "no triple has a generated member inside the target identity band "
+                        "with no admissible relative"
+                    )
+                }
+            ),
+            sequences=len(band_exact),
+            target_band=target_band,
+            anchors=len(exact_anchors),
+            anchors_excluded=len(anchors) - len(exact_anchors),
+        )
+    return record, panel
 
 
 def main() -> None:
@@ -479,11 +834,15 @@ def main() -> None:
         if summary.is_file():
             control["summary"] = json.loads(summary.read_text())["summary"]
 
-    arms = []
+    arms, panels = [], []
     for root in args.archives:
         extraction = gm.open_extraction(root)
-        arms.append(analyse_arm(extraction, assays, control, draws=args.draws,
-                                seed=args.seed, triad=triad))
+        record, panel = analyse_arm(
+            extraction, assays, control, draws=args.draws, seed=args.seed, triad=triad,
+            target_band=cohort["design"].get("target_band") if triad else None,
+        )
+        arms.append(record)
+        panels.append((record["arm"], panel))
     if len({record["arm"] for record in arms}) != len(arms):
         raise SystemExit("two extraction directories report the same arm")
 
@@ -511,17 +870,38 @@ def main() -> None:
         "bootstrap": {"draws": args.draws, "seed": args.seed,
                       "method": "group percentile bootstrap on the group-equal mean"},
         "arms": arms,
+        "sequence_control": (
+            sequence_control_block(assays, draws=args.draws, seed=args.seed)
+            if triad
+            else {"undefined": "the sequence-property control is defined on the triad design"}
+        ),
+        "simultaneous": (
+            simultaneous_panel(panels, draws=args.draws, seed=args.seed)
+            if triad
+            else {"undefined": "the simultaneous band is defined on the triad design"}
+        ),
         "limitations": [
             "A generated product has no experimental measurement, so every quantity here is "
             "the model's own likelihood behaviour and not its accuracy.",
-            "The natural partners are Swiss-Prot entries matched on length alone; composition, "
-            "repetitiveness and structural content are not matched and the realised "
-            "wild-type predictability of each origin is reported for that reason.",
+            "The natural partners are matched on length and, in the triad design, on "
+            "reference-database retrievability. Composition, repeat content and structural "
+            "content are not matched: they are generation outcomes, so the realised "
+            "imbalance of each is reported in the sequence control and the endpoints are "
+            "additionally read net of background predictability, the channel they act "
+            "through.",
             "Position-resolved endpoints are defined only where the two states share a token "
             "grid, so on a merged-piece interface they describe a tokenisation-selected "
             "subset of the mutations; the retained share travels with the estimate.",
             "Intervals condition on the extracted likelihoods and omit generation, sampling "
-            "and checkpoint variation.",
+            "and checkpoint variation. Marginal intervals are not a simultaneous statement "
+            "about the panel; the simultaneous band is.",
+            "The decomposition exists only where all three arms can be matched. Outside the "
+            "length window the low-homology pool covers, a generated product still has a "
+            "curated natural partner but no retrievability-matched one, so the generation "
+            "and retrievability contrasts are not identifiable there at all and only the "
+            "original confounded contrast could be formed. The window, the attrition at "
+            "each pool and the products lost to it are in the cohort design's length "
+            "matching record; no number is reported for a stratum that cannot carry one.",
             "If a generated product has no retrievable evolutionary profile at all, then "
             "'adjust the contrast for the mutation-local evolutionary statistic' is not a "
             "well-posed operation -- the covariate does not exist on one arm of a paired "
