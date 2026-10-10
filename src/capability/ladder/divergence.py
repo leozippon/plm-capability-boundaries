@@ -47,6 +47,7 @@ import math
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+from scipy import stats
 
 SCHEMA_VERSION = "ladder_divergence_v1"
 
@@ -60,12 +61,17 @@ CONFIDENCE = 0.95
 
 
 def _ranks(values: np.ndarray) -> np.ndarray:
-    """Average ranks, so ties do not bias the correlation."""
+    """Average ranks, so ties do not bias the correlation.
+
+    Hand-rolled rather than ``scipy.stats.rankdata``, measured: this is called
+    once per backbone per bootstrap draw per readout on vectors of about eight
+    values, and at that size SciPy's dispatch overhead dominates -- swapping it
+    in tripled the test suite's runtime.
+    """
 
     order = np.argsort(values, kind="stable")
     ranks = np.empty(values.size, dtype=np.float64)
     ranks[order] = np.arange(1, values.size + 1, dtype=np.float64)
-    # Average the ranks of tied runs.
     sorted_values = values[order]
     start = 0
     for index in range(1, values.size + 1):
@@ -209,6 +215,81 @@ def stratum_resamples(units: Sequence[Any], *, seed: int, draws: int = DEFAULT_D
     return generator.integers(0, count, size=(int(draws), count))
 
 
+def cluster_bootstrap_many(
+    values: Mapping[str, Sequence[float]],
+    strata: Sequence[Any],
+    statistics: Mapping[str, Callable[[Mapping[str, np.ndarray], np.ndarray], float]],
+    *,
+    units: Sequence[Any],
+    resamples: np.ndarray,
+    confidence: float = CONFIDENCE,
+) -> dict[str, dict[str, Any]]:
+    """Every statistic of one cell, in a single pass over the resamples.
+
+    One pass, because the resample's row index and relabelled stratum vector are
+    the expensive part and they are the same for every statistic of a cell; a
+    pass per statistic multiplied that cost by the number of readouts, which on
+    this panel was the difference between minutes and hours.
+
+    A unit drawn twice is relabelled, so it counts as two strata rather than as
+    one with twice the draws: collapsing it would halve the effective cluster
+    count exactly where the bootstrap is measuring it.
+
+    The draw vector is returned, not just summarised, because the simultaneous
+    band needs the raw draws to take a maximum across cells.
+    """
+
+    groups = np.asarray(strata)
+    arrays = {name: np.asarray(vector, dtype=np.float64) for name, vector in values.items()}
+    for name, vector in arrays.items():
+        if vector.shape != groups.shape:
+            raise ValueError(f"{name} does not align with the stratum vector")
+    unit_list = np.asarray(list(units))
+    if resamples.ndim != 2 or resamples.shape[1] != unit_list.size:
+        raise ValueError("the resamples must be (draws, units) over the supplied unit list")
+    if not statistics:
+        raise ValueError("a bootstrap needs at least one statistic")
+    rows_by_unit = [np.flatnonzero(groups == unit) for unit in unit_list]
+    point = {name: float(function(arrays, groups)) for name, function in statistics.items()}
+    draws = {name: np.empty(resamples.shape[0], dtype=np.float64) for name in statistics}
+    for index in range(resamples.shape[0]):
+        resample = resamples[index]
+        selected = [rows_by_unit[unit_index] for unit_index in resample]
+        sizes = [block.size for block in selected]
+        total = int(sum(sizes))
+        if total < 2:
+            for name in statistics:
+                draws[name][index] = float("nan")
+            continue
+        row_index = np.concatenate(selected)
+        labels = np.repeat(np.arange(len(sizes)), sizes)
+        resampled = {name: vector[row_index] for name, vector in arrays.items()}
+        for name, function in statistics.items():
+            draws[name][index] = function(resampled, labels)
+    tail = (1.0 - confidence) / 2.0
+    records: dict[str, dict[str, Any]] = {}
+    for name in statistics:
+        vector = draws[name]
+        finite = vector[np.isfinite(vector)]
+        records[name] = {
+            "point": point[name],
+            "interval": (
+                [float(np.quantile(finite, tail)), float(np.quantile(finite, 1.0 - tail))]
+                if finite.size
+                else [float("nan"), float("nan")]
+            ),
+            "confidence": float(confidence),
+            "n_observations": int(groups.size),
+            "n_units": int(np.unique(groups).size),
+            "n_panel_units": int(unit_list.size),
+            "n_draws": int(resamples.shape[0]),
+            "n_finite_draws": int(finite.size),
+            "bootstrap_sd": float(finite.std(ddof=1)) if finite.size > 1 else float("nan"),
+            "draws": vector,
+        }
+    return records
+
+
 def cluster_bootstrap(
     values: Mapping[str, Sequence[float]],
     strata: Sequence[Any],
@@ -218,60 +299,16 @@ def cluster_bootstrap(
     resamples: np.ndarray,
     confidence: float = CONFIDENCE,
 ) -> dict[str, Any]:
-    """Point estimate, percentile interval and the draw vector of one cell.
+    """One statistic's point estimate, percentile interval and draw vector."""
 
-    The draw vector is returned, not just summarised, because the simultaneous
-    band needs it. ``statistic`` receives the selected rows of every named value
-    vector together with the relabelled stratum vector. A unit drawn twice is
-    relabelled, so it counts as two strata rather than as one with twice the
-    draws: collapsing it would halve the effective cluster count exactly where
-    the bootstrap is measuring it.
-    """
-
-    groups = np.asarray(strata)
-    arrays = {name: np.asarray(vector, dtype=np.float64) for name, vector in values.items()}
-    for name, vector in arrays.items():
-        if vector.shape != groups.shape:
-            raise ValueError(f"{name} does not align with the stratum vector")
-    units = np.asarray(list(units))
-    if resamples.ndim != 2 or resamples.shape[1] != units.size:
-        raise ValueError("the resamples must be (draws, units) over the supplied unit list")
-    point = statistic(arrays, groups)
-    draws = np.empty(resamples.shape[0], dtype=np.float64)
-    for index, resample in enumerate(resamples):
-        rows: list[int] = []
-        labels: list[int] = []
-        for position, unit_index in enumerate(resample):
-            selected = np.flatnonzero(groups == units[unit_index])
-            rows.extend(selected.tolist())
-            labels.extend([position] * selected.size)
-        if len(rows) < 2:
-            draws[index] = float("nan")
-            continue
-        row_index = np.asarray(rows, dtype=np.int64)
-        draws[index] = statistic(
-            {name: vector[row_index] for name, vector in arrays.items()},
-            np.asarray(labels, dtype=np.int64),
-        )
-    finite = draws[np.isfinite(draws)]
-    tail = (1.0 - confidence) / 2.0
-    interval = (
-        [float(np.quantile(finite, tail)), float(np.quantile(finite, 1.0 - tail))]
-        if finite.size
-        else [float("nan"), float("nan")]
-    )
-    return {
-        "point": float(point),
-        "interval": interval,
-        "confidence": float(confidence),
-        "n_observations": int(groups.size),
-        "n_units": int(np.unique(groups).size),
-        "n_panel_units": int(units.size),
-        "n_draws": int(resamples.shape[0]),
-        "n_finite_draws": int(finite.size),
-        "bootstrap_sd": float(finite.std(ddof=1)) if finite.size > 1 else float("nan"),
-        "draws": draws,
-    }
+    return cluster_bootstrap_many(
+        values,
+        strata,
+        {"statistic": statistic},
+        units=units,
+        resamples=resamples,
+        confidence=confidence,
+    )["statistic"]
 
 
 def simultaneous_band(
@@ -489,7 +526,7 @@ def required_units(
         raise ValueError("a scaling statement needs a positive finite bootstrap sd")
     if target_effect == 0.0:
         raise ValueError("a target effect of zero cannot be resolved at any sample size")
-    from scipy import stats
+
 
     z_alpha = float(stats.norm.ppf(1.0 - (1.0 - confidence) / 2.0))
     z_power = float(stats.norm.ppf(0.8))

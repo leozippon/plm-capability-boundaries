@@ -237,31 +237,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             },
             "correlations": {},
         }
+        payload = dict(vectors)
+        usable: list[str] = []
         for readout in READOUTS:
-            if not np.isfinite([row[readout] for row in observations]).any():
+            column = [row[readout] for row in observations]
+            if not np.isfinite(column).all():
                 continue
-            payload = dict(vectors)
-            payload[readout] = [row[readout] for row in observations]
-            if not np.isfinite(payload[readout]).all():
-                continue
-            raw = divergence.cluster_bootstrap(
-                payload, strata, _statistic(readout, False), units=units, resamples=resamples
+            payload[readout] = column
+            usable.append(readout)
+        if usable:
+            # One pass over the resamples for every readout and both adjustments
+            # of this cell: the resample's row index is the expensive part and it
+            # does not depend on which column is being correlated.
+            functions = {f"raw|{readout}": _statistic(readout, False) for readout in usable}
+            functions |= {f"adjusted|{readout}": _statistic(readout, True) for readout in usable}
+            bootstrapped = divergence.cluster_bootstrap_many(
+                payload, strata, functions, units=units, resamples=resamples
             )
-            adjusted = divergence.cluster_bootstrap(
-                payload, strata, _statistic(readout, True), units=units, resamples=resamples
-            )
-            per_backbone = divergence.per_stratum_spearman(
-                payload["likelihood"], payload[readout], strata
-            )
-            entry["correlations"][readout] = {
-                "raw": {key2: value for key2, value in raw.items() if key2 != "draws"},
-                "composition_adjusted": {
-                    key2: value for key2, value in adjusted.items() if key2 != "draws"
-                },
-                "per_backbone_spearman": per_backbone,
-            }
-            if readout == design.PRIMARY_STRUCTURE_READOUT:
-                bootstrap_cells[name] = raw
+            for readout in usable:
+                raw = bootstrapped[f"raw|{readout}"]
+                adjusted = bootstrapped[f"adjusted|{readout}"]
+                entry["correlations"][readout] = {
+                    "raw": {key2: value for key2, value in raw.items() if key2 != "draws"},
+                    "composition_adjusted": {
+                        key2: value for key2, value in adjusted.items() if key2 != "draws"
+                    },
+                    "per_backbone_spearman": divergence.per_stratum_spearman(
+                        payload["likelihood"], payload[readout], strata
+                    ),
+                }
+                if readout == design.PRIMARY_STRUCTURE_READOUT:
+                    bootstrap_cells[name] = raw
         results[name] = entry
 
     band = divergence.simultaneous_band(bootstrap_cells) if bootstrap_cells else {}
