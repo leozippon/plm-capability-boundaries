@@ -378,7 +378,11 @@ def run_draw(tmp_path: Path, rows: list[dict]) -> subprocess.CompletedProcess:
 
 def test_the_draw_stage_writes_both_sets_and_reproduces_the_frozen_selection(tmp_path):
     rows = synthetic_products()
-    identifiers, _ = H.select_structure_products(rows, conditions=sorted(H.GENERATION_CONDITIONS))
+    # The generation stage draws in the DECLARED condition order, and the draw
+    # consumes one generator as the cells are visited, so the order is part of
+    # the selection: reproducing it alphabetically recovered 11 of the 128
+    # attempts the real E11 run had frozen.
+    identifiers, _ = H.select_structure_products(rows, conditions=list(H.GENERATION_CONDITIONS))
     for row in rows:
         row["structure_selected"] = row["attempt_id"] in identifiers
     done = run_draw(tmp_path, rows)
@@ -397,6 +401,20 @@ def test_the_draw_stage_writes_both_sets_and_reproduces_the_frozen_selection(tmp
     assert all(row["structure_selected"] for row in matched)
     counts = set(record["sets"]["unmatched"]["per_condition"].values())
     assert len(counts) == 1, "the unmatched draw must be equal-count per condition"
+
+
+def test_the_draw_stage_refuses_a_selection_drawn_in_another_condition_order(tmp_path):
+    rows = synthetic_products()
+    alphabetical, _ = H.select_structure_products(
+        rows, conditions=sorted(H.GENERATION_CONDITIONS)
+    )
+    declared, _ = H.select_structure_products(rows, conditions=list(H.GENERATION_CONDITIONS))
+    assert alphabetical != declared, "the fixture cannot distinguish the two orders"
+    for row in rows:
+        row["structure_selected"] = row["attempt_id"] in alphabetical
+    done = run_draw(tmp_path, rows)
+    assert done.returncode != 0
+    assert "not the one frozen into" in done.stderr
 
 
 def test_the_draw_stage_refuses_a_product_file_whose_selection_it_cannot_reproduce(tmp_path):

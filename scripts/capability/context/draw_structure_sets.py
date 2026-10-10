@@ -61,14 +61,20 @@ def write_set(path: Path, rows: list[dict], *, name: str) -> None:
 
 def run(args: argparse.Namespace) -> None:
     products = read_products(args.products)
-    conditions = sorted({str(row["condition"]) for row in products})
-    declared = sorted(H.GENERATION_CONDITIONS)
-    if conditions != declared:
+    present = sorted({str(row["condition"]) for row in products})
+    if present != sorted(H.GENERATION_CONDITIONS):
         raise SystemExit(
-            f"{args.products} carries conditions {conditions}, but this experiment "
-            f"declares {declared}; a draw over a different condition set is a "
-            "different experiment"
+            f"{args.products} carries conditions {present}, but this experiment "
+            f"declares {sorted(H.GENERATION_CONDITIONS)}; a draw over a different "
+            "condition set is a different experiment"
         )
+    # The **declared** order, not the alphabetical one. Each (band, condition)
+    # cell consumes draws from one generator in the order the conditions are
+    # visited, so the order is part of the draw: visiting them alphabetically
+    # reproduced only 11 of the 128 attempts the generation stage selected. The
+    # reproduction check below is what caught that, and this is the order it
+    # checks against.
+    conditions = list(H.GENERATION_CONDITIONS)
 
     matched, matched_record = H.select_structure_products(products, conditions=conditions)
     frozen = {str(row["attempt_id"]) for row in products if row.get("structure_selected")}

@@ -1606,6 +1606,12 @@ def select_structure_products(
     was made, so the balance can be checked rather than believed. The draw is a
     seeded permutation of each (band, condition) cell, which depends on nothing
     the model produced except the product's own length.
+
+    ``conditions`` is an **order**, not a set: the cells consume draws from one
+    generator as they are visited, so passing the same conditions in a different
+    order gives a different, equally valid draw. Callers reproducing a frozen
+    selection must pass :data:`GENERATION_CONDITIONS` in its declared order;
+    alphabetical order reproduced 11 of 128 attempts on the E11 product set.
     """
 
     if samples_per_band < 1:
