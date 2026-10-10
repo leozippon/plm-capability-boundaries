@@ -58,7 +58,7 @@ import numpy as np
 
 from ..core.amino_acids import AA20
 from ..interactions.pairwise_epistasis import BOOTSTRAP_DRAWS, BOOTSTRAP_SEED, interval
-from .contact_response import SiteGeometry, separation_stratum
+from .contact_response import MIN_FAMILIES, SiteGeometry, separation_stratum
 
 SCHEMA = "contact_anticipation_v1"
 
@@ -120,10 +120,6 @@ DEGENERATE_CONTROL = (
     "alignment between the conditional and the COMPOSITION of contacting partners, not "
     "position-specific prediction of which residue sits where"
 )
-
-#: Families a reported contrast needs. Five is the floor this project's own
-#: response-bin analysis already applies to a family-grouped estimate.
-MIN_FAMILIES = 5
 
 #: Added to every cell of the pair-conditional count table before normalising, so a
 #: residue pair unseen in the other families has a finite log probability rather

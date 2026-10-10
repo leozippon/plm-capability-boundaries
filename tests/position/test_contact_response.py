@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from src.capability.position.anticipation import (
+    MIN_FAMILIES,
     anchor_partner_design,
     composition,
     excess_logprob,
@@ -455,7 +456,39 @@ def test_the_panel_family_keeps_each_arm_point_and_absent_families_absent():
     assert record["columns"][0]["simultaneously_excludes_zero"] is False
     # A band that holds jointly is at least as wide as the marginal one.
     assert record["critical_value"] > 1.0
+    assert record["excluded_columns"] == []
     assert panel_contact_simultaneous([], outcome="response")["undefined"]
+
+
+def test_a_thinly_supported_arm_is_named_rather_than_blocking_the_panel():
+    # Five families is this lane's floor, and it is declared in one place.
+    from src.capability.position import contact_response
+
+    assert MIN_FAMILIES is contact_response.MIN_FAMILIES
+
+    supported = {family: 0.1 for family in range(1, 1 + MIN_FAMILIES + 3)}
+    thin = {family: 0.9 for family in range(1, MIN_FAMILIES)}
+    columns = [
+        {"arm": "supported", "direction": "downstream",
+         "family_values": contact_family_table(_family_rows(supported))["family_values"]},
+        {"arm": "byte-pair", "direction": "downstream",
+         "family_values": contact_family_table(
+             _family_rows(thin, assay_prefix="B"))["family_values"]},
+    ]
+    record = panel_contact_simultaneous(columns, outcome="absolute_response", draws=2000)
+    assert [column["arm"] for column in record["columns"]] == ["supported"]
+    assert [item["arm"] for item in record["excluded_columns"]] == ["byte-pair"]
+    assert record["excluded_columns"][0]["families"] == MIN_FAMILIES - 1
+    assert str(MIN_FAMILIES) in record["excluded_columns"][0]["reason"]
+    # The thin arm's own families never enter the resampled universe either.
+    assert record["family_universe"] == len(supported)
+
+    # Every column thin is an undefined family, not a crash and not a silent zero.
+    only_thin = panel_contact_simultaneous(
+        columns[1:], outcome="absolute_response", draws=2000
+    )
+    assert only_thin["columns"] == [] and only_thin["undefined"]
+    assert only_thin["excluded_columns"][0]["arm"] == "byte-pair"
 
 
 

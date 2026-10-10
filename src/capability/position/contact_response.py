@@ -76,6 +76,11 @@ CONTACT_DEFINITION = (
     "pair population rather than counted as a non-contact"
 )
 
+#: Families a reported family-grouped contrast needs. Five is the floor this
+#: project's own response-bin analysis already applies, and the anticipation
+#: statistic in this same lane imports it from here rather than restating it.
+MIN_FAMILIES = 5
+
 #: Draws for the panel-wide studentised-maximum critical value. A per-arm
 #: interval is a percentile statistic and takes this lane's declared
 #: ``BOOTSTRAP_DRAWS``; the critical value of a maximum over many columns is a
@@ -772,17 +777,34 @@ def panel_contact_simultaneous(
     correction across units.
     """
 
-    labelled = [
+    supplied = [
         {"arm": str(column["arm"]), "direction": str(column["direction"]),
          "family_values": {str(key): float(value)
                            for key, value in column["family_values"].items()}}
         for column in columns
     ]
+    labelled = [
+        column for column in supplied if len(column["family_values"]) >= MIN_FAMILIES
+    ]
+    thin = [
+        {"arm": column["arm"], "direction": column["direction"],
+         "families": len(column["family_values"]),
+         "reason": (
+             f"{len(column['family_values'])} families is below the {MIN_FAMILIES}-family "
+             "floor this lane applies to a family-grouped contrast, so this arm carries no "
+             "standard error to studentise and is named here instead of entering the family"
+         )}
+        for column in supplied if len(column["family_values"]) < MIN_FAMILIES
+    ]
     if not labelled:
         return {
             "outcome": outcome,
             "columns": [],
-            "undefined": "no arm in this panel carries a matched contact contrast",
+            "excluded_columns": thin,
+            "undefined": (
+                "no arm in this panel carries a matched contact contrast on at least "
+                f"{MIN_FAMILIES} families"
+            ),
         }
     universe = sorted({family for column in labelled for family in column["family_values"]})
     table = np.full((len(universe), len(labelled)), np.nan)
@@ -793,10 +815,15 @@ def panel_contact_simultaneous(
     record = simultaneous_bands(table, draws=draws, seed=seed)
     record["outcome"] = outcome
     record["families"] = universe
+    record["excluded_columns"] = thin
+    record["minimum_families"] = MIN_FAMILIES
     record["family_definition"] = (
         "one column per (arm, direction) whose contrast is an estimate rather than a "
         "construction: a causal arm contributes downstream only, because its upstream "
-        "response is identically zero by construction"
+        "response is identically zero by construction. A column supported by fewer "
+        f"than {MIN_FAMILIES} families is named under excluded_columns instead, because "
+        "a studentised maximum over a standard error that thin would be set by the "
+        "least supported arm in the panel"
     )
     record["weighting"] = WEIGHTING
     record["columns"] = [
