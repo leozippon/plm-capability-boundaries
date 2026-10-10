@@ -463,3 +463,82 @@ def test_a_fold_keeps_its_pairwise_confidence_or_refuses_to_record(tmp_path):
 
     with pytest.raises(RuntimeError, match="pairwise confidence was not kept"):
         fold.save_pairwise({"plddt": torch.rand(samples, length)}, tmp_path, "bare")
+
+
+# ------------------------------------------- the yield panel, E11's first question
+
+
+def attempt(condition, target, *, stop="native_terminal", residues=200, copy=False):
+    return product(
+        f"arm|{target}|{condition}|{residues}{stop}{copy}",
+        condition,
+        residues,
+        target=target,
+        stop=stop,
+        copy=copy,
+    )
+
+
+def test_the_yield_panel_counts_attempts_in_the_denominator_and_copies_out_of_it():
+    rows: list[dict] = []
+    for index in range(10):
+        target = f"q{index}"
+        # Four attempts per condition per group. Under the homologue condition one
+        # of the two complete products is a copy of its own context, so the
+        # non-copy yield is 1/4 and not 2/4.
+        rows += [
+            attempt(H.CLOSE_HOMOLOG, target, residues=200),
+            attempt(H.CLOSE_HOMOLOG, target, residues=210, copy=True),
+            attempt(H.CLOSE_HOMOLOG, target, residues=220, stop="budget_censored"),
+            attempt(H.CLOSE_HOMOLOG, target, residues=230, stop="budget_censored"),
+            attempt(H.UNRELATED, target, residues=200),
+            attempt(H.UNRELATED, target, residues=210),
+            attempt(H.UNRELATED, target, residues=220, stop="budget_censored"),
+            attempt(H.UNRELATED, target, residues=230, stop="budget_censored"),
+        ]
+    panel = H.yield_contrast_panel(
+        rows, contrasts=((H.CLOSE_HOMOLOG, H.UNRELATED),), draws=400
+    )
+    assert panel["per_condition"][H.CLOSE_HOMOLOG]["attempts"] == 40
+    assert panel["per_condition"][H.CLOSE_HOMOLOG]["complete_non_copy"] == 10
+    assert panel["per_condition"][H.CLOSE_HOMOLOG]["yield"] == pytest.approx(0.25)
+    assert panel["per_condition"][H.UNRELATED]["yield"] == pytest.approx(0.50)
+    column = panel["columns"][0]
+    assert column["status"] == "estimated"
+    assert column["point"] == pytest.approx(-0.25)
+    assert column["paired_groups"] == 10
+    assert column["field"] == "non_copy_native_terminal_yield"
+    assert "every attempt" in panel["denominator"]
+
+
+def test_a_product_too_short_to_measure_does_not_count_as_a_complete_product():
+    rows = []
+    for index in range(10):
+        target = f"q{index}"
+        rows += [
+            attempt(H.CLOSE_HOMOLOG, target, residues=H.MIN_PRODUCT_RESIDUES - 1),
+            attempt(H.CLOSE_HOMOLOG, target, residues=H.MIN_PRODUCT_RESIDUES),
+            attempt(H.UNRELATED, target, residues=200),
+            attempt(H.UNRELATED, target, residues=210),
+        ]
+    panel = H.yield_contrast_panel(
+        rows, contrasts=((H.CLOSE_HOMOLOG, H.UNRELATED),), draws=400
+    )
+    assert panel["per_condition"][H.CLOSE_HOMOLOG]["yield"] == pytest.approx(0.5)
+    assert panel["per_condition"][H.UNRELATED]["yield"] == pytest.approx(1.0)
+
+
+def test_a_group_that_never_attempted_one_condition_is_missing_from_that_contrast():
+    rows = []
+    for index in range(10):
+        target = f"q{index}"
+        rows += [attempt(H.CLOSE_HOMOLOG, target), attempt(H.UNRELATED, target)]
+    # An eleventh group attempted only the homologue condition, and failed it.
+    rows.append(attempt(H.CLOSE_HOMOLOG, "qZ", stop="budget_censored"))
+    panel = H.yield_contrast_panel(
+        rows, contrasts=((H.CLOSE_HOMOLOG, H.UNRELATED),), draws=400
+    )
+    column = panel["columns"][0]
+    assert column["paired_groups"] == 10
+    # A zero-imputed missing referent would have dragged the contrast below zero.
+    assert column["point"] == pytest.approx(0.0)

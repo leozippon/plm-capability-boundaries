@@ -1865,66 +1865,56 @@ def context_identity_distribution(
     return out
 
 
-def structure_contrast_panel(
-    strata: Mapping[str, Sequence[Mapping[str, Any]]],
+def paired_contrast_panel(
+    cells: Mapping[tuple[str, str], Mapping[str, float]],
+    counts: Mapping[tuple[str, str], Mapping[str, int]],
     *,
-    contrasts: Sequence[Sequence[str]] = STRUCTURE_CONTRASTS,
-    field: str = STRUCTURE_PRIMARY_CONFIDENCE,
-    group_key: str = "target_id",
+    strata: Sequence[str],
+    contrasts: Sequence[Sequence[str]],
+    field: str,
+    higher_is_better: bool,
     draws: int = BOOTSTRAP_DRAWS,
     seed: int = BOOTSTRAP_SEED,
 ) -> dict[str, Any]:
-    """One confidence field's contrast panel, paired inside the family group.
+    """A contrast panel paired inside the family group, with simultaneous bounds.
 
-    ``strata`` maps a stratum name -- a length band, or the single stratum of the
-    unmatched draw -- to the folded products in it. A column of the panel is one
-    (stratum, contrast) pair, and a row is one wild-type family group: the cell
-    is that group's mean confidence under the left condition minus its mean under
-    the right, so a target that happens to fold well cannot move the contrast.
-    A group that supplies no product to one side of a contrast is missing, never
-    zero, which is what restricts every contrast to the groups both conditions
-    actually populate.
+    ``cells[(stratum, condition)]`` maps a family group to that group's value of
+    one endpoint -- a mean predicted confidence, a yield, anything with one number
+    per group -- and ``counts`` carries how many observations stand behind each of
+    those numbers. A column of the panel is one (stratum, contrast) pair and a row
+    is one family group, so the cell is a within-group difference and a group that
+    happens to score high cannot move any contrast. A group that supplies no
+    observation to one side is **missing**, never zero, which is what restricts
+    every contrast to the groups both conditions actually populate.
 
     Intervals come from the shared family bootstrap the context lane already uses
     for its per-bin panel, so the simultaneous statement spans this whole panel
     rather than each column separately. The pointwise interval is reported beside
-    it and is explicitly the weaker reading.
+    it and is explicitly the weaker reading. Declared here once because the
+    structural comparison and the yield comparison are the same inference on
+    different endpoints, and only the endpoint should differ between them.
     """
 
-    if field not in STRUCTURE_CONFIDENCE_FIELDS:
-        raise ValueError(f"{field} is not a declared confidence field")
     # Imported here, not at module scope: this module is the context lane's
     # declaration and must stay importable without the extensions package.
     from ..extensions.phenotype_strata import shared_bootstrap
 
-    groups = sorted(
-        {
-            str(row[group_key])
-            for rows in strata.values()
-            for row in rows
-            if row.get(field) is not None
-        }
-    )
+    groups = sorted({group for cell in cells.values() for group in cell})
     columns: list[dict[str, Any]] = []
-    cells: list[list[float]] = []
-    for stratum, rows in strata.items():
-        per_condition: dict[str, dict[str, list[float]]] = {}
-        for row in rows:
-            if row.get(field) is None:
-                continue
-            per_condition.setdefault(str(row["condition"]), {}).setdefault(
-                str(row[group_key]), []
-            ).append(float(row[field]))
+    matrix_columns: list[list[float]] = []
+    for stratum in strata:
         for left, right in contrasts:
-            left_groups = per_condition.get(left, {})
-            right_groups = per_condition.get(right, {})
-            shared = sorted(set(left_groups) & set(right_groups))
-            column = [
-                float(np.mean(left_groups[group])) - float(np.mean(right_groups[group]))
-                if group in left_groups and group in right_groups
-                else np.nan
-                for group in groups
-            ]
+            left_cell = cells.get((stratum, left), {})
+            right_cell = cells.get((stratum, right), {})
+            shared = sorted(set(left_cell) & set(right_cell))
+            matrix_columns.append(
+                [
+                    float(left_cell[group]) - float(right_cell[group])
+                    if group in left_cell and group in right_cell
+                    else np.nan
+                    for group in groups
+                ]
+            )
             columns.append(
                 {
                     "stratum": stratum,
@@ -1932,15 +1922,14 @@ def structure_contrast_panel(
                     "left": left,
                     "right": right,
                     "field": field,
-                    "higher_is_better": STRUCTURE_CONFIDENCE_HIGHER_IS_BETTER[field],
+                    "higher_is_better": bool(higher_is_better),
                     "paired_groups": len(shared),
-                    "left_products": sum(len(value) for value in left_groups.values()),
-                    "right_products": sum(len(value) for value in right_groups.values()),
+                    "left_products": sum(counts.get((stratum, left), {}).values()),
+                    "right_products": sum(counts.get((stratum, right), {}).values()),
                     **bootstrap_unit_floor(len(shared), minimum_units=GROUP_FLOOR),
                 }
             )
-            cells.append(column)
-    matrix = np.asarray(cells, dtype=float).T if cells else np.zeros((0, 0))
+    matrix = np.asarray(matrix_columns, dtype=float).T if matrix_columns else np.zeros((0, 0))
     keep = [
         index
         for index in range(matrix.shape[1])
@@ -1965,19 +1954,18 @@ def structure_contrast_panel(
             "bootstrap": None,
         }
     statistics, _ = shared_bootstrap(matrix[:, keep], draws=draws, seed=seed)
-    estimated = []
-    for position, index in enumerate(keep):
-        estimated.append(
-            {
-                **columns[index],
-                "status": "estimated",
-                "point": float(statistics["point"][position]),
-                "standard_error": float(statistics["se"][position]),
-                "pointwise_interval": list(statistics["pointwise_interval"][position]),
-                "simultaneous_interval": list(statistics["simultaneous_interval"][position]),
-                "bootstrap_groups": int(statistics["supported_families"][position]),
-            }
-        )
+    estimated = [
+        {
+            **columns[index],
+            "status": "estimated",
+            "point": float(statistics["point"][position]),
+            "standard_error": float(statistics["se"][position]),
+            "pointwise_interval": list(statistics["pointwise_interval"][position]),
+            "simultaneous_interval": list(statistics["simultaneous_interval"][position]),
+            "bootstrap_groups": int(statistics["supported_families"][position]),
+        }
+        for position, index in enumerate(keep)
+    ]
     return {
         "field": field,
         "unit": "wild-type family group, paired within the group",
@@ -1999,6 +1987,125 @@ def structure_contrast_panel(
             "jointly_rejected_draws": int(statistics["jointly_rejected_draws"]),
         },
     }
+
+
+def structure_contrast_panel(
+    strata: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    contrasts: Sequence[Sequence[str]] = STRUCTURE_CONTRASTS,
+    field: str = STRUCTURE_PRIMARY_CONFIDENCE,
+    group_key: str = "target_id",
+    draws: int = BOOTSTRAP_DRAWS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """One confidence field's contrast panel over the folded products.
+
+    ``strata`` maps a stratum name -- a length band, or the single stratum of the
+    unmatched draw -- to the folded products in it. A family group's value is the
+    mean of that field over its own products in that stratum; the rest of the
+    inference is :func:`paired_contrast_panel`.
+    """
+
+    if field not in STRUCTURE_CONFIDENCE_FIELDS:
+        raise ValueError(f"{field} is not a declared confidence field")
+    cells: dict[tuple[str, str], dict[str, float]] = {}
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    for stratum, rows in strata.items():
+        collected: dict[tuple[str, str], dict[str, list[float]]] = {}
+        for row in rows:
+            if row.get(field) is None:
+                continue
+            key = (stratum, str(row["condition"]))
+            collected.setdefault(key, {}).setdefault(str(row[group_key]), []).append(
+                float(row[field])
+            )
+        for key, by_group in collected.items():
+            cells[key] = {group: float(np.mean(values)) for group, values in by_group.items()}
+            counts[key] = {group: len(values) for group, values in by_group.items()}
+    return paired_contrast_panel(
+        cells,
+        counts,
+        strata=list(strata),
+        contrasts=contrasts,
+        field=field,
+        higher_is_better=STRUCTURE_CONFIDENCE_HIGHER_IS_BETTER[field],
+        draws=draws,
+        seed=seed,
+    )
+
+
+def yield_contrast_panel(
+    products: Sequence[Mapping[str, Any]],
+    *,
+    contrasts: Sequence[Sequence[str]] = STRUCTURE_CONTRASTS,
+    group_key: str = "target_id",
+    draws: int = BOOTSTRAP_DRAWS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """The non-copy complete-product yield, contrasted and paired inside the group.
+
+    The first half of E11's question -- does conditioning on homologous sequence
+    change *what the model produces* -- is answered by this, not by a confidence
+    score: a product counts when the decoder reached a native terminator at or
+    above :data:`MIN_PRODUCT_RESIDUES` and the product is not a copy of its own
+    context. The denominator is every attempt made under that condition for that
+    target, so a condition that mostly runs into the generation budget is penalised
+    for exactly that.
+
+    Paired inside the family group and bounded by the same shared bootstrap as the
+    structural panel, over the same declared contrast family. It is reported in one
+    stratum because a yield is a property of the attempts, not of the lengths the
+    attempts happened to reach: stratifying it by the length of the products that
+    survived would condition the denominator on the outcome.
+    """
+
+    cells: dict[tuple[str, str], dict[str, float]] = {}
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    attempts: dict[tuple[str, str], dict[str, int]] = {}
+    complete: dict[tuple[str, str], dict[str, int]] = {}
+    for row in products:
+        key = ("all_attempts", str(row["condition"]))
+        group = str(row[group_key])
+        attempts.setdefault(key, {}).setdefault(group, 0)
+        attempts[key][group] += 1
+        clean = (
+            row.get("stop_status") == "native_terminal"
+            and int(row["residues"]) >= MIN_PRODUCT_RESIDUES
+            and not (row.get("copy_verdict") or {}).get("is_copy")
+        )
+        complete.setdefault(key, {}).setdefault(group, 0)
+        complete[key][group] += int(bool(clean))
+    for key, by_group in attempts.items():
+        cells[key] = {
+            group: complete[key][group] / total for group, total in by_group.items() if total
+        }
+        counts[key] = dict(by_group)
+    panel = paired_contrast_panel(
+        cells,
+        counts,
+        strata=["all_attempts"],
+        contrasts=contrasts,
+        field="non_copy_native_terminal_yield",
+        higher_is_better=True,
+        draws=draws,
+        seed=seed,
+    )
+    panel["numerator"] = (
+        "attempts reaching a native terminator at or above MIN_PRODUCT_RESIDUES "
+        "residues and not a copy of their own context"
+    )
+    panel["denominator"] = "every attempt made under that condition for that family group"
+    panel["per_condition"] = {
+        condition: {
+            "attempts": sum(attempts[("all_attempts", condition)].values()),
+            "complete_non_copy": sum(complete[("all_attempts", condition)].values()),
+            "yield": sum(complete[("all_attempts", condition)].values())
+            / sum(attempts[("all_attempts", condition)].values()),
+            "groups": len(attempts[("all_attempts", condition)]),
+        }
+        for _, condition in sorted(attempts)
+    }
+    return panel
 
 
 def condition_level_summary(

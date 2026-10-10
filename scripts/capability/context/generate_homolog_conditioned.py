@@ -823,6 +823,7 @@ def analyse(args: argparse.Namespace) -> None:
             else annotation_record.get("corpus_identity"),
             "conditions": conditions,
             "yields": table,
+            "yield_contrast": H.yield_contrast_panel(products),
             "context_identity": H.context_identity_distribution(products, conditions=conditions),
             "structure": structure,
             "structure_comparison_rule": H.STRUCTURE_COMPARISON_RULE,
