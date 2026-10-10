@@ -525,9 +525,20 @@ def _normal_quantile(probability: float) -> float:
     return (low + high) / 2.0
 
 
-def pre_registration(*, units: int = BACKBONES_PER_BAND * len(LENGTH_BANDS)) -> dict[str, Any]:
-    """The whole pre-registration as one record, for the artefact's header."""
+def pre_registration(
+    *, units: int = BACKBONES_PER_BAND * len(LENGTH_BANDS), pairs: int | None = None,
+) -> dict[str, Any]:
+    """The whole pre-registration as one record, for the artefact's header.
 
+    ``units`` is the realised backbone count and ``pairs`` the realised
+    prescribed-pair count, so an artefact states the effect size and the sampling
+    cost it actually has rather than the ones the design hoped for. Both default
+    to the designed figures; the designed and realised completion counts are
+    reported side by side so the gap is a number rather than an omission.
+    """
+
+    designed_pairs = BACKBONES_PER_BAND * len(LENGTH_BANDS) * PAIRS_PER_BACKBONE
+    realised_pairs = designed_pairs if pairs is None else int(pairs)
     return {
         "schema": SCHEMA,
         "experiment": EXPERIMENT,
@@ -539,10 +550,11 @@ def pre_registration(*, units: int = BACKBONES_PER_BAND * len(LENGTH_BANDS)) -> 
             | {"pre_registered_claimable": CLAIMABLE[channel]}
             for channel, sd in ASSUMED_UNIT_SD.items()
         },
-        "completions_per_arm": (
-            BACKBONES_PER_BAND * len(LENGTH_BANDS) * PAIRS_PER_BACKBONE
-            * len(CONDITIONS) * DRAWS_PER_CELL
-        ),
+        "prescribed_pairs": realised_pairs,
+        "designed_prescribed_pairs": designed_pairs,
+        "completions_per_arm": realised_pairs * len(CONDITIONS) * DRAWS_PER_CELL,
+        "designed_completions_per_arm": designed_pairs * len(CONDITIONS) * DRAWS_PER_CELL,
+        "teacher_forced_passes_per_arm": realised_pairs * len(CONDITIONS),
         "arms": list(ARMS),
         "arm_panel_note": ARM_PANEL_NOTE,
         "unselected_arms": dict(UNSELECTED_ARMS),
@@ -550,6 +562,7 @@ def pre_registration(*, units: int = BACKBONES_PER_BAND * len(LENGTH_BANDS)) -> 
             "temperature": TEMPERATURE,
             "top_p": TOP_P,
             "top_k": TOP_K,
+            "dtype": DTYPE,
             "note": DECODING_POLICY_NOTE,
         },
         "structure_channel": STRUCTURE_CHANNEL_CONTRACT,

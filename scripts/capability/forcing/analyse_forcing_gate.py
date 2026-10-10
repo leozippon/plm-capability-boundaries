@@ -67,6 +67,68 @@ def read_arm(directory: Path) -> dict:
     return {"summary": summary, "records": records, "directory": str(directory)}
 
 
+#: Fields two shards of one arm must agree on. A shard that differs on any of
+#: them is not a shard of the same measurement, and merging it would pool two
+#: quantities under one name.
+SHARD_IDENTITY = ("arm", "token_grid", "dtype", "draws_per_cell", "sampling_seed", "decoding")
+
+
+def read_arms(directories: list[Path]) -> list[dict]:
+    """Group the supplied directories by arm, merging shards of one arm.
+
+    An arm large enough to set the campaign's wall clock is sharded over several
+    cards, so several directories can carry one arm. They are merged here rather
+    than entering the panel as separate columns -- two shards of one checkpoint
+    are one measurement, and a panel that counted them twice would resample the
+    same backbone under two names. A directory that disagrees with its siblings
+    on the measurement's identity, or that repeats a cell, is refused.
+    """
+
+    groups: dict[str, dict] = {}
+    for directory in directories:
+        block = read_arm(directory)
+        summary = block["summary"]
+        name = str(summary["arm"])
+        existing = groups.get(name)
+        if existing is None:
+            groups[name] = {
+                "summary": dict(summary),
+                "records": dict(block["records"]),
+                "directories": [block["directory"]],
+                "shards": [summary.get("shard")],
+            }
+            continue
+        differing = [
+            key for key in SHARD_IDENTITY
+            if existing["summary"].get(key) != summary.get(key)
+        ]
+        if differing:
+            raise SystemExit(
+                f"{directory} claims arm {name!r} but disagrees with "
+                f"{existing['directories'][0]} on {differing}; these are not shards of one "
+                "measurement and are not merged"
+            )
+        if summary["cohort"]["sha256"] != existing["summary"]["cohort"]["sha256"]:
+            raise SystemExit(f"{directory}: a different cohort from {existing['directories'][0]}")
+        overlap = sorted(set(existing["records"]) & set(block["records"]))
+        if overlap:
+            raise SystemExit(
+                f"{directory} repeats {len(overlap)} cell(s) already carried by "
+                f"{existing['directories'][0]}, e.g. {overlap[:3]}; overlapping shards would "
+                "double-count draws"
+            )
+        existing["records"].update(block["records"])
+        existing["directories"].append(block["directory"])
+        existing["shards"].append(summary.get("shard"))
+        censoring = existing["summary"].get("censoring") or {}
+        incoming = summary.get("censoring") or {}
+        for key in ("censored_draws", "total_draws", "cells_with_any_censoring"):
+            censoring[key] = int(censoring.get(key, 0)) + int(incoming.get(key, 0))
+        existing["summary"]["censoring"] = censoring
+        existing["summary"]["cells"] = len(existing["records"])
+    return [groups[name] for name in sorted(groups)]
+
+
 def paired_cells(arm: dict, cohort: dict, *, mode: str, coverage: dict) -> list[dict]:
     """Join the two conditions of every unit this arm completed in one mode."""
 
@@ -236,7 +298,7 @@ def run(args: argparse.Namespace) -> None:
         }
         coverage_source = {"path": str(args.coverage), "sha256": sha256_file(args.coverage)}
 
-    arms = [read_arm(directory) for directory in args.generation]
+    arms = read_arms(list(args.generation))
     blocks = [analyse_arm(arm, cohort, coverage=coverage, args=args) for arm in arms]
     panel: dict = {
         "columns": [block["arm"] for block in blocks],
@@ -284,7 +346,9 @@ def run(args: argparse.Namespace) -> None:
             "does forcing an early residue change what a generative protein model emits at a "
             "prescribed contacting position more than at matched non-contacting positions"
         ),
-        "pre_registration": D.pre_registration(units=cohort["backbones"]),
+        "pre_registration": D.pre_registration(
+            units=cohort["backbones"], pairs=cohort["units"],
+        ),
         "estimator_semantics": {
             "empirical": (
                 "the histogram of the residues the draws realised at the position; the "
@@ -319,8 +383,14 @@ def run(args: argparse.Namespace) -> None:
             "generation": [
                 {
                     "arm": arm["summary"]["arm"],
-                    "directory": arm["directory"],
-                    "sha256": sha256_file(Path(arm["directory"]) / "forcing_generation.json"),
+                    "shards": arm["shards"],
+                    "directories": [
+                        {
+                            "path": directory,
+                            "sha256": sha256_file(Path(directory) / "forcing_generation.json"),
+                        }
+                        for directory in arm["directories"]
+                    ],
                 }
                 for arm in arms
             ],

@@ -509,7 +509,7 @@ def cohort_payload(
     multiset = D.forced_residue_multisets_match(units)
     return {
         "schema": SCHEMA,
-        "pre_registration": D.pre_registration(units=len(accessions)),
+        "pre_registration": D.pre_registration(units=len(accessions), pairs=len(units)),
         "backbones": len(accessions),
         "backbones_per_band": dict(
             Counter(
