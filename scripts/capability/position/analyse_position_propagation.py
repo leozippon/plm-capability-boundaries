@@ -198,6 +198,21 @@ def analyse_arm(completion, directory: Path, cohort_rows, geometry_source, *, mi
             f"admitted tolerance of {tolerance}"
         )
     sites = np.asarray(site_values, dtype=np.float64) if site_values else np.zeros(0)
+    # A half-distance is a property of the scope it was fitted on, not of the arm
+    # alone: the fit covers only the separations these assays offer, so widening
+    # the length cap moves it. Carried inside each profile rather than left at
+    # file level, so a half-distance cannot be quoted without its scope and two
+    # scopes cannot be read as one column.
+    scope = {
+        "max_residues": None if max_residues is None else int(max_residues),
+        "assays": len(per_assay),
+        "longest_wildtype_residues": max((item["residues"] for item in per_assay), default=0),
+        "note": (
+            "half_distance_residues and its interval are fitted on these assays only; a "
+            "different wild-type length cap offers different separations and gives a "
+            "different half-distance for the same arm"
+        ),
+    }
     return {
         "arm": arm,
         "paradigm": paradigm,
@@ -221,7 +236,10 @@ def analyse_arm(completion, directory: Path, cohort_rows, geometry_source, *, mi
                 "likelihood of different residues; not a response and never profiled"
             ),
         },
-        "profile": {"downstream": downstream.profile(), "upstream": upstream.profile()},
+        "profile": {
+            "downstream": {**downstream.profile(), "scope": scope},
+            "upstream": {**upstream.profile(), "scope": scope},
+        },
         "structural_receivers": len(structural),
     }, structural
 
