@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -424,6 +426,42 @@ def test_an_unfolded_in_band_product_is_refused(analysed, tmp_path):
             )
         )
     assert "have no fold" in str(error.value)
+
+
+def test_the_summary_prints_every_configuration_and_marks_the_unresolved_ones(analysed):
+    report = analysed["dirs"] / "analysis" / "decoding_sweep.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/capability/decoding/summarise_decoding_sweep.py"),
+            "--report",
+            str(report),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    out = result.stdout
+    # Every configuration appears, including the run-on one that produced nothing
+    # inside the band: a table that silently drops what it could not evaluate is
+    # the shape a false positive takes.
+    for key in ds.CONFIG_KEYS:
+        assert key in out
+    assert "no in-band product to profile" in out
+    for heading in (
+        "-- census",
+        "per candidate, and the length-matched gap",
+        "length-standardised across configurations",
+        "best-of-k on the deep-budget configurations",
+        "matched compute",
+        "degeneracy diagnostics",
+        "simultaneous statement",
+        "-- verdict",
+    ):
+        assert heading in out, heading
+    assert "existing generation results" in out
+    assert "novelty search attached: False" in out
 
 
 def test_a_reference_band_from_another_contract_is_refused(analysed, tmp_path):

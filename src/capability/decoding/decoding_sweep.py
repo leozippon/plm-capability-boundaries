@@ -125,6 +125,16 @@ CEILING: dict[str, str] = {
         "any of these arms' declared pretraining set, so a low identity is not "
         "evidence that a sequence was absent from training data"
     ),
+    "corpus_identity_is_compared_within_an_arm": (
+        "the corpus-identity axis is read between configurations of one arm, never "
+        "between generated and natural sequences. A natural reference searched "
+        "against a reference release matches itself at 100% identity over the whole "
+        "query -- a coverage screen elsewhere in this programme returned exactly "
+        "100% for all 111 Swiss-Prot backbones it reviewed -- so a "
+        "generated-versus-natural identity contrast would be meaningless unless "
+        "whole-query identical alignments were excluded first, which this sweep "
+        "does not need and does not do"
+    ),
     "no_family_oracle_here": (
         "family recognition is not run in this sweep. Structural confidence, "
         "novelty, diversity and length are the measures; a configuration is never "
@@ -860,6 +870,15 @@ DEGENERACY_AXES: dict[str, str] = {
     "mean_pairwise_kmer_distance": "below",
     "mean_composition_entropy_nats": "below",
     "fraction_with_homopolymer_run": "above",
+    # Both corpus axes are read against a size-matched draw from ANOTHER
+    # CONFIGURATION OF THE SAME ARM, never against natural sequences. A natural
+    # record searched against a reference release matches itself at 100%
+    # identity over the whole query, so a natural reference band on this axis
+    # would sit at the ceiling and make every generated set look novel by
+    # comparison. The two axes fail differently and are both read: a set can
+    # rise in mean identity by concentrating on remote homologues without
+    # acquiring one near-duplicate, and it can concentrate onto a handful of
+    # verbatim corpus members while its mean identity barely moves.
     "nearest_corpus_identity": "above",
     "fraction_near_duplicate_of_corpus": "above",
 }
