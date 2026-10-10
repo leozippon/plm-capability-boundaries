@@ -158,19 +158,39 @@ def arm_design(completion, directory: Path, cohort_rows, geometry_source, *, for
         })
     if not blocks:
         return identity, [], (), {}, {}, per_assay
+    # The alphabet is the intersection over this arm's own assays, so that one
+    # conditional column means the same residue everywhere the statistic is
+    # formed. For a byte-pair interface that intersection can be empty, and even
+    # a non-empty one can miss a particular wild type entirely -- both are facts
+    # about the arm's rendering, recorded per assay, and neither is a reason to
+    # abandon the rest of the panel.
+    records = {item["assay"]: item for item in per_assay}
     shared = resolved_alphabet(
         sorted(set.intersection(*[set(block["residues"]) for block in blocks]))
     )
+    if not shared:
+        for item in per_assay:
+            item["status"] = (
+                "this arm resolves no single-residue token alphabet shared across its "
+                "assays, so no conditional column is the probability of a residue"
+            )
+        return identity, [], (), {}, {}, per_assay
     conditionals: dict[tuple[str, int], np.ndarray] = {}
     compositions: dict[str, np.ndarray] = {}
     rows = []
     for block in blocks:
+        try:
+            weights = composition(cohort_rows[block["assay"]]["wildtype"], shared)
+        except ValueError as error:
+            records[block["assay"]]["status"] = (
+                f"no residue of this arm's shared resolved alphabet occurs in this wild "
+                f"type, so the composition control is undefined: {error}"
+            )
+            continue
         columns = [block["residues"].index(residue) for residue in shared]
         for order, position in enumerate(block["positions"]):
             conditionals[(block["assay"], int(position))] = block["logprobs"][order, columns]
-        compositions[block["assay"]] = composition(
-            cohort_rows[block["assay"]]["wildtype"], shared
-        )
+        compositions[block["assay"]] = weights
         rows.extend(
             item for item in block["rows"]
             if item["partner_residue"] in shared and item["anchor_residue"] in shared
@@ -257,7 +277,9 @@ def main() -> None:
             block["result"] = None
             block["undefined_reason"] = (
                 "no anchor carried both a contacting and a separation-matched "
-                "non-contacting partner with a retained residue conditional"
+                "non-contacting partner with a retained residue conditional under this "
+                "arm's shared resolved alphabet; the per-assay status says which of the "
+                "two it was for each assay"
             )
         arms.append(block)
         del rows, conditionals, compositions
