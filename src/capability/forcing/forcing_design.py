@@ -629,10 +629,20 @@ NON_IDENTIFIABLE: Mapping[str, str] = {
         "and it is not attempted here"
     ),
     "structural_chemistry_versus_learned_coevolution": (
-        "there is no coevolution-free holdout, so a model-free pair conditional "
-        "from the family's own alignment is reported as a REFERENCE LEVEL and "
-        "never subtracted as a baseline. An effect that does not exceed it is "
-        "reported as reproducing coevolution, not as structural anticipation"
+        "there is no coevolution-free holdout, so a model-free pair conditional is "
+        "reported as a REFERENCE LEVEL and never subtracted as a baseline. An "
+        "effect that does not exceed it is reported as reproducing coevolution, "
+        "not as structural anticipation. Which pair conditional matters: a "
+        "POSITION-BLIND one, f(partner | anchor), gives an identically zero double "
+        "difference here, because it returns the same distribution at the "
+        "prescribed partner and at every control, so it is vacuous rather than "
+        "conservative -- and that is also why covariation cannot by itself produce "
+        "a positive endpoint. The reference level has to be position-aware: two "
+        "family-held-out tables, one counted over contacting pairs and one over "
+        "separation-matched non-contacting pairs, differenced the same way the "
+        "endpoint is. DECLARED AND NOT YET IMPLEMENTED: it is consumed only if the "
+        "gate resolves positive, and building it against a measured endpoint is "
+        "better than building it against none"
     ),
     "mechanism_attribution_to_the_anchor": (
         "forcing i perturbs the prefix of every later position, so the "
@@ -668,8 +678,14 @@ STRUCTURE_CHANNEL_CONTRACT = (
     "independent of the generative arms -- different weights, different "
     "objective, no shared head -- but it is NOT independent of sequence "
     "databases. Pairwise confidence (PAE, distogram) is kept and never reduced to "
-    "a scalar. This channel is declared here and is read only if the gate "
-    "resolves"
+    "a scalar. DECLARED AND NOT BUILT, and two things have to be true before it "
+    "can be: the gate has to resolve positive, and the completions have to be "
+    "regenerated to full length, because the gate stops at the furthest read "
+    "position and a 50-residue fragment of a 240-residue protein does not fold to "
+    "anything about the protein. At the published per-length ESMFold2 timings the "
+    "fold pass is roughly 20 card-hours over the four arms before identical "
+    "completions are deduplicated, which is more than the gate itself and is the "
+    "reason it is gated rather than run alongside"
 )
 
 
