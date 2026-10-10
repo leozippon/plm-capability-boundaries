@@ -289,7 +289,12 @@ def _arm_report(
         field: {} for field in REPORTED
     }
 
-    for key in ds.CONFIG_KEYS:
+    # The reference configuration is read first, because every other
+    # configuration's gain and degeneracy reference are measured against it. In
+    # grid order it is eighth, and the seven before it would otherwise be
+    # reported with no gain at all -- which would read as "did not improve".
+    order = [ds.REFERENCE_KEY] + [key for key in ds.CONFIG_KEYS if key != ds.REFERENCE_KEY]
+    for key in order:
         setting = ds.config(key)
         cell = by_config.get(key, [])
         if not cell:

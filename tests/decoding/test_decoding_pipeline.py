@@ -387,6 +387,13 @@ def test_degeneracy_is_reported_and_the_collapsed_configuration_is_caught(analys
     assert collapsed["profile"]["duplicate_fraction"] > 0.9
     assert collapsed["verdict"]["degenerate"]
     assert "duplicate_fraction" in collapsed["verdict"]["axes_flagged"]
+    # Every configuration is priced against the reference even when it comes
+    # earlier in grid order, so a gain cannot be lost to the reading order.
+    assert all(
+        value.get("gain_over_reference_configuration") is not None
+        for key, value in block["degeneracy"].items()
+        if key != ds.REFERENCE_KEY and "profile" in value
+    )
     healthy = block["degeneracy"]["t1.20_p0.95_k0_eos400"]
     assert not healthy["verdict"]["degenerate"]
     assert block["novelty"] == {}, "no homology search was supplied, so none is claimed"
