@@ -310,6 +310,38 @@ def test_a_flat_or_rising_profile_reports_no_half_distance():
     # Too few supported separations is not a fit at all, and still has the key.
     short = decay_fit(flat[:2])
     assert short["fitted"] is False and short["half_distance_residues"] is None
+    assert short["half_distance_interval_residues"] is None
+
+
+def test_the_half_distance_interval_brackets_the_fitted_half_distance():
+    # A clean exponential: the half-distance of exp(-d/tau) is tau * ln 2.
+    clean = [{"separation": d, "n": 100, "sufficient": True,
+              "mean_absolute_nats": 0.5 * np.exp(-d / 30.0)} for d in range(1, 80)]
+    fit = decay_fit(clean)
+    assert fit["half_distance_residues"] == pytest.approx(30.0 * np.log(2), rel=1e-6)
+    low, high = fit["half_distance_interval_residues"]
+    assert low <= fit["half_distance_residues"] <= high
+
+    # Noise on the same decay widens the interval and keeps it bracketing.
+    noisy = [{"separation": d, "n": 100, "sufficient": True,
+              "mean_absolute_nats": 0.5 * np.exp(-d / 30.0) * (1 + 0.3 * ((-1) ** d))}
+             for d in range(1, 80)]
+    rough = decay_fit(noisy)
+    rough_low, rough_high = rough["half_distance_interval_residues"]
+    assert rough_low < rough["half_distance_residues"] < rough_high
+    assert rough_high - rough_low > high - low
+    # Monotone, not linearised: a steeper slope is the SHORTER half-distance.
+    assert rough_low == pytest.approx(
+        np.log(2) / (-rough["slope_per_residue"] + 1.96 * rough["slope_standard_error"])
+    )
+    assert fit["half_distance_interval_basis"]
+
+    # An unresolved slope has no half-distance and therefore no interval.
+    rising = [{"separation": d, "n": 10, "mean_absolute_nats": 0.1 * d, "sufficient": True}
+              for d in range(1, 8)]
+    unresolved = decay_fit(rising)
+    assert unresolved["half_distance_residues"] is None
+    assert unresolved["half_distance_interval_residues"] is None
 
 
 def test_the_contrast_compares_only_inside_one_anchor_and_one_stratum():

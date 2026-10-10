@@ -76,6 +76,13 @@ CONTACT_DEFINITION = (
     "pair population rather than counted as a non-contact"
 )
 
+#: Normal quantile for the 95 percent interval carried onto a half-distance.
+#: The regression uses one observation per sequence separation, so the fits in
+#: this lane carry tens to hundreds of degrees of freedom and the Student-t
+#: quantile is within a percent of this; the resolution gate beside it stays at
+#: a flat two standard errors, which is the stricter of the two.
+HALF_DISTANCE_Z = 1.96
+
 #: Families a reported family-grouped contrast needs. Five is the floor this
 #: project's own response-bin analysis already applies, and the anticipation
 #: statistic in this same lane imports it from here rather than restating it.
@@ -435,6 +442,7 @@ def decay_fit(profile: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "reason": f"{len(points)} separations carry a positive mean with sufficient support",
             "separations_used": int(len(points)),
             "half_distance_residues": None,
+            "half_distance_interval_residues": None,
             "half_distance_undefined_reason": "the profile was not fitted",
         }
     separation = np.asarray([row["separation"] for row in points], dtype=np.float64)
@@ -446,6 +454,7 @@ def decay_fit(profile: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "reason": "the mean absolute response does not vary with separation",
             "separations_used": int(len(points)),
             "half_distance_residues": None,
+            "half_distance_interval_residues": None,
             "half_distance_undefined_reason": "the profile was not fitted",
         }
     design = np.vstack([np.ones_like(separation), separation]).T
@@ -456,6 +465,19 @@ def decay_fit(profile: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     variance = residual / max(len(points) - 2, 1)
     standard_error = float(np.sqrt(variance * np.linalg.inv(design.T @ design)[1, 1]))
     resolved = bool(slope < 0 and abs(slope) > 2.0 * standard_error)
+    # The half-distance interval is the slope's own interval carried through
+    # ln2 / -b, which is monotone in -b, so the endpoints map directly and no
+    # delta-method linearisation is involved. A steeper slope is a shorter
+    # half-distance, which is why the endpoints swap. The resolution gate above
+    # already requires -b to exceed twice its standard error, so the upper
+    # endpoint's denominator is positive by construction.
+    decay = -slope
+    interval_residues = None
+    if resolved:
+        interval_residues = [
+            float(np.log(2) / (decay + HALF_DISTANCE_Z * standard_error)),
+            float(np.log(2) / (decay - HALF_DISTANCE_Z * standard_error)),
+        ]
     return {
         "fitted": True,
         "separations_used": int(len(points)),
@@ -463,7 +485,15 @@ def decay_fit(profile: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "slope_per_residue": slope,
         "slope_standard_error": standard_error,
         "r_squared": float(1 - residual / total),
-        "half_distance_residues": float(np.log(2) / -slope) if resolved else None,
+        "half_distance_residues": float(np.log(2) / decay) if resolved else None,
+        "half_distance_interval_residues": interval_residues,
+        "half_distance_interval_basis": (
+            "the least-squares slope's own standard error at 95 percent, carried through "
+            f"ln2 / -b; z = {HALF_DISTANCE_Z}. It conditions on the log-linear form and "
+            "treats the per-separation means as independent observations, which they are "
+            "not entirely: they share mutations. It is a fit interval on the summary and "
+            "not a resampling interval over proteins"
+        ),
         "half_distance_undefined_reason": (
             None if resolved
             else "the fitted slope is not negative by more than twice its standard error"
