@@ -1093,11 +1093,22 @@ def length_bins(lengths: Sequence[int], *, n_bins: int = LENGTH_MATCH_BINS) -> d
     }
 
 
+#: How many independent matched draws a *full-sample* comparator averages over.
+#: One draw of twelve length-matched rows is a noisy estimate of the comparator's
+#: expectation -- noisier, at the tightest budget, than the effect being measured
+#: -- so every point estimate reported outside a bootstrap loop averages over
+#: this many draws. Inside a bootstrap iteration one draw is used, which leaves
+#: the interval conservative rather than understating it.
+MATCHED_DRAW_REPEATS = 64
+
+
 def length_matched_mean(
     values: np.ndarray,
     bin_of_row: np.ndarray,
     chosen: np.ndarray,
     generator: np.random.Generator,
+    *,
+    repeats: int = 1,
 ) -> float:
     """Mean evaluator value of a random set matching ``chosen``'s length bins.
 
@@ -1108,17 +1119,26 @@ def length_matched_mean(
     The draw is with replacement: inside a bootstrap resample a bin can hold
     fewer rows than the selected set took from it, and refusing there would
     condition the interval on the draws that happened to be easy.
+
+    ``repeats`` averages over that many independent matched draws, which is what
+    a reported point estimate needs: a single draw of a dozen rows carries more
+    noise than the effects this module measures.
     """
 
-    matched: list[int] = []
-    for bin_id, needed in Counter(bin_of_row[chosen].tolist()).items():
-        available = np.flatnonzero(bin_of_row == bin_id)
-        if available.size == 0:
+    if repeats < 1:
+        raise ValueError("a matched comparator needs at least one draw")
+    means: list[float] = []
+    for _ in range(repeats):
+        matched: list[int] = []
+        for bin_id, needed in Counter(bin_of_row[chosen].tolist()).items():
+            available = np.flatnonzero(bin_of_row == bin_id)
+            if available.size == 0:
+                return float("nan")
+            matched.extend(generator.choice(available, size=needed, replace=True).tolist())
+        if not matched:
             return float("nan")
-        matched.extend(generator.choice(available, size=needed, replace=True).tolist())
-    if not matched:
-        return float("nan")
-    return float(values[np.asarray(matched)].mean())
+        means.append(float(values[np.asarray(matched)].mean()))
+    return float(np.mean(means))
 
 
 def forced_match_share(bin_of_row: np.ndarray, chosen: np.ndarray) -> float:
@@ -1253,13 +1273,22 @@ def length_conditional_contrast(
         derived_statistic=_left_selector_score,
     )
     low, high = bootstrap["derived_ci95"]
-    point = bootstrap["derived_score"]
+    # The reported point averages the matched comparator over many draws. The
+    # bootstrap's own full-sample score uses one draw, like every iteration
+    # inside it, and is kept beside the stable point rather than dropped: the
+    # difference between the two is the comparator noise this averaging removes.
+    stable_matched = length_matched_mean(
+        values, bin_of_row, chosen_full, generator, repeats=MATCHED_DRAW_REPEATS
+    )
+    point = float(values[chosen_full].mean() - stable_matched)
     outside = bool(point < low or point > high)
     record.update(
         resolved=True,
         n_groups=bootstrap["n_groups"],
         n_finite_draws=bootstrap["n_finite_draws"],
         gain_over_length_matched_random=point,
+        single_matched_draw_point=bootstrap["derived_score"],
+        matched_draw_repeats=int(MATCHED_DRAW_REPEATS),
         difference_ci95=[low, high],
         excludes_zero=bool(low > 0.0 or high < 0.0),
         beats_length=bool(low > 0.0),
@@ -1272,6 +1301,12 @@ def length_conditional_contrast(
             "interval containing zero means that at this budget the gain is "
             "recoverable from length alone. The verdict is read from the interval, "
             "which is the bootstrap distribution, not from the point"
+        ),
+        matched_draw_note=(
+            "the comparator is a random draw, so a single one of it at a tight budget "
+            "is noisier than the effect being measured. The reported point averages "
+            f"{MATCHED_DRAW_REPEATS} independent matched draws; each bootstrap "
+            "iteration uses one, which leaves the interval conservative"
         ),
         random_selector_control_note=(
             "the same quantity computed for an unrestricted random key. It is the "
@@ -1686,7 +1721,9 @@ def _length_matched_point(
             ),
         }
     oracle_yield = float(values[oracle_chosen].mean())
-    oracle_matched = length_matched_mean(values, bin_of_row, oracle_chosen, generator)
+    oracle_matched = length_matched_mean(
+        values, bin_of_row, oracle_chosen, generator, repeats=MATCHED_DRAW_REPEATS
+    )
     ceiling = oracle_yield - oracle_matched
     block: dict[str, Any] = {
         "resolved": True,
@@ -1694,6 +1731,7 @@ def _length_matched_point(
         "oracle_forced_match_share": oracle_forced,
         "matched_ceiling": ceiling,
         "matched_ceiling_ci95": _interval(ceiling_draws) if ceiling_draws else None,
+        "matched_draw_repeats": int(MATCHED_DRAW_REPEATS),
         "selectors": {},
         "interpretation": (
             "the oracle's gain over a draw of the same size and length composition is "
@@ -1715,7 +1753,9 @@ def _length_matched_point(
             )
             block["selectors"][name] = entry
             continue
-        matched = length_matched_mean(values, bin_of_row, chosen, generator)
+        matched = length_matched_mean(
+            values, bin_of_row, chosen, generator, repeats=MATCHED_DRAW_REPEATS
+        )
         gain = float(values[chosen].mean()) - matched
         entry["resolved"] = True
         entry["matched_gain"] = gain

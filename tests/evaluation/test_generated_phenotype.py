@@ -618,6 +618,10 @@ def test_a_noisy_length_proxy_loses_its_whole_gain_to_a_length_matched_draw():
     low, high = conditional["difference_ci95"]
     assert low <= 0.0 <= high
     assert abs(conditional["gain_over_length_matched_random"]) < 0.1
+    # The reported point averages the comparator over many draws, because one
+    # matched draw at a tight budget is noisier than the effects measured here.
+    assert conditional["matched_draw_repeats"] == gp.MATCHED_DRAW_REPEATS
+    assert "single_matched_draw_point" in conditional
 
 
 def test_information_beyond_length_does_survive_the_matched_draw():
@@ -937,6 +941,32 @@ def test_a_length_only_ceiling_is_reported_as_one():
     # and the block refuses a ceiling rather than reporting a zero one.
     assert matched["resolved"] is False
     assert matched["oracle_forced_match_share"] > gp.MAX_FORCED_MATCH_SHARE
+
+
+def test_the_matched_comparator_point_is_averaged_not_one_draw():
+    """One matched draw of a dozen rows is noisier than the effects measured here.
+
+    Two independent single draws of the comparator disagree by more than the
+    averaged estimate moves, which is why the reported point averages.
+    """
+
+    rng = np.random.default_rng(53)
+    values = rng.normal(size=120)
+    bins = np.repeat(np.arange(8), 15)
+    chosen = np.arange(12)
+    singles = [
+        gp.length_matched_mean(values, bins, chosen, np.random.default_rng(seed))
+        for seed in (1, 2, 3, 4)
+    ]
+    averaged = [
+        gp.length_matched_mean(
+            values, bins, chosen, np.random.default_rng(seed), repeats=gp.MATCHED_DRAW_REPEATS
+        )
+        for seed in (1, 2, 3, 4)
+    ]
+    assert np.ptp(averaged) < np.ptp(singles)
+    with pytest.raises(ValueError):
+        gp.length_matched_mean(values, bins, chosen, np.random.default_rng(1), repeats=0)
 
 
 def test_a_real_matched_ceiling_separates_length_from_protein_quality():
