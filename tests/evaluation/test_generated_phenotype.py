@@ -523,8 +523,18 @@ def test_the_length_control_and_sub_pool_declarations_are_present():
         SUB_POOL_EVALUATORS,
     )
 
-    assert set(SELECTOR_DECLARATION) == {"random", "likelihood", "composition", "length", "combined"}
+    assert set(SELECTOR_DECLARATION) == {
+        "random",
+        "likelihood",
+        "likelihood_per_residue",
+        "composition",
+        "length",
+        "combined",
+    }
     assert "length" in SELECTOR_DECLARATION["length"]
+    # The convention check has to say which way round the declared selector runs,
+    # because an inverted likelihood is a silent anti-selector.
+    assert "lower is taken first" in SELECTOR_DECLARATION["likelihood"]
     assert set(EVALUATORS) <= set(EVALUATOR_QUANTITY)
     # Predicted free energy is a sub-pool evaluator and must say so, because its
     # licensed band would otherwise select the pool silently.
@@ -753,3 +763,255 @@ def test_the_novelty_stage_declares_the_masking_rationale_where_it_reports():
     assert "--masking 0" in MASKING_RATIONALE
     assert "82.9" in MASKING_RATIONALE
     assert "flattering" in MASKING_RATIONALE
+
+
+def test_concentrating_onto_near_duplicates_is_flagged_even_at_a_flat_mean():
+    """The corpus-identity collapse has two shapes and both have to be caught.
+
+    A set can drift toward the corpus by picking up remote homologues, which the
+    mean identity catches, or by concentrating onto the handful of verbatim
+    corpus members while most of its mass stays novel, which the mean does not.
+    """
+
+    assert gp.COLLAPSE_AXES["fraction_near_duplicate_of_corpus"] == "above"
+    rng = np.random.default_rng(23)
+    sequences = ["".join(rng.choice(list(gp.AA20), size=60)) for _ in range(200)]
+    families = [[f"PF{index % 40}"] for index in range(200)]
+    # A pool that is almost all novel with a few verbatim corpus members.
+    identities = [99.0] * 10 + [8.0] * 190
+    reference = gp.diversity_reference(
+        sequences, families, fraction=0.05, seed=3, n_keys=16, corpus_identity=identities
+    )
+    assert reference["fraction_near_duplicate_of_corpus"] is not None
+
+    # Ten selected rows, all of them the near-duplicates. The mean identity of a
+    # size-matched random draw is dominated by the novel majority, so this is the
+    # case the near-duplicate share exists to catch.
+    concentrated = gp.selected_set_profile(
+        sequences[:10], families[:10], corpus_identity=identities[:10]
+    )
+    verdict = gp.collapse_check(concentrated, reference, yield_difference=0.3)
+    assert "fraction_near_duplicate_of_corpus" in verdict["axes_flagged"]
+    assert verdict["axes_flagged"]["fraction_near_duplicate_of_corpus"]["moved"] == "above"
+    assert verdict["gain_is_not_a_gain"] is True
+
+    # A draw that is not enriched in near-duplicates is left standing on that axis.
+    novel = gp.selected_set_profile(
+        sequences[10:20], families[10:20], corpus_identity=identities[10:20]
+    )
+    standing = gp.collapse_check(novel, reference, yield_difference=0.3)
+    assert "fraction_near_duplicate_of_corpus" not in standing["axes_flagged"]
+
+
+# ------------------------------------------------------- the gap decomposition
+
+
+def decomposition_pool(n=240, noise=0.0, seed=19):
+    """A pool with a known evaluator, a known-skill selector and length bins."""
+
+    rng = np.random.default_rng(seed)
+    quality = rng.normal(size=n)
+    lengths = rng.integers(60, 320, size=n).tolist()
+    return {
+        "quality": quality,
+        "lengths": lengths,
+        "units": [f"u{index}" for index in range(n)],
+        "perfect": -quality,
+        "noisy": -quality + rng.normal(scale=noise, size=n) if noise else -quality,
+        "blind": rng.normal(size=n),
+    }
+
+
+def test_a_perfect_selector_reaches_the_whole_attainable_gap_and_a_blind_one_none():
+    pool = decomposition_pool()
+    record = gp.gap_decomposition(
+        pool["quality"],
+        {"perfect": pool["perfect"], "blind": pool["blind"]},
+        pool["units"],
+        fractions=(0.05, 0.25),
+        seed=5,
+        n_bootstrap=400,
+    )
+    assert record["resolved"] is True
+    assert record["n_pool"] == 240 and record["n_units"] == 240
+    for point in record["points"]:
+        assert point["attainable_gap"] > 0.0
+        assert point["pool_holds_selectable_quality"] is True
+        # The oracle is a ceiling: no selector may exceed it.
+        for block in point["selectors"].values():
+            assert block["selected_yield"] <= point["oracle_yield"] + 1e-9
+            assert block["shortfall_vs_oracle"] >= -1e-9
+        perfect = point["selectors"]["perfect"]["share_of_attainable_gap"]
+        blind = point["selectors"]["blind"]["share_of_attainable_gap"]
+        assert perfect["value"] == pytest.approx(1.0)
+        assert perfect["limiting_factor"]["code"] == "pool_content"
+        assert blind["value"] < 0.5
+        assert blind["limiting_factor"]["code"] == "selector_skill"
+
+
+def test_a_pool_holding_nothing_selectable_is_not_read_as_a_selector_failure():
+    """A constant evaluator has no attainable gap, so no share is a quantity."""
+
+    record = gp.gap_decomposition(
+        np.ones(64),
+        {"anything": np.arange(64, dtype=np.float64)},
+        [f"u{index}" for index in range(64)],
+        fractions=(0.1,),
+        seed=5,
+        n_bootstrap=200,
+    )
+    point = record["points"][0]
+    assert point["attainable_gap"] == pytest.approx(0.0)
+    assert point["pool_holds_selectable_quality"] is False
+    share = point["selectors"]["anything"]["share_of_attainable_gap"]
+    assert share["resolved"] is False and share["value"] is None
+    assert "for a share to be a quantity" in share["reason"]
+
+
+def test_full_selection_is_an_identity_point_with_nothing_to_decompose():
+    pool = decomposition_pool(n=64)
+    record = gp.gap_decomposition(
+        pool["quality"],
+        {"perfect": pool["perfect"]},
+        pool["units"],
+        fractions=(1.0,),
+        seed=5,
+        n_bootstrap=200,
+        lengths=pool["lengths"],
+    )
+    point = record["points"][0]
+    assert point["identity_point"] is True
+    assert point["n_selected"] == 64
+    assert point["oracle_yield"] == pytest.approx(point["random_yield"])
+    assert point["selectors"]["perfect"]["share_of_attainable_gap"]["resolved"] is False
+    assert point["length_matched"]["resolved"] is False
+    assert "whole pool" in point["length_matched"]["reason"]
+
+
+def test_an_unresolved_share_reports_the_pool_size_that_would_resolve_it():
+    """The answer the user asked for when the pool cannot separate the two causes."""
+
+    rng = np.random.default_rng(31)
+    quality = rng.normal(size=40)
+    weak = -quality + rng.normal(scale=1.5, size=40)
+    record = gp.gap_decomposition(
+        quality,
+        {"weak": weak},
+        [f"u{index}" for index in range(40)],
+        fractions=(0.25,),
+        seed=5,
+        n_bootstrap=600,
+    )
+    share = record["points"][0]["selectors"]["weak"]["share_of_attainable_gap"]
+    assert share["resolved"] is True
+    low, high = share["ci95"]
+    assert low < high
+    assert share["half_width"] == pytest.approx((high - low) / 2)
+    assert share["reaches_target_half_width"] is False
+    # Wider than the target, so more units are needed than the pool has, and the
+    # scaling that produced the number is declared rather than implied.
+    assert share["units_for_target_half_width"] > record["n_units"]
+    assert "square root" in share["units_scaling_assumption"]
+
+
+def test_a_length_only_ceiling_is_reported_as_one():
+    """A pool whose quality is length must have no matched ceiling left over."""
+
+    rng = np.random.default_rng(41)
+    lengths = rng.integers(60, 320, size=240)
+    quality = lengths.astype(np.float64) / 100.0
+    record = gp.gap_decomposition(
+        quality,
+        {"by_length": -lengths.astype(np.float64), "blind": rng.normal(size=240)},
+        [f"u{index}" for index in range(240)],
+        fractions=(0.25,),
+        seed=5,
+        n_bootstrap=400,
+        lengths=lengths.tolist(),
+    )
+    point = record["points"][0]
+    # Unmatched, the pool looks full of selectable quality.
+    assert point["attainable_gap"] > 0.0
+    matched = point["length_matched"]
+    # The oracle here *is* the length selector, so length matching has no room
+    # and the block refuses a ceiling rather than reporting a zero one.
+    assert matched["resolved"] is False
+    assert matched["oracle_forced_match_share"] > gp.MAX_FORCED_MATCH_SHARE
+
+
+def test_a_real_matched_ceiling_separates_length_from_protein_quality():
+    rng = np.random.default_rng(47)
+    lengths = rng.integers(60, 320, size=240)
+    # Quality rises with length *and* carries a length-independent component.
+    beyond_length = rng.normal(size=240)
+    quality = lengths.astype(np.float64) / 200.0 + beyond_length
+    record = gp.gap_decomposition(
+        quality,
+        {
+            "beyond_length": -beyond_length,
+            "by_length": -lengths.astype(np.float64),
+        },
+        [f"u{index}" for index in range(240)],
+        fractions=(0.1,),
+        seed=5,
+        n_bootstrap=400,
+        lengths=lengths.tolist(),
+    )
+    matched = record["points"][0]["length_matched"]
+    assert matched["resolved"] is True
+    assert matched["matched_ceiling"] > 0.0
+    low, high = matched["matched_ceiling_ci95"]
+    assert low <= high
+    beyond = matched["selectors"]["beyond_length"]
+    assert beyond["resolved"] is True
+    assert beyond["matched_gain"] > 0.0
+    assert beyond["share_of_matched_ceiling"]["value"] > 0.0
+    # The pure length selector has no matched comparator at all, by construction.
+    assert matched["selectors"]["by_length"]["resolved"] is False
+    assert matched["selectors"]["by_length"]["forced_match_share"] > gp.MAX_FORCED_MATCH_SHARE
+
+
+def test_the_decomposition_refuses_misaligned_non_finite_or_sub_floor_input():
+    pool = decomposition_pool(n=64)
+    with pytest.raises(ValueError):
+        gp.gap_decomposition(
+            pool["quality"], {"short": np.ones(3)}, pool["units"], seed=1, n_bootstrap=100
+        )
+    broken = pool["quality"].copy()
+    broken[0] = np.nan
+    with pytest.raises(ValueError):
+        gp.gap_decomposition(
+            broken, {"perfect": pool["perfect"]}, pool["units"], seed=1, n_bootstrap=100
+        )
+    with pytest.raises(ValueError):
+        gp.gap_decomposition(
+            pool["quality"], {}, pool["units"], seed=1, n_bootstrap=100
+        )
+    # Below the package's unit floor nothing is estimated and the reason is named.
+    tiny = gp.gap_decomposition(
+        pool["quality"],
+        {"perfect": pool["perfect"]},
+        ["only_one_unit"] * 64,
+        seed=1,
+        n_bootstrap=100,
+    )
+    assert tiny["resolved"] is False and tiny["points"] == []
+    assert tiny["unit_floor"]["degenerate"] is True
+
+
+def test_the_oracle_key_is_declared_as_unusable_and_the_question_is_stated():
+    from scripts.capability.evaluation.aggregate_generated_evaluation import (
+        GAP_DECOMPOSITION_QUESTION,
+    )
+
+    assert "not a method" in GAP_DECOMPOSITION_QUESTION["what_the_oracle_is_not"]
+    assert "too few promising candidates" in GAP_DECOMPOSITION_QUESTION["question"]
+    assert "length ceiling" in GAP_DECOMPOSITION_QUESTION["length"]
+    assert "independence units" in GAP_DECOMPOSITION_QUESTION["when_it_cannot_be_answered"]
+    assert gp.GAP_SHARE_SPLIT == 0.5
+    # The oracle key is the evaluator with the module's one orientation applied.
+    assert np.allclose(gp.oracle_key([1.0, 3.0, 2.0]), [-1.0, -3.0, -2.0])
+    # Oriented the one way the module orients everything: the lowest key first,
+    # which on a negated evaluator is the best member.
+    assert gp.selection_yield([1.0, 3.0, 2.0], gp.oracle_key([1.0, 3.0, 2.0]), fraction=0.2) == 3.0
+    assert gp.selection_yield([1.0, 3.0, 2.0], gp.oracle_key([1.0, 3.0, 2.0]), fraction=0.5) == 2.5

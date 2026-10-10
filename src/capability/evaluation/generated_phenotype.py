@@ -69,6 +69,20 @@ Every curve is reported as a function of selection fraction at equal selected-se
 size, because a method that wins at one operating point is not a method, and every
 curve carries the repertoire of the selected set beside its yield, because a yield
 bought by collapsing onto a narrow set of families is not a gain.
+
+Too few good candidates, or a selector that cannot find them?
+=============================================================
+
+A selector that barely beats chance admits two readings, and a yield curve alone
+cannot tell them apart: generation may have produced too few promising candidates
+for any ranking to find, or the promising ones may be there and the ranking may
+miss them. :func:`gap_decomposition` separates the two on the frozen pool by
+adding the ceiling an unusable selector would reach -- the mean over the best *k*
+members by the evaluator itself. The oracle minus random is how much selectable
+quality the pool holds; the oracle minus the selector is how much of it the
+selector fails to reach; their ratio localises the failure, and where the ratio's
+interval spans the split the decomposition says so and reports the number of
+independence units that would resolve it instead of picking a side.
 """
 
 from __future__ import annotations
@@ -80,7 +94,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from ..core.statistics import bootstrap_unit_floor, mean_interval, paired_group_bootstrap
+from ..core.statistics import (
+    MINIMUM_FINITE_DRAW_FRACTION,
+    bootstrap_unit_floor,
+    mean_interval,
+    paired_group_bootstrap,
+)
 
 SCHEMA_VERSION = "d1_generated_phenotype_v1"
 
@@ -489,6 +508,15 @@ HOMOPOLYMER_RUN_THRESHOLD = 8
 #: all-pairs distance over the selected set.
 DIVERSITY_REFERENCE_KEYS = 16
 
+#: Identity over query, in percent, at or above which a generated sequence counts
+#: as a near-duplicate of a corpus entry. It is the upper stratum edge the
+#: novelty search already declares, named here so that the selected-set profile
+#: and the collapse check read the same threshold as the census they are compared
+#: against. A selected set richer in near-duplicates than a size-matched random
+#: draw is retrieving natural sequences, which is the sharpest way an apparent
+#: selection gain can fail to be design.
+NEAR_DUPLICATE_IDENTITY = 95.0
+
 
 def longest_homopolymer_run(sequence: str) -> int:
     """The longest run of one repeated residue."""
@@ -560,6 +588,8 @@ def selected_set_profile(
     )
     if corpus_identity is None:
         profile["nearest_corpus_identity"] = None
+        profile["max_nearest_corpus_identity"] = None
+        profile["fraction_near_duplicate_of_corpus"] = None
         profile["nearest_corpus_identity_note"] = "no homology search was supplied"
     else:
         identity = np.asarray(corpus_identity, dtype=np.float64)
@@ -567,7 +597,10 @@ def selected_set_profile(
             raise ValueError("the corpus identities must align with the sequences")
         profile["nearest_corpus_identity"] = float(identity.mean())
         profile["max_nearest_corpus_identity"] = float(identity.max())
-        profile["fraction_near_duplicate_of_corpus"] = float(np.mean(identity >= 95.0))
+        profile["fraction_near_duplicate_of_corpus"] = float(
+            np.mean(identity >= NEAR_DUPLICATE_IDENTITY)
+        )
+        profile["near_duplicate_identity_threshold"] = float(NEAR_DUPLICATE_IDENTITY)
     return profile
 
 
@@ -613,6 +646,7 @@ def diversity_reference(
         "mean_length",
         "duplicate_fraction",
         "nearest_corpus_identity",
+        "fraction_near_duplicate_of_corpus",
     ):
         values = [profile[field] for profile in profiles if profile[field] is not None]
         summary[field] = (
@@ -632,8 +666,13 @@ COLLAPSE_AXES: dict[str, str] = {
     "fraction_with_homopolymer_run": "above",
     # A selected set more similar to the corpus than a size-matched random draw is
     # drifting toward retrieval of natural sequences, which is the other way an
-    # apparent gain can fail to be a gain.
+    # apparent gain can fail to be a gain. Mean identity and the near-duplicate
+    # share are both read, because they fail differently: a set can rise in mean
+    # identity by concentrating on remote homologues without acquiring a single
+    # near-duplicate, and it can concentrate onto the handful of verbatim corpus
+    # members while its mean identity barely moves.
     "nearest_corpus_identity": "above",
+    "fraction_near_duplicate_of_corpus": "above",
 }
 
 
@@ -1054,6 +1093,56 @@ def length_bins(lengths: Sequence[int], *, n_bins: int = LENGTH_MATCH_BINS) -> d
     }
 
 
+def length_matched_mean(
+    values: np.ndarray,
+    bin_of_row: np.ndarray,
+    chosen: np.ndarray,
+    generator: np.random.Generator,
+) -> float:
+    """Mean evaluator value of a random set matching ``chosen``'s length bins.
+
+    The comparator every length control in this module is built on, in one place
+    so that the matched draw is the same object whether it is read as a contrast
+    against a selector or as the floor under an oracle ceiling.
+
+    The draw is with replacement: inside a bootstrap resample a bin can hold
+    fewer rows than the selected set took from it, and refusing there would
+    condition the interval on the draws that happened to be easy.
+    """
+
+    matched: list[int] = []
+    for bin_id, needed in Counter(bin_of_row[chosen].tolist()).items():
+        available = np.flatnonzero(bin_of_row == bin_id)
+        if available.size == 0:
+            return float("nan")
+        matched.extend(generator.choice(available, size=needed, replace=True).tolist())
+    if not matched:
+        return float("nan")
+    return float(values[np.asarray(matched)].mean())
+
+
+def forced_match_share(bin_of_row: np.ndarray, chosen: np.ndarray) -> float:
+    """Share of ``chosen`` drawn from length bins it leaves too thin to match.
+
+    A bin is under-matched when it holds fewer unselected rows than the selection
+    took from it, so the matched comparator has to redraw the selected rows
+    themselves and the contrast is pushed toward zero by construction. The share
+    is reported, and compared against :data:`MAX_FORCED_MATCH_SHARE`, so a null
+    result that is an artefact of the matching can be told from a real one.
+    """
+
+    if chosen.size < 1:
+        raise ValueError("an empty selection has no forced-match share")
+    per_bin_selected = Counter(bin_of_row[chosen].tolist())
+    per_bin_available = Counter(bin_of_row.tolist())
+    forced = sum(
+        count
+        for bin_id, count in per_bin_selected.items()
+        if per_bin_available[bin_id] - count < count
+    )
+    return forced / chosen.size
+
+
 def length_conditional_contrast(
     evaluator: Sequence[float],
     score: Sequence[float],
@@ -1111,14 +1200,7 @@ def length_conditional_contrast(
     # leaves nothing else to match against, so those rows contribute a forced
     # zero and a contrast built mostly from them is not a measurement.
     chosen_full = np.argsort(keys, kind="stable")[:take]
-    per_bin_selected = Counter(bin_of_row[chosen_full].tolist())
-    per_bin_available = Counter(bin_of_row.tolist())
-    forced = sum(
-        count
-        for bin_id, count in per_bin_selected.items()
-        if per_bin_available[bin_id] - count < count
-    )
-    record["forced_match_share"] = forced / take
+    record["forced_match_share"] = forced_match_share(bin_of_row, chosen_full)
     record["max_forced_match_share"] = float(MAX_FORCED_MATCH_SHARE)
 
     if floor["degenerate"] or take == values.size or record["forced_match_share"] > MAX_FORCED_MATCH_SHARE:
@@ -1155,18 +1237,10 @@ def length_conditional_contrast(
         size = selector.size
         wanted = selection_count(size, fraction)
         chosen = np.argsort(selector, kind="stable")[:wanted]
-        matched: list[int] = []
-        for bin_id, needed in Counter(local_bins[chosen].tolist()).items():
-            available = np.flatnonzero(local_bins == bin_id)
-            if available.size == 0:
-                return float("nan")
-            # With replacement: inside a resample a bin can hold fewer rows than
-            # the selected set drew from it, and refusing there would condition
-            # the interval on the draws that happened to be easy.
-            matched.extend(generator.choice(available, size=needed, replace=True).tolist())
-        if not matched:
+        matched = length_matched_mean(local_values, local_bins, chosen, generator)
+        if not np.isfinite(matched):
             return float("nan")
-        return float(local_values[chosen].mean() - local_values[np.asarray(matched)].mean())
+        return float(local_values[chosen].mean() - matched)
 
     bootstrap = paired_group_bootstrap(
         np.arange(values.size, dtype=np.float64),
@@ -1219,6 +1293,441 @@ def length_conditional_contrast(
 
 def _left_selector_score(left: float, _right: float) -> float:
     return left
+
+
+# ------------------------------------------------- too few, or not found?
+
+#: Half-width the share interval must reach before a decomposition is read as
+#: separating pool content from selector skill at an operating point. Ten points
+#: of the attainable gap: wide enough to be reachable at this pool size on the
+#: continuous evaluators, narrow enough that a verdict drawn from it is not
+#: compatible with both answers.
+GAP_SHARE_TARGET_HALF_WIDTH = 0.10
+
+#: The share of the attainable gap above which the pool, and below which the
+#: selector, is named as the limiting factor. One half, declared rather than
+#: chosen after seeing the numbers: a selector reaching more than half of what
+#: its pool holds is limited mainly by what is there to find, and one reaching
+#: less than half is limited mainly by its own ranking.
+GAP_SHARE_SPLIT = 0.5
+
+#: An attainable gap at or below this is treated as absent rather than divided
+#: by. It happens for real: an evaluator that is constant on the pool, or a
+#: budget that takes the whole pool, leaves nothing to decompose.
+MINIMUM_ATTAINABLE_GAP = 1e-9
+
+
+def oracle_key(evaluator: Sequence[float]) -> np.ndarray:
+    """The selector that *is* the evaluator: the pool's own ceiling at any budget.
+
+    Deliberately circular, and useful for exactly that reason. It cannot pick
+    candidates, because it needs the evaluation it would be used to predict, but
+    the yield it reaches is the best any selector on this frozen pool could
+    reach, so it says what the pool *contains*. The sign flips because every
+    selector in this module is oriented so that the lowest scores are taken.
+    """
+
+    values = np.asarray(evaluator, dtype=np.float64)
+    if values.ndim != 1 or values.size < 1:
+        raise ValueError("an oracle key needs a non-empty one-dimensional evaluator")
+    return -values
+
+
+def _interval(draws: Sequence[float]) -> list[float]:
+    return [float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))]
+
+
+def _limiting_factor(low: float, high: float) -> dict[str, str]:
+    """Which of the two explanations the share interval is compatible with."""
+
+    if low > GAP_SHARE_SPLIT:
+        return {
+            "code": "pool_content",
+            "statement": (
+                "the selector reaches more than half of the quality its pool holds, so "
+                "what limits the yield at this budget is what generation produced, not "
+                "the ranking"
+            ),
+        }
+    if high < GAP_SHARE_SPLIT:
+        return {
+            "code": "selector_skill",
+            "statement": (
+                "the pool holds quality the selector reaches less than half of, so what "
+                "limits the yield at this budget is the ranking, not what generation "
+                "produced"
+            ),
+        }
+    return {
+        "code": "not_separable_at_this_pool_size",
+        "statement": (
+            "the share interval spans the half-way split, so pool content and selector "
+            "skill are not separated at this budget on this pool. The size that would "
+            "separate them is reported beside it"
+        ),
+    }
+
+
+def gap_decomposition(
+    evaluator: Sequence[float],
+    selectors: Mapping[str, Sequence[float]],
+    groups: Sequence[Any],
+    *,
+    fractions: Sequence[float] = SELECTION_FRACTIONS,
+    seed: int,
+    n_bootstrap: int = 10000,
+    lengths: Sequence[int] | None = None,
+    n_bins: int = LENGTH_MATCH_BINS,
+    target_half_width: float = GAP_SHARE_TARGET_HALF_WIDTH,
+) -> dict[str, Any]:
+    """Split a selector's shortfall into what the pool lacks and what it misses.
+
+    The question is which of two explanations accounts for a selector that barely
+    beats chance: the pool holds too few good candidates, or the selector cannot
+    find the good ones that are in it. At each budget *k* the decomposition reads
+
+    * the **oracle** yield -- the mean over the best *k* members by the evaluator
+      itself, which is what the pool contains;
+    * the **selector** yield at the same *k*;
+    * the **random** yield, taken as the pool mean, which is random selection's
+      expectation at every budget.
+
+    ``attainable_gap`` is oracle minus random: how much selectable quality is
+    there at all. ``achieved_gap`` is selector minus random. Their ratio, the
+    ``share_of_attainable_gap``, localises the failure: near one the pool is the
+    limit, near zero the selector is, and an interval spanning the split means
+    the pool is too small to tell -- in which case the number of independence
+    units that would tell is reported.
+
+    With ``lengths`` the whole decomposition is repeated against a quantile-binned
+    length-matched draw, so the ceiling is not merely a length ceiling. Both the
+    matched ceiling and the matched achieved gain come from the *same* bootstrap
+    draws as the unmatched ones, which is what makes their ratio an interval
+    rather than a quotient of two separately estimated numbers.
+
+    The random reference is the pool mean rather than a realised random key,
+    because random selection's expectation at any budget is exactly the pool mean
+    and injecting one key's sampling noise into the denominator would widen every
+    share interval for no gain in honesty. The spread of finite random draws is
+    reported separately by :func:`random_baseline`.
+    """
+
+    values = np.asarray(evaluator, dtype=np.float64)
+    if values.ndim != 1 or values.size < 1:
+        raise ValueError("a gap decomposition needs a non-empty one-dimensional evaluator")
+    if not np.isfinite(values).all():
+        raise ValueError("a gap decomposition was given a non-finite evaluator value")
+    if not selectors:
+        raise ValueError("a gap decomposition needs at least one selector")
+    keys: dict[str, np.ndarray] = {}
+    for name, score in sorted(selectors.items()):
+        array = np.asarray(score, dtype=np.float64)
+        if array.shape != values.shape:
+            raise ValueError(f"selector {name!r} does not align with the evaluator")
+        if not np.isfinite(array).all():
+            raise ValueError(f"selector {name!r} carries a non-finite score")
+        keys[name] = array
+    unit_ids = np.asarray([str(group) for group in groups])
+    if unit_ids.shape != values.shape:
+        raise ValueError("the independence units must align with the pool")
+    grid = [float(fraction) for fraction in fractions]
+    if not grid:
+        raise ValueError("a gap decomposition needs at least one selection fraction")
+
+    unique_units = np.unique(unit_ids)
+    floor = bootstrap_unit_floor(int(unique_units.size))
+    pool_mean = float(values.mean())
+    oracle = oracle_key(values)
+    record: dict[str, Any] = {
+        "n_pool": int(values.size),
+        "n_units": int(unique_units.size),
+        "unit_floor": floor,
+        "pool_mean": pool_mean,
+        "random_reference": (
+            "the pool mean, which is random selection's expectation at every budget"
+        ),
+        "oracle": (
+            "the mean over the best k pool members by the evaluator itself. Circular by "
+            "construction and unusable as a selector; it measures what the pool contains"
+        ),
+        "share_split": float(GAP_SHARE_SPLIT),
+        "target_half_width": float(target_half_width),
+        "length_matched": lengths is not None,
+        "n_bootstrap": int(n_bootstrap),
+        "resolved": not floor["degenerate"],
+    }
+    if floor["degenerate"]:
+        record["reason"] = floor["degenerate_reason"]
+        record["points"] = []
+        return record
+
+    binning = None if lengths is None else length_bins(lengths, n_bins=n_bins)
+    bin_of_row = None if binning is None else binning["bin_of_row"]
+    if binning is not None:
+        record["length_bins"] = {
+            key: binning[key] for key in ("edges", "n_bins_realised", "bin_counts")
+        }
+        record["max_forced_match_share"] = float(MAX_FORCED_MATCH_SHARE)
+
+    # One generator for the whole decomposition, so the matched draw is
+    # independent from one bootstrap iteration to the next. Re-seeding inside the
+    # loop would freeze the comparator and leave every interval conditioned on a
+    # single arbitrary matched draw.
+    generator = np.random.default_rng(seed + 104729)
+    index_of_unit = {str(unit): np.flatnonzero(unit_ids == unit) for unit in unique_units}
+
+    attainable: dict[int, list[float]] = {index: [] for index in range(len(grid))}
+    ceiling_matched: dict[int, list[float]] = {index: [] for index in range(len(grid))}
+    achieved: dict[tuple[int, str], list[float]] = {}
+    shortfall: dict[tuple[int, str], list[float]] = {}
+    share: dict[tuple[int, str], list[float]] = {}
+    achieved_matched: dict[tuple[int, str], list[float]] = {}
+    share_matched: dict[tuple[int, str], list[float]] = {}
+    for index in range(len(grid)):
+        for name in keys:
+            for store in (achieved, shortfall, share, achieved_matched, share_matched):
+                store[(index, name)] = []
+
+    rng = np.random.default_rng(seed)
+    for _ in range(n_bootstrap):
+        sampled = rng.choice(unique_units, size=unique_units.size, replace=True)
+        rows = np.concatenate([index_of_unit[str(unit)] for unit in sampled])
+        local = values[rows]
+        local_mean = float(local.mean())
+        local_bins = None if bin_of_row is None else bin_of_row[rows]
+        # The orders do not depend on the budget, so each is built once per draw
+        # and sliced at every fraction.
+        orders = {name: np.argsort(key[rows], kind="stable") for name, key in keys.items()}
+        oracle_order = np.argsort(-local, kind="stable")
+        size = local.size
+        for index, fraction in enumerate(grid):
+            take = selection_count(size, fraction)
+            oracle_chosen = oracle_order[:take]
+            oracle_yield = float(local[oracle_chosen].mean())
+            gap = oracle_yield - local_mean
+            attainable[index].append(gap)
+            matched_ceiling = float("nan")
+            if local_bins is not None and take < size:
+                oracle_matched = length_matched_mean(
+                    local, local_bins, oracle_chosen, generator
+                )
+                if np.isfinite(oracle_matched):
+                    matched_ceiling = oracle_yield - oracle_matched
+                    ceiling_matched[index].append(matched_ceiling)
+            for name, order in orders.items():
+                chosen = order[:take]
+                selected_yield = float(local[chosen].mean())
+                achieved[(index, name)].append(selected_yield - local_mean)
+                shortfall[(index, name)].append(oracle_yield - selected_yield)
+                if gap > MINIMUM_ATTAINABLE_GAP:
+                    share[(index, name)].append((selected_yield - local_mean) / gap)
+                if local_bins is None or not np.isfinite(matched_ceiling):
+                    continue
+                selected_matched = length_matched_mean(local, local_bins, chosen, generator)
+                if not np.isfinite(selected_matched):
+                    continue
+                matched_gain = selected_yield - selected_matched
+                achieved_matched[(index, name)].append(matched_gain)
+                if matched_ceiling > MINIMUM_ATTAINABLE_GAP:
+                    share_matched[(index, name)].append(matched_gain / matched_ceiling)
+
+    minimum_draws = int(np.ceil(MINIMUM_FINITE_DRAW_FRACTION * n_bootstrap))
+    record["minimum_draws_for_an_interval"] = minimum_draws
+
+    def share_block(draws: Sequence[float], point: float | None) -> dict[str, Any]:
+        """A share with its interval, its verdict and the size that would resolve it."""
+
+        if point is None or len(draws) < minimum_draws:
+            return {
+                "value": point,
+                "ci95": None,
+                "resolved": False,
+                "n_draws": len(draws),
+                "reason": (
+                    "the attainable gap is not positive on enough bootstrap draws for a "
+                    "share to be a quantity; the gaps themselves are reported instead"
+                ),
+            }
+        low, high = _interval(draws)
+        half_width = (high - low) / 2.0
+        enough = half_width <= target_half_width
+        units_needed = (
+            int(record["n_units"])
+            if enough
+            else int(math.ceil(record["n_units"] * (half_width / target_half_width) ** 2))
+        )
+        return {
+            "value": point,
+            "ci95": [low, high],
+            "resolved": True,
+            "n_draws": len(draws),
+            "half_width": half_width,
+            "reaches_target_half_width": bool(enough),
+            "limiting_factor": _limiting_factor(low, high),
+            "units_for_target_half_width": units_needed,
+            "units_scaling_assumption": (
+                "the half-width is taken to fall as one over the square root of the "
+                "number of independence units, which is the ordinary bootstrap rate. It "
+                "is an extrapolation from this pool, not a measurement on a larger one"
+            ),
+        }
+
+    points: list[dict[str, Any]] = []
+    for index, fraction in enumerate(grid):
+        take = selection_count(values.size, fraction)
+        oracle_yield = selection_yield(values, oracle, fraction=fraction)
+        gap = oracle_yield - pool_mean
+        low, high = _interval(attainable[index])
+        point: dict[str, Any] = {
+            "fraction": fraction,
+            "n_selected": take,
+            "oracle_yield": oracle_yield,
+            "random_yield": pool_mean,
+            "attainable_gap": gap,
+            "attainable_gap_ci95": [low, high],
+            "pool_holds_selectable_quality": bool(low > 0.0),
+            "identity_point": take == values.size,
+            "selectors": {},
+        }
+        if take == values.size:
+            point["note"] = (
+                "at full selection every method, and the oracle, takes the whole pool. "
+                "The attainable gap is zero by arithmetic and there is nothing to "
+                "decompose; the point anchors the curve"
+            )
+        for name in keys:
+            selected_yield = selection_yield(values, keys[name], fraction=fraction)
+            block: dict[str, Any] = {
+                "selected_yield": selected_yield,
+                "achieved_gap": selected_yield - pool_mean,
+                "achieved_gap_ci95": _interval(achieved[(index, name)]),
+                "shortfall_vs_oracle": oracle_yield - selected_yield,
+                "shortfall_vs_oracle_ci95": _interval(shortfall[(index, name)]),
+                "share_of_attainable_gap": share_block(
+                    share[(index, name)],
+                    None if gap <= MINIMUM_ATTAINABLE_GAP else (selected_yield - pool_mean) / gap,
+                ),
+            }
+            point["selectors"][name] = block
+        if bin_of_row is not None:
+            point["length_matched"] = _length_matched_point(
+                values,
+                keys,
+                oracle,
+                bin_of_row,
+                fraction=fraction,
+                generator=generator,
+                ceiling_draws=ceiling_matched[index],
+                achieved_draws={name: achieved_matched[(index, name)] for name in keys},
+                share_draws={name: share_matched[(index, name)] for name in keys},
+                share_block=share_block,
+            )
+        points.append(point)
+    record["points"] = points
+    record["reading_guide"] = [
+        "attainable_gap answers 'does the pool hold anything selectable at this "
+        "budget'. A gap whose interval contains zero means the question about the "
+        "selector does not arise, because there is nothing to find",
+        "share_of_attainable_gap answers 'pool content or selector skill'. Read its "
+        "interval, not its point: a point near zero with an interval spanning the "
+        "split does not localise the failure",
+        "the oracle is the pool's realised best-k under this evaluator, not an "
+        "estimate of what a larger pool would hold. It is a ceiling on this pool",
+        "the length_matched block repeats the decomposition against a draw of the "
+        "same size and length composition. A ceiling that survives it is a ceiling "
+        "on protein quality; one that does not is a length ceiling",
+        "a share computed where the attainable gap is near zero is a ratio of two "
+        "small numbers and is reported as unresolved rather than as a large share",
+    ]
+    return record
+
+
+def _length_matched_point(
+    values: np.ndarray,
+    keys: Mapping[str, np.ndarray],
+    oracle: np.ndarray,
+    bin_of_row: np.ndarray,
+    *,
+    fraction: float,
+    generator: np.random.Generator,
+    ceiling_draws: Sequence[float],
+    achieved_draws: Mapping[str, Sequence[float]],
+    share_draws: Mapping[str, Sequence[float]],
+    share_block: Any,
+) -> dict[str, Any]:
+    """The same decomposition against a length-matched draw at one budget.
+
+    Separated only to keep :func:`gap_decomposition` readable; it reports the
+    full-sample points beside the intervals its caller accumulated, and refuses a
+    verdict wherever length matching had no room to work.
+    """
+
+    take = selection_count(values.size, fraction)
+    if take == values.size:
+        return {
+            "resolved": False,
+            "reason": (
+                "at full selection every method takes the whole pool, so a "
+                "length-matched comparator has nothing else to draw from"
+            ),
+        }
+    oracle_chosen = np.argsort(oracle, kind="stable")[:take]
+    oracle_forced = forced_match_share(bin_of_row, oracle_chosen)
+    if oracle_forced > MAX_FORCED_MATCH_SHARE:
+        return {
+            "resolved": False,
+            "oracle_forced_match_share": oracle_forced,
+            "reason": (
+                f"{oracle_forced:.0%} of the oracle's selection comes from length bins "
+                "holding fewer unselected rows than it took, above the "
+                f"{MAX_FORCED_MATCH_SHARE:.0%} ceiling. The matched ceiling would be "
+                "driven to zero by construction, so no length-matched decomposition is "
+                "reported at this budget"
+            ),
+        }
+    oracle_yield = float(values[oracle_chosen].mean())
+    oracle_matched = length_matched_mean(values, bin_of_row, oracle_chosen, generator)
+    ceiling = oracle_yield - oracle_matched
+    block: dict[str, Any] = {
+        "resolved": True,
+        "n_selected": take,
+        "oracle_forced_match_share": oracle_forced,
+        "matched_ceiling": ceiling,
+        "matched_ceiling_ci95": _interval(ceiling_draws) if ceiling_draws else None,
+        "selectors": {},
+        "interpretation": (
+            "the oracle's gain over a draw of the same size and length composition is "
+            "the quality the pool holds that length alone does not already deliver. "
+            "Each selector's share of it is how much of that a selector reaches"
+        ),
+    }
+    for name, key in sorted(keys.items()):
+        chosen = np.argsort(key, kind="stable")[:take]
+        forced = forced_match_share(bin_of_row, chosen)
+        entry: dict[str, Any] = {"forced_match_share": forced}
+        if forced > MAX_FORCED_MATCH_SHARE:
+            entry["resolved"] = False
+            entry["reason"] = (
+                f"{forced:.0%} of this selector's selection comes from length bins it "
+                "leaves too thin to match, above the "
+                f"{MAX_FORCED_MATCH_SHARE:.0%} ceiling. A null here would be an artefact "
+                "of the matching"
+            )
+            block["selectors"][name] = entry
+            continue
+        matched = length_matched_mean(values, bin_of_row, chosen, generator)
+        gain = float(values[chosen].mean()) - matched
+        entry["resolved"] = True
+        entry["matched_gain"] = gain
+        entry["matched_gain_ci95"] = (
+            _interval(achieved_draws[name]) if achieved_draws[name] else None
+        )
+        entry["share_of_matched_ceiling"] = share_block(
+            share_draws[name],
+            None if ceiling <= MINIMUM_ATTAINABLE_GAP else gain / ceiling,
+        )
+        block["selectors"][name] = entry
+    return block
 
 
 def declared_independence(selectors: Sequence[str], evaluators: Sequence[str]) -> dict[str, Any]:

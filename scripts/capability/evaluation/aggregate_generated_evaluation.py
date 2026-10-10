@@ -109,7 +109,15 @@ SELECTOR_DECLARATION: dict[str, str] = {
     "random": "a seeded uniform key; the baseline that must be beaten",
     "likelihood": (
         "the generating model's own mean negative log-likelihood per scored token on "
-        "its own product, recomputed under the arm's native rendering"
+        "its own product, recomputed under the arm's native rendering. The declared "
+        "arm; lower is taken first, so the selector prefers the sequences the model "
+        "finds most probable"
+    ),
+    "likelihood_per_residue": (
+        "the same likelihood divided by residues instead of by scored tokens. The "
+        "convention check: under a residue tokenisation it is the identical selector, "
+        "but under a multi-residue BPE it is a different one, because the token count "
+        "itself depends on how familiar the sequence's motifs are to the tokeniser"
     ),
     "composition": (
         "nats per residue of the sequence's composition under a Swiss-Prot unigram "
@@ -121,6 +129,47 @@ SELECTOR_DECLARATION: dict[str, str] = {
         "gain is a length effect"
     ),
     "combined": "the within-pool average rank of likelihood and composition",
+}
+
+#: The second question E17's pool can answer, and what the answer is read from.
+#: Stated at the top of the artefact because a yield curve on its own invites the
+#: wrong reading: a selector that barely beats chance looks like a bad selector
+#: even when there was nothing to select.
+GAP_DECOMPOSITION_QUESTION: dict[str, str] = {
+    "question": (
+        "does generation produce too few promising candidates, or does the model's "
+        "likelihood fail to identify the promising ones that exist?"
+    ),
+    "design": (
+        "at each budget k the gap_decomposition block beside every evaluator reports "
+        "the oracle ceiling (the mean over the best k pool members by the evaluator "
+        "itself), the yield each selector achieves at the same k, and the pool mean, "
+        "which is random selection's expectation at every k"
+    ),
+    "how_to_read_it": (
+        "oracle minus random is how much selectable quality the pool holds; oracle "
+        "minus selector is how much of it the selector does not reach. The share of "
+        "the attainable gap a selector captures localises the failure: near one the "
+        "pool is the limit, near zero the selector is"
+    ),
+    "what_the_oracle_is_not": (
+        "the oracle is not a method. It ranks by the evaluation it would be used to "
+        "predict, so it is unusable for selecting candidates, and it is the realised "
+        "best-k of this frozen pool rather than an estimate of what a larger pool "
+        "would hold"
+    ),
+    "length": (
+        "the decomposition is repeated against a quantile-binned length-matched draw "
+        "for the declared length-conditional evaluators, because a ceiling that a "
+        "length-matched draw reproduces is a length ceiling and says nothing about "
+        "protein quality"
+    ),
+    "when_it_cannot_be_answered": (
+        "where the share interval spans the half-way split the two explanations are "
+        "not separated at this pool size. The block then says so and reports how many "
+        "independence units would reach the declared half-width instead of naming a "
+        "winner"
+    ),
 }
 
 #: Prior measurements from this repository that bound how much a rendering mistake
@@ -470,6 +519,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 [likelihood[row["id"]]["mean_nll_per_token_nats"] for row in members],
                 dtype=np.float64,
             ),
+            # The convention check. Under a residue tokenisation this is the same
+            # vector as the one above; under a multi-residue BPE it is not, because
+            # the token count is itself a function of how familiar the sequence is.
+            "likelihood_per_residue": np.asarray(
+                [likelihood[row["id"]]["mean_nll_per_residue_nats"] for row in members],
+                dtype=np.float64,
+            ),
             "composition": np.asarray(
                 [
                     gp.composition_cross_entropy(row["sequence"], background["background"])
@@ -485,12 +541,45 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         }
         selectors["combined"] = gp.rank_average(selectors["likelihood"], selectors["composition"])
         selectors["random"] = gp.random_key(len(members), seed=args.seed + 991)
+        summed = np.asarray(
+            [likelihood[row["id"]]["nll_sum_nats"] for row in members], dtype=np.float64
+        )
+        scored_tokens = np.asarray(
+            [likelihood[row["id"]]["scored_tokens"] for row in members], dtype=np.float64
+        )
         correlations = {
             "likelihood_vs_composition_spearman": spearman(
                 selectors["likelihood"], selectors["composition"]
             ),
             "likelihood_vs_length_spearman": spearman(selectors["likelihood"], lengths),
             "composition_vs_length_spearman": spearman(selectors["composition"], lengths),
+            "likelihood_per_residue_vs_length_spearman": spearman(
+                selectors["likelihood_per_residue"], lengths
+            ),
+        }
+        likelihood_convention = {
+            "declared_selector": "mean_nll_per_token_nats, lowest score taken first",
+            "orientation": (
+                "a negative log-likelihood, so the lowest scores are the sequences the "
+                "model finds most probable. Taking the highest instead would make an "
+                "anti-selector, which is why the selector-evaluator Spearman is reported "
+                "beside every evaluator: an inverted convention flips its sign"
+            ),
+            "mean_scored_tokens_per_residue": float((scored_tokens / lengths).mean()),
+            "per_token_vs_per_residue_spearman": spearman(
+                selectors["likelihood"], selectors["likelihood_per_residue"]
+            ),
+            "identical_conventions": bool(
+                np.allclose(selectors["likelihood"], selectors["likelihood_per_residue"])
+            ),
+            "summed_vs_length_spearman": spearman(summed, lengths),
+            "why_the_summed_convention_is_not_a_selector": (
+                "a summed negative log-likelihood grows with the number of scored "
+                "tokens, so selecting on it at any budget is close to selecting the "
+                "shortest sequences. Its correlation with length is reported here so "
+                "the reader can see the size of the mistake that was not made; it is "
+                "not run as a selector"
+            ),
         }
         termination = collections.Counter(str(row.get("decoder_stop")) for row in members)
         strata = collections.Counter(str(row.get("stratum")) for row in members)
@@ -604,18 +693,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         )
                     points.append(contrast)
                 curves[name] = points
+            # Too few good candidates, or a selector that cannot find them? The
+            # yield curves above cannot tell those apart, because they carry no
+            # ceiling. One decomposition per evaluator adds it, with every
+            # selector read inside the same bootstrap draws so the shares are
+            # jointly estimated rather than divided after the fact.
+            decomposition = gp.gap_decomposition(
+                values,
+                {name: score[mask] for name, score in selectors.items()},
+                units,
+                seed=args.seed,
+                n_bootstrap=args.draws,
+                lengths=kept_lengths if evaluator in LENGTH_CONDITIONAL_EVALUATORS else None,
+            )
             block.update(
                 status="measured",
                 n_pool=int(mask.sum()),
                 pool_mean=float(values.mean()),
                 pool_profile=gp.selected_set_profile(
-                    [str(row["sequence"]) for row in kept], families
+                    [str(row["sequence"]) for row in kept],
+                    families,
+                    corpus_identity=identities,
                 ),
                 random_baseline=[
                     gp.random_baseline(values, fraction=fraction, seed=args.seed + 991)
                     for fraction in gp.SELECTION_FRACTIONS
                 ],
                 curves=curves,
+                gap_decomposition=decomposition,
                 selector_evaluator_spearman={
                     name: spearman(score[mask], values) for name, score in sorted(selectors.items())
                 },
@@ -625,6 +730,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "declaration": declaration,
             "n_members": len(members),
             "selector_correlations": correlations,
+            "likelihood_convention": likelihood_convention,
             "selectors": dict(SELECTOR_DECLARATION),
             "termination": {
                 "decoder_stop": dict(termination),
@@ -694,6 +800,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if key in novelty_receipt
             },
             "evaluator_quantities": dict(EVALUATOR_QUANTITY),
+            "gap_decomposition_question": GAP_DECOMPOSITION_QUESTION,
             "sub_pool_evaluators": dict(SUB_POOL_EVALUATORS),
             "stability_receipt": stability_receipt
             and {
@@ -729,6 +836,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "the second answers whether a selector beats chance, the first whether it "
             "beats length, and only the first bears on whether the model's likelihood "
             "carries protein knowledge",
+            "a selector that does not beat chance has two possible reasons, and the "
+            "gap_decomposition block is the one that tells them apart: an attainable "
+            "gap near zero means the pool held nothing to find, while a large "
+            "attainable gap with a small achieved share means the selector missed what "
+            "was there",
+            "the likelihood_convention block is the check that the selector is not "
+            "inverted. Under ZymCTRL's residue tokenisation per-token and per-residue "
+            "are the same selector; under ProtGPT2's multi-residue BPE they are not, "
+            "and both are run so the choice is visible rather than assumed",
         ],
     }
     write_json(args.out / COMPLETION, record)
