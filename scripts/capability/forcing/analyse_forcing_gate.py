@@ -304,10 +304,31 @@ def run(args: argparse.Namespace) -> None:
     coverage_source = None
     if args.coverage is not None:
         payload = json.loads(args.coverage.read_text())
-        coverage = {
-            str(key): str(value) for key, value in payload["identity_band"].items()
+        # The self-inclusive band answers whether a backbone is in the reference
+        # release; the self-excluded one answers how remote its nearest relative
+        # is, which is what a remoteness stratum needs. Prefer the latter where the
+        # screen reports it, and record which was used.
+        field = (
+            "nonself_identity_band" if "nonself_identity_band" in payload
+            else "identity_band"
+        )
+        coverage = {str(key): str(value) for key, value in payload[field].items()}
+        levels = sorted(set(coverage.values()))
+        coverage_source = {
+            "path": str(args.coverage),
+            "sha256": sha256_file(args.coverage),
+            "band_field": field,
+            "levels": levels,
+            "usable_as_a_stratum": len(levels) >= 2,
+            "degeneracy": payload.get("degeneracy"),
+            "consequence": (
+                None if len(levels) >= 2 else
+                "one level only, so the coverage stratum repeats the pooled estimate "
+                "under a band name and separates nothing. No remoteness contrast is "
+                "available from this panel; it is a named non-identifiable contrast "
+                "rather than a control that was satisfied"
+            ),
         }
-        coverage_source = {"path": str(args.coverage), "sha256": sha256_file(args.coverage)}
 
     arms = read_arms(list(args.generation), cohort_sha256=sha256_file(args.cohort))
     blocks = [analyse_arm(arm, cohort, coverage=coverage, args=args) for arm in arms]

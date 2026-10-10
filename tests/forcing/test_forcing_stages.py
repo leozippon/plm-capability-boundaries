@@ -26,15 +26,16 @@ from src.capability.core.io import sha256_file  # noqa: E402
 from src.capability.forcing import forcing_design as D  # noqa: E402
 
 
-def _stage():
-    path = ROOT / "scripts/capability/forcing/analyse_forcing_gate.py"
-    spec = spec_from_file_location("analyse_forcing_gate", path)
+def _stage(name: str):
+    path = ROOT / f"scripts/capability/forcing/{name}.py"
+    spec = spec_from_file_location(name, path)
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-STAGE = _stage()
+STAGE = _stage("analyse_forcing_gate")
+COVERAGE = _stage("screen_forcing_coverage")
 
 
 def write_products(
@@ -193,3 +194,44 @@ class TestShardMerge:
         assert set(STAGE.SHARD_IDENTITY) == {
             "arm", "token_grid", "dtype", "draws_per_cell", "sampling_seed", "decoding",
         }
+
+
+class TestCoverageBands:
+    """A reference-coverage band and a remoteness band are different questions.
+
+    Measured on the staged UniRef90 release: every one of the 111 backbones is a
+    reviewed Swiss-Prot entry and therefore a verbatim member of a UniRef90
+    cluster, so the self-inclusive band put all 111 in one level. That is the
+    right answer to "is this covered" and no answer at all to "how remote is its
+    nearest relative", which is why both are computed and why a one-level stratum
+    has to announce itself rather than look like a control that passed.
+    """
+
+    class Hit:
+        def __init__(self, nident, qlen, slen):
+            self.nident, self.qlen, self.slen = nident, qlen, slen
+
+    def test_an_exact_full_length_match_is_the_query_itself(self):
+        assert COVERAGE.is_self_hit(self.Hit(nident=200, qlen=200, slen=200))
+
+    def test_a_shorter_or_longer_subject_is_not_a_self_hit(self):
+        assert not COVERAGE.is_self_hit(self.Hit(nident=200, qlen=200, slen=260))
+        assert not COVERAGE.is_self_hit(self.Hit(nident=120, qlen=200, slen=200))
+
+    def test_a_multi_level_band_is_usable_as_a_stratum(self):
+        report = COVERAGE.band_degeneracy(
+            {"A": "ge95_near_duplicate", "B": "lt30_no_detectable_homology"},
+            name="nonself_identity_band",
+        )
+        assert report["levels"] == 2
+        assert report["usable_as_a_stratum"] and report["consequence"] is None
+
+    def test_a_single_level_band_declares_itself_unusable(self):
+        report = COVERAGE.band_degeneracy(
+            {"A": "ge95_near_duplicate", "B": "ge95_near_duplicate"},
+            name="identity_band",
+        )
+        assert report["levels"] == 1
+        assert not report["usable_as_a_stratum"]
+        assert "not a control that was satisfied" in report["consequence"]
+        assert report["counts"] == {"ge95_near_duplicate": 2}

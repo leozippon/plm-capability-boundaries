@@ -53,6 +53,47 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def is_self_hit(hit) -> bool:
+    """Whether this alignment is the query sequence itself, present in the corpus.
+
+    A reviewed Swiss-Prot entry is a member of a UniRef90 cluster, so a search of
+    the panel against UniRef90 finds every backbone verbatim. That self-hit is the
+    right answer to "is this backbone covered by the reference release" and the
+    wrong answer to "how remote is its nearest relative", which is the quantity a
+    remoteness stratum needs. Both are therefore reported, and this predicate is
+    what separates them: an alignment covering the whole query, the whole subject,
+    with every residue identical.
+    """
+
+    return hit.nident == hit.qlen and hit.slen == hit.qlen
+
+
+def band_degeneracy(bands: dict[str, str], *, name: str) -> dict:
+    """Whether a stratum has more than one level, and what it means if it does not.
+
+    A stratum with one level is not a control that passed; it is a control that
+    could not be applied. Saying so here keeps a reader from reading a single
+    populated band as evidence that remoteness was held fixed.
+    """
+
+    from collections import Counter
+
+    counts = Counter(bands.values())
+    return {
+        "stratum": name,
+        "levels": len(counts),
+        "counts": dict(sorted(counts.items())),
+        "usable_as_a_stratum": len(counts) >= 2,
+        "consequence": (
+            None if len(counts) >= 2 else
+            "one level only: every backbone falls in the same band, so this stratum "
+            "cannot separate remote from close and no remoteness contrast is available "
+            "from this panel. It is a named non-identifiable contrast, not a control "
+            "that was satisfied"
+        ),
+    }
+
+
 def release_clusters(manifest: dict) -> int:
     """The cluster count the release note states, used as the corpus's record count."""
 
@@ -115,13 +156,24 @@ def run(args: argparse.Namespace) -> None:
     hits = parse_hits(args.out / HITS)
     best: dict[str, float] = {}
     subject: dict[str, str] = {}
+    best_nonself: dict[str, float] = {}
+    subject_nonself: dict[str, str] = {}
     for hit in hits:
         identity = hit.identity_over_query
         if identity > best.get(hit.query, -1.0):
             best[hit.query] = identity
             subject[hit.query] = hit.subject
+        if is_self_hit(hit):
+            continue
+        if identity > best_nonself.get(hit.query, -1.0):
+            best_nonself[hit.query] = identity
+            subject_nonself[hit.query] = hit.subject
     bands = {
         accession: assign_stratum(best.get(accession, 0.0))
+        for accession in cohort["accessions"]
+    }
+    nonself_bands = {
+        accession: assign_stratum(best_nonself.get(accession, 0.0))
         for accession in cohort["accessions"]
     }
     write_json(args.out / COMPLETION, {
@@ -130,16 +182,41 @@ def run(args: argparse.Namespace) -> None:
         "created_utc": _now(),
         "experiment": "E19",
         "identity_band": bands,
+        "nonself_identity_band": nonself_bands,
         "best_identity_percent": {
             accession: float(best.get(accession, 0.0)) for accession in cohort["accessions"]
+        },
+        "best_nonself_identity_percent": {
+            accession: float(best_nonself.get(accession, 0.0))
+            for accession in cohort["accessions"]
         },
         "best_subject": {
             accession: subject.get(accession) for accession in cohort["accessions"]
         },
+        "best_nonself_subject": {
+            accession: subject_nonself.get(accession) for accession in cohort["accessions"]
+        },
         "band_counts": dict(Counter(bands.values())),
+        "nonself_band_counts": dict(Counter(nonself_bands.values())),
+        "degeneracy": {
+            "identity_band": band_degeneracy(bands, name="identity_band"),
+            "nonself_identity_band": band_degeneracy(
+                nonself_bands, name="nonself_identity_band"
+            ),
+        },
+        "which_band_stratifies": (
+            "the endpoint is stratified on nonself_identity_band, because the "
+            "self-inclusive band answers whether a backbone is in the reference "
+            "release rather than how remote its nearest relative is. Whichever band "
+            "is used, a stratum with one level is reported as a contrast this panel "
+            "cannot make"
+        ),
         "backbones": len(cohort["accessions"]),
         "backbones_without_a_hit": sum(
             1 for accession in cohort["accessions"] if accession not in best
+        ),
+        "backbones_without_a_nonself_hit": sum(
+            1 for accession in cohort["accessions"] if accession not in best_nonself
         ),
         "identity_definition": (
             "percent of the QUERY identically matched (nident / qlen), not percent "
@@ -163,8 +240,11 @@ def run(args: argparse.Namespace) -> None:
         "diamond": tool.record(),
         "cohort": {"path": str(args.cohort), "sha256": sha256_file(args.cohort)},
     })
-    print(json.dumps({"band_counts": dict(Counter(bands.values())),
-                      "artefact": str(args.out / COMPLETION)}, indent=1))
+    print(json.dumps({
+        "band_counts": dict(Counter(bands.values())),
+        "nonself_band_counts": dict(Counter(nonself_bands.values())),
+        "artefact": str(args.out / COMPLETION),
+    }, indent=1))
 
 
 def build_parser() -> argparse.ArgumentParser:
