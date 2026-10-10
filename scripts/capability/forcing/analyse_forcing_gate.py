@@ -48,12 +48,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def read_arm(directory: Path) -> dict:
-    """One arm's generation products, with its per-draw distributions attached."""
+def read_arm(directory: Path, *, cohort_sha256: str) -> dict:
+    """One arm's generation products, with its per-draw distributions attached.
+
+    The cohort digest is checked rather than trusted. A unit id names an anchor
+    and a partner, so analysing an arm against a different cohort build than it
+    was generated from would silently read the right draws at the wrong
+    positions, and nothing downstream could notice.
+    """
 
     summary = json.loads((directory / "forcing_generation.json").read_text())
     if summary.get("status") != "complete":
         raise SystemExit(f"{directory}: generation is not complete")
+    if summary["cohort"]["sha256"] != cohort_sha256:
+        raise SystemExit(
+            f"{directory} was generated from a cohort digesting to "
+            f"{summary['cohort']['sha256'][:12]} and is being analysed against "
+            f"{cohort_sha256[:12]}; a unit id names positions, so this would read the "
+            "right draws at the wrong positions"
+        )
     records: dict[tuple[str, str, str], dict] = {}
     for line in (directory / summary["journal"]).read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -73,7 +86,7 @@ def read_arm(directory: Path) -> dict:
 SHARD_IDENTITY = ("arm", "token_grid", "dtype", "draws_per_cell", "sampling_seed", "decoding")
 
 
-def read_arms(directories: list[Path]) -> list[dict]:
+def read_arms(directories: list[Path], *, cohort_sha256: str) -> list[dict]:
     """Group the supplied directories by arm, merging shards of one arm.
 
     An arm large enough to set the campaign's wall clock is sharded over several
@@ -86,7 +99,7 @@ def read_arms(directories: list[Path]) -> list[dict]:
 
     groups: dict[str, dict] = {}
     for directory in directories:
-        block = read_arm(directory)
+        block = read_arm(directory, cohort_sha256=cohort_sha256)
         summary = block["summary"]
         name = str(summary["arm"])
         existing = groups.get(name)
@@ -108,8 +121,6 @@ def read_arms(directories: list[Path]) -> list[dict]:
                 f"{existing['directories'][0]} on {differing}; these are not shards of one "
                 "measurement and are not merged"
             )
-        if summary["cohort"]["sha256"] != existing["summary"]["cohort"]["sha256"]:
-            raise SystemExit(f"{directory}: a different cohort from {existing['directories'][0]}")
         overlap = sorted(set(existing["records"]) & set(block["records"]))
         if overlap:
             raise SystemExit(
@@ -298,7 +309,7 @@ def run(args: argparse.Namespace) -> None:
         }
         coverage_source = {"path": str(args.coverage), "sha256": sha256_file(args.coverage)}
 
-    arms = read_arms(list(args.generation))
+    arms = read_arms(list(args.generation), cohort_sha256=sha256_file(args.cohort))
     blocks = [analyse_arm(arm, cohort, coverage=coverage, args=args) for arm in arms]
     panel: dict = {
         "columns": [block["arm"] for block in blocks],
