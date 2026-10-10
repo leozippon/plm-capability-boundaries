@@ -235,3 +235,114 @@ def test_the_variant_payload_carries_no_sequences_only_mutation_strings():
     row = stage.assay_payload(cohort, [{"target_id": "q1"}])[0]
     assert "sequences" not in row
     assert row["mutants"] == ["A1G"] and row["cluster"] == 3
+
+
+# ------------------------------------------- the copying join (EXP-E11, 2026-10-10)
+#
+# The identity-to-context rule reported zero for every product of every condition
+# because the reference records were keyed by a composite ``target__bin__index``
+# identifier while a product records the corpus accessions of the items its prompt
+# actually contained. Those two identifier spaces never intersect, so the rule
+# could not fire, and the matched-unrelated donors were not in the reference at
+# all. Measured after the fix on the real artefact: a verbatim context item
+# submitted as a product scores 100.0% identity at coverage 1.0, a 40%-mutated
+# copy of one scores 57.6%, and a random sequence of the same length produces no
+# alignment -- so the rule is capable of firing, which is what makes the zero on
+# the 6144 real products a measurement rather than a join artefact.
+
+
+def family_entry(target, subject, *, identity, coverage, in_family=True):
+    return {
+        "record": f"{target}__bin__0",
+        "subject": subject,
+        "target_id": target,
+        "in_family": in_family,
+        "identity_over_query": identity,
+        "coverage": coverage,
+        "bitscore": 100.0,
+    }
+
+
+def generated(target="q0", condition="close_homolog", subjects=("UniRef90_A", "UniRef90_B")):
+    return {
+        "attempt_id": f"arm|{target}|{condition}|0000",
+        "arm": "arm",
+        "target_id": target,
+        "condition": condition,
+        "sequence": "M" * 200,
+        "context_subjects": list(subjects),
+    }
+
+
+def test_the_copying_rule_matches_the_accessions_the_prompt_actually_held():
+    out = stage.product_annotation(
+        generated(),
+        index=0,
+        family=[family_entry("q0", "UniRef90_B", identity=71.5, coverage=0.4)],
+        corpus={},
+    )
+    assert out["context_alignment_identity"] == pytest.approx(71.5)
+    # No coverage floor on the copying rule: a short high-identity run is exactly
+    # what it is looking for, and the coverage is published beside it.
+    assert out["context_alignment_coverage"] == pytest.approx(0.4)
+    assert out["context_items_aligned"] == 1
+    assert out["context_items"] == 2
+
+
+def test_an_alignment_to_another_targets_context_is_not_this_products_copying():
+    out = stage.product_annotation(
+        generated(),
+        index=0,
+        family=[family_entry("q9", "UniRef90_B", identity=88.0, coverage=0.9)],
+        corpus={},
+    )
+    assert out["context_alignment_identity"] is None
+    assert out["prompt_family_recognised"] is False
+
+
+def test_no_alignment_is_none_rather_than_zero_identity():
+    out = stage.product_annotation(generated(), index=0, family=[], corpus={})
+    assert out["context_alignment_identity"] is None
+    assert out["context_items_aligned"] == 0
+    # The copy verdict must abstain on an unevaluated rule, not pass it.
+    from src.capability.context import homology_context as H
+
+    verdict = H.copy_verdict(
+        {"max_lcs_to_context": 3, "max_kmer_containment": 0.0},
+        identity_percent=out["context_alignment_identity"],
+    )
+    assert verdict["rules"]["alignment_identity"] is None
+    assert verdict["identity_rule_evaluated"] is False
+
+
+def test_an_unrelated_donor_can_be_copied_without_becoming_family_recognition():
+    out = stage.product_annotation(
+        generated(condition="unrelated", subjects=("UniRef90_U",)),
+        index=0,
+        family=[family_entry("q0", "UniRef90_U", identity=100.0, coverage=1.0, in_family=False)],
+        corpus={},
+    )
+    assert out["context_alignment_identity"] == pytest.approx(100.0)
+    assert out["prompt_family_recognised"] is False
+    assert out["prompt_family_identity"] == 0.0
+    assert out["prompt_family_best_coverage"] == 0.0
+
+
+def test_family_recognition_still_needs_the_coverage_floor():
+    from src.capability.context import homology_context as H
+
+    below = stage.product_annotation(
+        generated(),
+        index=0,
+        family=[family_entry("q0", "UniRef90_Z", identity=95.0, coverage=H.FAMILY_COVERAGE_FLOOR / 2)],
+        corpus={},
+    )
+    assert below["prompt_family_recognised"] is False
+    assert below["prompt_family_best_coverage"] == pytest.approx(H.FAMILY_COVERAGE_FLOOR / 2)
+    at_floor = stage.product_annotation(
+        generated(),
+        index=0,
+        family=[family_entry("q0", "UniRef90_Z", identity=95.0, coverage=H.FAMILY_COVERAGE_FLOOR)],
+        corpus={},
+    )
+    assert at_floor["prompt_family_recognised"] is True

@@ -33,7 +33,9 @@ import resource
 import shutil
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -716,6 +718,76 @@ def bin_hits(args: argparse.Namespace) -> None:
     )
 
 
+def product_annotation(
+    row: Mapping[str, Any],
+    *,
+    index: int,
+    family: Sequence[Mapping[str, Any]],
+    corpus: Mapping[str, Any],
+) -> dict[str, Any]:
+    """One product's alignment annotation: family membership, and copying.
+
+    Separated from the search so the join can be tested without an aligner,
+    because the join is where it went wrong. Two rules, and they are not the
+    same rule:
+
+    * **family membership** needs an alignment to a sequence of the product's own
+      target that is *of that target's family*, covering at least
+      :data:`~src.capability.context.homology_context.FAMILY_COVERAGE_FLOOR` of
+      the product. The matched-unrelated donors sit in the same search and are
+      marked out of family, so they can never satisfy it.
+    * **identity to the conditioning context** needs an alignment to a sequence
+      the product's own prompt actually contained, matched on the corpus
+      accession the product recorded. No coverage floor: a short, high-identity
+      run reproduced from the prompt is exactly what the copy rule is looking
+      for, and the coverage is reported beside the identity rather than used to
+      discard it.
+
+    ``None`` for the context identity means the aligner found no alignment at
+    all, which is different from an alignment at zero identity and is why the
+    field is not defaulted.
+    """
+
+    target = row["target_id"]
+    in_family = [
+        entry for entry in family if entry["target_id"] == target and entry["in_family"]
+    ]
+    own = [entry for entry in in_family if entry["coverage"] >= H.FAMILY_COVERAGE_FLOOR]
+    cited = set(row.get("context_subjects", ()))
+    context_entries = [
+        entry
+        for entry in family
+        if entry["target_id"] == target and entry["subject"] in cited
+    ]
+    return {
+        "product_index": index,
+        "attempt_id": row.get("attempt_id"),
+        "arm": row.get("arm"),
+        "target_id": target,
+        "condition": row.get("condition"),
+        "residues": len(row["sequence"]),
+        "context_items": len(cited),
+        "prompt_family_recognised": bool(own),
+        "prompt_family_identity": max(
+            (entry["identity_over_query"] for entry in own), default=0.0
+        ),
+        "prompt_family_best_coverage": max(
+            (entry["coverage"] for entry in in_family), default=0.0
+        ),
+        "context_alignment_identity": (
+            max(entry["identity_over_query"] for entry in context_entries)
+            if context_entries
+            else None
+        ),
+        "context_alignment_coverage": (
+            max(entry["coverage"] for entry in context_entries) if context_entries else None
+        ),
+        "context_items_aligned": len({entry["subject"] for entry in context_entries}),
+        "corpus_max_identity": corpus.get("identity_over_query"),
+        "corpus_best_subject": corpus.get("subject"),
+    }
+
+
 def annotate(args: argparse.Namespace) -> None:
     """Search generated products back against the corpus and the prompt family.
 
@@ -726,6 +798,20 @@ def annotate(args: argparse.Namespace) -> None:
     retained context items of that target, so family recognition here is
     "does the product align to the family it was prompted with", measured by the
     same aligner as everything else and explicitly not a profile-HMM oracle.
+
+    **The two questions need two reference sets, and used to share one.** The
+    reference held only the homologue bins and the wild type, labelled by a
+    composite ``target__bin__index`` identifier, while a product records the
+    corpus *accessions* of the items actually placed in its context. Those two
+    identifier spaces never intersect, so the identity-to-context rule could not
+    fire for any product under any condition, and the matched-unrelated
+    condition's donors were not in the reference at all. The zero it reported was
+    therefore a property of the join, not a measurement. Each reference record now
+    carries its accession, and the unrelated donor pools are included and marked
+    as outside the target's family so that family recognition is unaffected. The
+    positive control that establishes the repaired rule can fire -- a verbatim
+    context item, a 40% mutated one and a random sequence -- is recorded in
+    ``tests/context/test_retrieve_homology_context.py``.
     """
 
     context = json.loads(args.homologs.read_text(encoding="utf-8"))
@@ -736,19 +822,36 @@ def annotate(args: argparse.Namespace) -> None:
     tool = tool_for(args)
     args.out.mkdir(parents=True, exist_ok=True)
 
-    # Family database: every retained context item of every target, labelled by
-    # target, so one search answers the family question for every product.
+    # Reference database: every sequence any condition of any target can place in
+    # a context, plus the wild type, each record carrying the target it belongs
+    # to, the corpus accession a product cites, and whether it is of the target's
+    # own family. The last distinction is why the unrelated donors can be in the
+    # same search without becoming evidence of family recognition.
     family_fasta = args.out / "family_reference.faa"
-    labels: dict[str, str] = {}
+    labels: dict[str, dict[str, Any]] = {}
+    letters = 0
     with family_fasta.open("w", encoding="utf-8") as handle:
         for target in context["targets"]:
-            for name, bucket in target["bins"].items():
+            buckets = [(name, bucket, True) for name, bucket in target["bins"].items()]
+            buckets.append(("unrelated", target.get("unrelated_pool") or [], False))
+            for name, bucket, in_family in buckets:
                 for index, row in enumerate(bucket):
                     identifier = f"{target['target_id']}__{name}__{index}"
-                    labels[identifier] = target["target_id"]
+                    labels[identifier] = {
+                        "target_id": target["target_id"],
+                        "subject": row["subject"],
+                        "in_family": in_family,
+                    }
                     handle.write(f">{identifier}\n{row['sequence']}\n")
-            handle.write(f">{target['target_id']}__wildtype\n{target['wildtype']}\n")
-            labels[f"{target['target_id']}__wildtype"] = target["target_id"]
+                    letters += len(row["sequence"])
+            identifier = f"{target['target_id']}__wildtype"
+            labels[identifier] = {
+                "target_id": target["target_id"],
+                "subject": identifier,
+                "in_family": True,
+            }
+            handle.write(f">{identifier}\n{target['wildtype']}\n")
+            letters += len(target["wildtype"])
     family_db = args.out / "family_reference.dmnd"
     import subprocess
 
@@ -764,13 +867,7 @@ def annotate(args: argparse.Namespace) -> None:
         source_fasta=family_fasta,
         source_records=len(labels),
         sequences=len(labels),
-        letters=sum(
-            len(row["sequence"])
-            for target in context["targets"]
-            for bucket in target["bins"].values()
-            for row in bucket
-        )
-        + sum(len(target["wildtype"]) for target in context["targets"]),
+        letters=letters,
         makedb_command=("makedb", str(family_fasta)),
     )
 
@@ -794,10 +891,13 @@ def annotate(args: argparse.Namespace) -> None:
     )
     best_family: dict[str, list[dict]] = {}
     for hit in parse_hits(family_hits_path, fields=ALIGNMENT_FIELDS):
+        label = labels[hit.subject]
         best_family.setdefault(hit.query, []).append(
             {
-                "subject": hit.subject,
-                "target_id": labels[hit.subject],
+                "record": hit.subject,
+                "subject": label["subject"],
+                "target_id": label["target_id"],
+                "in_family": label["in_family"],
                 "identity_over_query": hit.identity_over_query,
                 "coverage": H.hit_coverage(hit),
                 "bitscore": hit.bitscore,
@@ -831,36 +931,15 @@ def annotate(args: argparse.Namespace) -> None:
                     "coverage": H.hit_coverage(hit),
                 }
 
-    annotations = []
-    for index, row in enumerate(products):
-        key = f"p{index:06d}"
-        family = best_family.get(key, [])
-        own = [
-            entry
-            for entry in family
-            if entry["target_id"] == row["target_id"]
-            and entry["coverage"] >= H.FAMILY_COVERAGE_FLOOR
-        ]
-        context_hits = [
-            entry["identity_over_query"]
-            for entry in family
-            if entry["subject"] in set(row.get("context_subjects", ()))
-        ]
-        annotations.append(
-            {
-                "product_index": index,
-                "attempt_id": row.get("attempt_id"),
-                "arm": row.get("arm"),
-                "target_id": row.get("target_id"),
-                "condition": row.get("condition"),
-                "residues": len(row["sequence"]),
-                "prompt_family_recognised": bool(own),
-                "prompt_family_identity": max((entry["identity_over_query"] for entry in own), default=0.0),
-                "context_alignment_identity": max(context_hits, default=0.0) if context_hits else None,
-                "corpus_max_identity": corpus_rows.get(key, {}).get("identity_over_query"),
-                "corpus_best_subject": corpus_rows.get(key, {}).get("subject"),
-            }
+    annotations = [
+        product_annotation(
+            row,
+            index=index,
+            family=best_family.get(f"p{index:06d}", []),
+            corpus=corpus_rows.get(f"p{index:06d}", {}),
         )
+        for index, row in enumerate(products)
+    ]
     write_json(
         args.out / EXPECT_ANNOTATE,
         {
