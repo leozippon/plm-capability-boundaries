@@ -26,11 +26,15 @@ from src.capability.position.contact_response import (
     SiteGeometry,
     admitted_geometry,
     agrees_with_frozen,
+    contact_family_table,
     contact_pairs,
     decay_fit,
+    panel_contact_simultaneous,
     receiver_census,
     require_geometry,
     separation_stratum,
+    simultaneous_admits,
+    simultaneous_bands,
     stratified_contact_contrast,
 )
 from src.capability.position.position_likelihood import CAUSAL, MASKED
@@ -331,6 +335,128 @@ def test_the_contrast_compares_only_inside_one_anchor_and_one_stratum():
     assert result["matched_cells"] == 6
     assert result["estimate_nats"]["point"] == pytest.approx(0.6)
     assert result["separation_imbalance_residues"] == pytest.approx(0.0)
+
+
+# ------------------------------------------- the panel-wide simultaneous family
+
+
+def _family_rows(values, *, assay_prefix="A", stratum="9-16", separation=10,
+                 direction="downstream", floor=0.2):
+    """One matched contact/non-contact pair per family, with a chosen contrast.
+
+    Both sides sit above ``floor`` so that a negative contrast is representable
+    on the absolute outcome; a fixture whose non-contact side is pinned at zero
+    can only ever produce a one-sided null.
+    """
+
+    rows = []
+    for family, contrast in values.items():
+        for contact, value in ((True, floor + contrast), (False, floor)):
+            rows.append({
+                "assay": f"{assay_prefix}{family}", "family": family, "mutation": "A1G",
+                "i": 0, "j": separation, "separation": separation, "direction": direction,
+                "response": value, "absolute_response": abs(value), "contact": contact,
+                "structure_distance_angstrom": 5.0 if contact else 15.0,
+                "rsa": 0.2, "stratum": stratum,
+            })
+    return rows
+
+
+def test_the_family_table_is_the_one_the_marginal_interval_resamples():
+    values = {family: 0.1 * family for family in range(1, 9)}
+    rows = _family_rows(values)
+    table = contact_family_table(rows, direction="downstream")
+    contrast = stratified_contact_contrast(rows, direction="downstream")
+    # The marginal record exposes exactly the table's units, so a panel-wide
+    # statement and a per-arm one cannot be built from two populations.
+    assert sorted(table["family_values"]) == contrast["families"]
+    assert set(contrast["family_values"]) == {str(key) for key in table["family_values"]}
+    assert contrast["estimate_nats"]["point"] == pytest.approx(
+        float(np.mean(list(table["family_values"].values())))
+    )
+    assert table["matched_cells"] == contrast["matched_cells"] == len(values)
+
+
+def test_a_simultaneous_band_is_wider_than_the_marginal_one_it_corrects():
+    rng = np.random.default_rng(20261010)
+    single = rng.normal(0.1, 0.05, (12, 1))
+    many = np.column_stack([single[:, 0]] + [rng.normal(0.0, 0.05, 12) for _ in range(9)])
+    one = simultaneous_bands(single, draws=2000)
+    ten = simultaneous_bands(many, draws=2000)
+    assert ten["critical_value"] > one["critical_value"] > 1.0
+    low_one, high_one = one["simultaneous_interval"][0]
+    low_ten, high_ten = ten["simultaneous_interval"][0]
+    assert low_ten < low_one and high_ten > high_one
+    # And every band is strictly wider than its own pointwise interval.
+    for index in range(ten["columns"]):
+        point_low, point_high = ten["pointwise_interval"][index]
+        band_low, band_high = ten["simultaneous_interval"][index]
+        assert band_low < point_low and band_high > point_high
+    assert ten["conditional_on_fitted_predictions"] is False
+
+
+def test_a_constant_column_does_not_set_the_critical_value():
+    rng = np.random.default_rng(7)
+    varying = rng.normal(0.0, 0.05, (16, 3))
+    with_zero = np.column_stack([varying, np.zeros(16)])
+    free = simultaneous_bands(varying, draws=2000)
+    pinned = simultaneous_bands(with_zero, draws=2000)
+    assert pinned["degenerate_columns"] == 1
+    assert pinned["critical_value"] == pytest.approx(free["critical_value"])
+    assert pinned["simultaneous_interval"][3] == [0.0, 0.0]
+
+
+def test_a_simultaneous_family_refuses_unsupported_or_nonfinite_units():
+    with pytest.raises(ValueError):
+        simultaneous_bands(np.zeros((8,)), draws=100)
+    with pytest.raises(ValueError):
+        simultaneous_bands(np.array([[0.1, 0.2]]), draws=100)
+    thin = np.full((6, 2), np.nan)
+    thin[:, 0] = 0.1
+    thin[0, 1] = 0.2
+    with pytest.raises(ValueError):
+        simultaneous_bands(thin, draws=100)
+    with pytest.raises(ValueError):
+        simultaneous_bands(np.array([[0.1, np.inf]] * 6), draws=100)
+
+
+def test_only_a_measurable_direction_enters_the_panel_family():
+    # A causal arm's upstream contrast is zero by construction, not an estimate.
+    assert simultaneous_admits(CAUSAL, "downstream") is True
+    assert simultaneous_admits(CAUSAL, "upstream") is False
+    assert simultaneous_admits(MASKED, "downstream") is True
+    assert simultaneous_admits(MASKED, "upstream") is True
+    with pytest.raises(ValueError):
+        simultaneous_admits("something_else", "downstream")
+    with pytest.raises(ValueError):
+        simultaneous_admits(CAUSAL, "sideways")
+
+
+def test_the_panel_family_keeps_each_arm_point_and_absent_families_absent():
+    null = {family: 0.01 * (-1) ** family for family in range(1, 13)}
+    positive = {family: 0.1 + 0.01 * family for family in range(1, 13)}
+    positive.pop(12)
+    columns = [
+        {"arm": "causal", "direction": "downstream",
+         "family_values": contact_family_table(_family_rows(null))["family_values"]},
+        {"arm": "bidirectional", "direction": "upstream",
+         "family_values": contact_family_table(
+             _family_rows(positive, direction="upstream"), direction="upstream",
+         )["family_values"]},
+    ]
+    record = panel_contact_simultaneous(columns, outcome="absolute_response", draws=2000)
+    assert record["family_universe"] == 12
+    assert [column["families"] for column in record["columns"]] == [12, 11]
+    assert record["columns"][0]["point_nats"] == pytest.approx(float(np.mean(list(null.values()))))
+    assert record["columns"][1]["point_nats"] == pytest.approx(
+        float(np.mean(list(positive.values())))
+    )
+    assert record["columns"][1]["simultaneously_excludes_zero"] is True
+    assert record["columns"][0]["simultaneously_excludes_zero"] is False
+    # A band that holds jointly is at least as wide as the marginal one.
+    assert record["critical_value"] > 1.0
+    assert panel_contact_simultaneous([], outcome="response")["undefined"]
+
 
 
 # --------------------------------------------------- the anticipation statistic

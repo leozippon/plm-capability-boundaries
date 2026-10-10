@@ -166,6 +166,20 @@ PREFIX_INVARIANT_RULE = (
 )
 
 
+def declared_refusals() -> list[dict[str, str]]:
+    """Every arm this project declines position-resolved work for, with the reason.
+
+    A panel record names these from here rather than inferring them from a
+    missing product. An arm that is absent because the project decided not to
+    produce it is a different outcome from an arm that is absent because its cell
+    broke, and only this declaration distinguishes the two; a reader of a
+    downstream analysis therefore sees the refusal as a refusal even though the
+    refused arm never reaches that analysis at all.
+    """
+
+    return [{"arm": arm, "reason": reason} for arm, reason in sorted(REFUSED_ARMS.items())]
+
+
 def residual_tier(worst: float, repeat_max: float) -> int:
     """Which admission tier a prefix residual falls in: 1 exact, 2 admitted, 3 refused."""
 

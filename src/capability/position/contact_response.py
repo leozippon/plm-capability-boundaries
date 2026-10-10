@@ -76,6 +76,15 @@ CONTACT_DEFINITION = (
     "pair population rather than counted as a non-contact"
 )
 
+#: Draws for the panel-wide studentised-maximum critical value. A per-arm
+#: interval is a percentile statistic and takes this lane's declared
+#: ``BOOTSTRAP_DRAWS``; the critical value of a maximum over many columns is a
+#: tail statistic, and both prior declarations of this convention in the project
+#: (``extensions.phenotype_strata.shared_bootstrap`` and
+#: ``scripts/capability/position/position_simultaneous.py``) take 10,000 draws
+#: for it. No new seed is minted: the family draws reuse ``BOOTSTRAP_SEED``.
+SIMULTANEOUS_DRAWS = 10000
+
 
 # ------------------------------------------------------------- the geometry
 
@@ -515,11 +524,11 @@ def _nested_mean(values: Sequence[tuple[Any, float]]) -> float | None:
     return float(np.mean([float(np.mean(rows)) for rows in grouped.values()]))
 
 
-def stratified_contact_contrast(
+def contact_family_table(
     rows: Sequence[Mapping[str, Any]], *, outcome: str = "absolute_response",
-    direction: str | None = None, draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED,
+    direction: str | None = None,
 ) -> dict[str, Any]:
-    """Contact minus non-contact response, matched inside separation strata.
+    """The family-level bootstrap units of one contact contrast, and their support.
 
     The nesting is the one this project already declared for the geometry-only
     pair census: a contrast is formed inside one mutation and one separation
@@ -529,9 +538,12 @@ def stratified_contact_contrast(
     non-contacts contributes nothing, so no comparison is ever made across
     separations.
 
-    The residual within-stratum separation imbalance is reported on the same
-    weighting. A contrast whose imbalance is large is a contrast about sequence
-    distance wearing a structural label, and the reader is given both numbers.
+    Separated from the interval that consumes it because the same family values
+    are the units of two different statements: a marginal per-arm interval
+    (:func:`stratified_contact_contrast`) and a panel-wide simultaneous band
+    (:func:`panel_contact_simultaneous`), which must resample the *same* families
+    jointly across arms. Computing them twice from two tables would be two
+    populations wearing one name.
     """
 
     if outcome not in ("absolute_response", "response"):
@@ -580,8 +592,40 @@ def stratified_contact_contrast(
             if (value := _nested_mean(entries)) is not None
         }
 
-    family_values = _collapse(per_mutation)
-    family_imbalance = _collapse(per_mutation_imbalance)
+    return {
+        "outcome": outcome,
+        "direction": direction or "both",
+        "family_values": _collapse(per_mutation),
+        "family_imbalance": _collapse(per_mutation_imbalance),
+        "matched_cells": matched_cells,
+        "matched_receivers": matched_receivers,
+        "strata_present": sorted({row["stratum"] for row in selected}),
+    }
+
+
+WEIGHTING = (
+    "equal separation strata within mutation, equal mutations within assay, "
+    "equal assays within family, equal families; families are the bootstrap units"
+)
+
+
+def stratified_contact_contrast(
+    rows: Sequence[Mapping[str, Any]], *, outcome: str = "absolute_response",
+    direction: str | None = None, draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """Contact minus non-contact response, matched inside separation strata.
+
+    One arm's marginal interval on the family values :func:`contact_family_table`
+    forms. The residual within-stratum separation imbalance is reported on the
+    same weighting: a contrast whose imbalance is large is a contrast about
+    sequence distance wearing a structural label, and the reader is given both
+    numbers. This interval is marginal and is not a panel-wide statement; see
+    :func:`panel_contact_simultaneous` for that.
+    """
+
+    table = contact_family_table(rows, outcome=outcome, direction=direction)
+    family_values = table["family_values"]
+    family_imbalance = table["family_imbalance"]
     estimate = interval(sorted(family_values.values()), draws=draws, seed=seed) if family_values else {
         "point": None,
         "interval": None,
@@ -592,16 +636,186 @@ def stratified_contact_contrast(
         "outcome": outcome,
         "direction": direction or "both",
         "definition": CONTACT_DEFINITION,
-        "weighting": (
-            "equal separation strata within mutation, equal mutations within assay, "
-            "equal assays within family, equal families; families are the bootstrap units"
-        ),
+        "weighting": WEIGHTING,
+        "inference": "marginal percentile interval over family bootstrap units",
         "estimate_nats": estimate,
         "families": sorted(family_values),
-        "matched_cells": matched_cells,
-        "matched_receivers": matched_receivers,
+        "family_values": {str(key): float(value) for key, value in family_values.items()},
+        "matched_cells": table["matched_cells"],
+        "matched_receivers": table["matched_receivers"],
         "separation_imbalance_residues": (
             float(np.mean(sorted(family_imbalance.values()))) if family_imbalance else None
         ),
-        "strata_present": sorted({row["stratum"] for row in selected}),
+        "strata_present": table["strata_present"],
     }
+
+
+# ------------------------------------------------- the panel-wide statement
+
+
+def simultaneous_admits(paradigm: str, direction: str) -> bool:
+    """Whether this (paradigm, direction) carries an estimate rather than a zero.
+
+    For a causal arm the upstream response is identically zero by construction,
+    so an upstream contact contrast is a declared zero and not a measurement. It
+    is reported -- the assertion is the point -- but it does not enter a
+    simultaneous family: a column of exact zeros has no standard error, cannot
+    contribute to a studentised maximum, and would read to a reviewer as a
+    measured null that happened to land on zero.
+    """
+
+    if paradigm not in (CAUSAL, MASKED):
+        raise ValueError(f"unknown paradigm {paradigm!r}")
+    if direction not in ("downstream", "upstream"):
+        raise ValueError("direction is downstream or upstream")
+    return paradigm == MASKED or direction == "downstream"
+
+
+def simultaneous_bands(
+    values: np.ndarray, *, draws: int = SIMULTANEOUS_DRAWS, seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """Studentised-maximum simultaneous bands over shared family draws.
+
+    ``values`` is families by columns, with ``nan`` where a family carries no
+    value for that column. One set of family draws is shared by every column, so
+    the cross-arm dependence that makes these columns correlated is preserved
+    rather than assumed away; each column's point estimate is the mean over the
+    families the draw actually gave it, which is why a draw that leaves any
+    column empty is rejected jointly and redrawn rather than zero-imputed.
+
+    The critical value is the 95th percentile of the maximum over columns of the
+    absolute centred statistic divided by the column's *fixed* standard error.
+    Every column's band is then ``point +- critical * se``, so the whole family
+    of statements holds at 95 % together. This is the convention the project
+    already declared twice -- ``extensions.phenotype_strata.shared_bootstrap``
+    and ``scripts/capability/position/position_simultaneous.py`` -- restated here
+    for the units this lane resamples, which are biological families of DMS
+    assays. Unlike both of those, nothing here conditions on a fitted
+    prediction: no model is fitted anywhere in E01, so the pointwise and
+    simultaneous bands carry no out-of-fold caveat.
+    """
+
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 2 or values.shape[0] < 2 or values.shape[1] < 1:
+        raise ValueError("a simultaneous family is a two-dimensional families-by-columns table")
+    if np.isinf(values).any():
+        raise ValueError("a family contrast is finite or absent, never infinite")
+    available = np.isfinite(values)
+    counts_available = available.sum(axis=0)
+    if (counts_available < 2).any():
+        raise ValueError("every column needs at least two available families")
+    point = np.nanmean(values, axis=0)
+    se = np.nanstd(values, axis=0, ddof=1) / np.sqrt(counts_available)
+    clean = np.nan_to_num(values, nan=0.0)
+    rng = np.random.default_rng(seed)
+    families = values.shape[0]
+    accepted, rejected, attempts, blocks = 0, 0, 0, []
+    while accepted < draws:
+        size = min(100, draws - accepted)
+        counts = np.asarray(
+            [np.bincount(rng.integers(families, size=families), minlength=families)
+             for _ in range(size)],
+            dtype=float,
+        )
+        denominator = counts @ available.astype(float)
+        keep = ~(denominator == 0).any(axis=1)
+        rejected += int((~keep).sum())
+        attempts += size
+        blocks.append((counts[keep] @ clean) / denominator[keep])
+        accepted += int(keep.sum())
+        if attempts > draws * 100:
+            raise ValueError("excessive empty-family draws; simultaneous inference is blocked")
+    boot = np.concatenate(blocks)[:draws]
+    varying = se > 0
+    maxima = (
+        np.max(np.abs((boot[:, varying] - point[varying]) / se[varying]), axis=1)
+        if varying.any()
+        else np.zeros(len(boot))
+    )
+    critical = float(np.quantile(maxima, 0.95))
+    return {
+        "method": (
+            "shared original-family bootstrap; available-family ratio means; maximum "
+            "absolute centred statistic over fixed per-column standard errors"
+        ),
+        "confidence": 0.95,
+        "critical_value": critical,
+        "draws": int(draws),
+        "seed": int(seed),
+        "family_universe": int(families),
+        "columns": int(values.shape[1]),
+        "attempted_draws": int(attempts * 1),
+        "jointly_rejected_draws": int(rejected),
+        "degenerate_columns": int((~varying).sum()),
+        "point": point.tolist(),
+        "standard_error": se.tolist(),
+        "available_families": counts_available.tolist(),
+        "pointwise_interval": np.quantile(boot, [0.025, 0.975], axis=0).T.tolist(),
+        "simultaneous_interval": np.column_stack(
+            (point - critical * se, point + critical * se)
+        ).tolist(),
+        "conditional_on_fitted_predictions": False,
+    }
+
+
+def panel_contact_simultaneous(
+    columns: Sequence[Mapping[str, Any]], *, outcome: str,
+    draws: int = SIMULTANEOUS_DRAWS, seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """One simultaneous family over every arm's contact contrast in this panel.
+
+    Each column is one ``(arm, direction)`` contrast carrying its own
+    family-to-value mapping; the family universe is the union, and a family a
+    column does not carry is absent rather than zero. Metrics are not pooled: a
+    family is formed per outcome, because the absolute and signed responses are
+    different quantities and a critical value over both would be a multiplicity
+    correction across units.
+    """
+
+    labelled = [
+        {"arm": str(column["arm"]), "direction": str(column["direction"]),
+         "family_values": {str(key): float(value)
+                           for key, value in column["family_values"].items()}}
+        for column in columns
+    ]
+    if not labelled:
+        return {
+            "outcome": outcome,
+            "columns": [],
+            "undefined": "no arm in this panel carries a matched contact contrast",
+        }
+    universe = sorted({family for column in labelled for family in column["family_values"]})
+    table = np.full((len(universe), len(labelled)), np.nan)
+    for index, column in enumerate(labelled):
+        for row, family in enumerate(universe):
+            if family in column["family_values"]:
+                table[row, index] = column["family_values"][family]
+    record = simultaneous_bands(table, draws=draws, seed=seed)
+    record["outcome"] = outcome
+    record["families"] = universe
+    record["family_definition"] = (
+        "one column per (arm, direction) whose contrast is an estimate rather than a "
+        "construction: a causal arm contributes downstream only, because its upstream "
+        "response is identically zero by construction"
+    )
+    record["weighting"] = WEIGHTING
+    record["columns"] = [
+        {
+            "arm": column["arm"],
+            "direction": column["direction"],
+            "point_nats": record["point"][index],
+            "standard_error_nats": record["standard_error"][index],
+            "pointwise_interval_nats": record["pointwise_interval"][index],
+            "simultaneous_interval_nats": record["simultaneous_interval"][index],
+            "families": record["available_families"][index],
+            "simultaneously_excludes_zero": bool(
+                record["simultaneous_interval"][index][0] > 0.0
+                or record["simultaneous_interval"][index][1] < 0.0
+            ),
+        }
+        for index, column in enumerate(labelled)
+    ]
+    for key in ("point", "standard_error", "pointwise_interval", "simultaneous_interval",
+                "available_families"):
+        del record[key]
+    return record

@@ -61,7 +61,10 @@ from src.capability.position.contact_response import (  # noqa: E402
     contact_pairs,
     require_geometry,
 )
-from src.capability.position.position_likelihood import read_archive  # noqa: E402
+from src.capability.position.position_likelihood import (  # noqa: E402
+    declared_refusals,
+    read_archive,
+)
 
 COMPLETION = "contact_anticipation.json"
 
@@ -295,14 +298,19 @@ def main() -> None:
         },
         "arms": arms,
         "absent_arms": absent,
+        "declared_refusals": declared_refusals(),
         "panel": {
             "requested_extractions": len(args.extraction),
             "analysed_arms": len(arms),
             "absent_arms": len(absent),
+            "declared_refusals": len(declared_refusals()),
             "policy": (
                 "an arm whose extraction cell left no admitted completion record is "
                 "recorded here with its reason and excluded from every estimate; it is "
-                "neither silently dropped nor fatal to the rest of the panel"
+                "neither silently dropped nor fatal to the rest of the panel. An arm the "
+                "project refuses position-resolved work for never reaches this stage at "
+                "all, so it is named from that declaration rather than inferred from a "
+                "missing file: a refusal and a failure are different outcomes"
             ),
         },
     })

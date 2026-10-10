@@ -54,13 +54,25 @@ from src.capability.position.contact_response import (  # noqa: E402
     admitted_geometry,
     agrees_with_frozen,
     contact_pairs,
+    panel_contact_simultaneous,
     receiver_census,
     rebuild_states,
     require_geometry,
+    simultaneous_admits,
     stratified_contact_contrast,
     structural_rows,
 )
-from src.capability.position.position_likelihood import CAUSAL, read_archive  # noqa: E402
+from src.capability.position.position_likelihood import (  # noqa: E402
+    CAUSAL,
+    declared_refusals,
+    read_archive,
+)
+
+#: The two outcomes a contact contrast is formed on. Each is its own simultaneous
+#: family: the absolute response and the signed response are different
+#: quantities, and one critical value spanning both would be a multiplicity
+#: correction across units rather than across arms.
+OUTCOMES = ("absolute_response", "response")
 
 COMPLETION = "position_propagation.json"
 
@@ -261,6 +273,7 @@ def main() -> None:
         return cache[assay]
 
     arms, contrasts, absent = [], [], []
+    panel_columns: dict[str, list[dict]] = {outcome: [] for outcome in OUTCOMES}
     for directory in args.extraction:
         completion, reason = extraction_status(directory)
         if completion is None:
@@ -276,12 +289,20 @@ def main() -> None:
         for direction in ("downstream", "upstream"):
             if not any(row["direction"] == direction for row in structural):
                 continue
-            for outcome in ("absolute_response", "response"):
+            for outcome in OUTCOMES:
                 contrast = stratified_contact_contrast(
                     structural, outcome=outcome, direction=direction
                 )
                 contrast["arm"] = block["arm"]
                 contrasts.append(contrast)
+                if contrast["family_values"] and simultaneous_admits(
+                    block["paradigm"], direction
+                ):
+                    panel_columns[outcome].append({
+                        "arm": block["arm"],
+                        "direction": direction,
+                        "family_values": contrast["family_values"],
+                    })
         arms.append(block)
         del structural
     if not arms:
@@ -289,6 +310,10 @@ def main() -> None:
             "no extraction directory carried an admitted completion record; there is "
             f"nothing to analyse. Absent: {absent}"
         )
+    simultaneous = {
+        outcome: panel_contact_simultaneous(panel_columns[outcome], outcome=outcome)
+        for outcome in OUTCOMES
+    }
 
     write_json(args.out / COMPLETION, {
         "schema": SCHEMA,
@@ -328,17 +353,29 @@ def main() -> None:
         },
         "arms": arms,
         "absent_arms": absent,
+        "declared_refusals": declared_refusals(),
         "panel": {
             "requested_extractions": len(args.extraction),
             "analysed_arms": len(arms),
             "absent_arms": len(absent),
+            "declared_refusals": len(declared_refusals()),
             "policy": (
                 "an arm whose extraction cell left no admitted completion record is "
                 "recorded here with its reason and excluded from every estimate; it is "
-                "neither silently dropped nor fatal to the rest of the panel"
+                "neither silently dropped nor fatal to the rest of the panel. An arm the "
+                "project refuses position-resolved work for never reaches this stage at "
+                "all, so it is named from that declaration rather than inferred from a "
+                "missing file: a refusal and a failure are different outcomes"
             ),
         },
         "contact_contrasts": contrasts,
+        "panel_simultaneous": simultaneous,
+        "panel_inference_policy": (
+            "per-arm intervals under contact_contrasts are marginal and are not "
+            "panel-wide statements. Any claim about the panel reads panel_simultaneous, "
+            "whose bands hold jointly at 95 percent over every admitted (arm, direction) "
+            "column of one outcome"
+        ),
     })
 
 
