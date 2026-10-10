@@ -58,6 +58,27 @@ MIN_DRAWS_PER_CONDITION = 8
 #: it is skipped and the number of skipped bins is reported.
 MIN_DRAWS_PER_BIN = 6
 
+#: The pre-registered primary variant, and the all-units variant reported beside
+#: it at equal prominence. Both names are spelled here because the report, the
+#: artefact and the panel band all have to agree on which is which.
+PRIMARY_VARIANT = "primary"
+ALL_UNITS_VARIANT = "without_deduplication"
+
+SUPPORT_FINDING = (
+    "Deduplication, not censoring, is the binding constraint on support, and this "
+    "is the opposite of what the design anticipated. Grouping near-identical "
+    "completions inside a 24-draw cell pushes per-condition support below the "
+    "minimum for a substantial share of units: measured on the first two arms, 18 "
+    "of 111 backbones for progen2-medium and 46 of 111 for rita-xl. The "
+    "pre-registered primary is therefore the LESS powerful reading, running on 93 "
+    "and 65 backbones against the all-units variant's 111. Both are reported at "
+    "equal prominence and both read zero. The primary is not moved: a "
+    "pre-registered primary changed after seeing the data is a post-hoc choice "
+    "even when it moves toward more power, and especially then. The grouping is "
+    "also doing visible work rather than sitting decoratively -- on the "
+    "validation fixture it moved one arm from +0.0017 to -0.0148 nats."
+)
+
 #: The reported variants of the primary endpoint, each a declared filter setting
 #: rather than a search. ``primary`` is the pre-registered one.
 VARIANTS: Mapping[str, Mapping[str, Any]] = {

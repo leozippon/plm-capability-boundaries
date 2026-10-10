@@ -218,6 +218,7 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
         "strata": {},
     }
     primary_values: dict[str, float] | None = None
+    all_units_values: dict[str, float] | None = None
     for estimator in G.ESTIMATORS:
         for name, settings in G.VARIANTS.items():
             records = [
@@ -231,7 +232,9 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                 "partner_divergence_nats": _mean_of(records, "partner_divergence_nats"),
                 "reference_divergence_nats": _mean_of(records, "reference_divergence_nats"),
             }
-            if estimator == "empirical" and name == "primary":
+            if estimator == "empirical" and name == G.ALL_UNITS_VARIANT:
+                all_units_values = values
+            if estimator == "empirical" and name == G.PRIMARY_VARIANT:
                 primary_values = values
                 block["strata"] = {
                     stratum: G.by_stratum(
@@ -285,10 +288,55 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                 draws=args.draws, seed=args.seed,
             )
     block["verdict"] = G.gate_verdict(
-        block["variants"]["empirical"]["primary"], block.get("calibration", {}),
+        block["variants"]["empirical"][G.PRIMARY_VARIANT], block.get("calibration", {}),
     )
+    # Both readings at equal prominence, with the support fact stated rather than
+    # left to be inferred from two backbone counts in a sensitivity block. The
+    # pre-registered primary is the less powerful of the two; burying that would
+    # be the real error.
+    primary_block = block["variants"]["empirical"][G.PRIMARY_VARIANT]
+    all_units_block = block["variants"]["empirical"][G.ALL_UNITS_VARIANT]
+    block["support"] = {
+        "finding": G.SUPPORT_FINDING,
+        "pre_registered_primary": {
+            "variant": G.PRIMARY_VARIANT,
+            "backbones": primary_block.get("units"),
+            "resolved_units": primary_block.get("resolved_units"),
+            "point_nats": primary_block.get("point"),
+            "interval_nats": primary_block.get("interval"),
+            "standard_error_nats": primary_block.get("standard_error"),
+            "role": "the pre-registered endpoint; the verdict is read from this one",
+        },
+        "all_units_sensitivity": {
+            "variant": G.ALL_UNITS_VARIANT,
+            "backbones": all_units_block.get("units"),
+            "resolved_units": all_units_block.get("resolved_units"),
+            "point_nats": all_units_block.get("point"),
+            "interval_nats": all_units_block.get("interval"),
+            "standard_error_nats": all_units_block.get("standard_error"),
+            "role": (
+                "a pre-declared sensitivity carrying every unit, reported at equal "
+                "prominence because it is the more powerful reading; it does not "
+                "replace the primary and the verdict is not read from it"
+            ),
+        },
+        "backbones_lost_to_deduplication": (
+            None if primary_block.get("units") is None or all_units_block.get("units") is None
+            else int(all_units_block["units"]) - int(primary_block["units"])
+        ),
+        "readings_agree_on_sign_of_zero": (
+            None if primary_block.get("interval") is None
+            or all_units_block.get("interval") is None
+            else bool(
+                not primary_block["excludes_zero"] and not all_units_block["excludes_zero"]
+            )
+        ),
+    }
     block["backbone_values"] = {
         key: float(value) for key, value in (primary_values or {}).items()
+    }
+    block["backbone_values_all_units"] = {
+        key: float(value) for key, value in (all_units_values or {}).items()
     }
     return block
 
@@ -340,33 +388,64 @@ def run(args: argparse.Namespace) -> None:
             "only because each is already a within-arm double difference"
         ),
     }
-    usable = [
-        block for block in blocks
-        if block.get("backbone_values") and block.get("in_declared_panel")
-    ]
-    if len(usable) >= 2:
-        universe = set.intersection(*(set(block["backbone_values"]) for block in usable))
-        if len(universe) >= 2:
-            restricted = {
-                block["arm"]: {
-                    key: value for key, value in block["backbone_values"].items()
-                    if key in universe
-                }
-                for block in usable
-            }
-            panel["simultaneous"] = G.simultaneous_band(
-                [block["arm"] for block in usable], restricted,
-                draws=args.draws, seed=args.seed,
+    def _band(field: str) -> tuple[dict, int | None]:
+        """One simultaneous band over the arms, on one variant's backbone values.
+
+        Formed twice: on the pre-registered primary, and on the all-units variant
+        as a pre-declared sensitivity. Each gets its own critical value, because a
+        critical value is a property of the columns it is computed over and
+        borrowing the primary's would understate the sensitivity's width or
+        overstate its strength. The primary remains the statement; the sensitivity
+        exists so the panel-wide reading is not needlessly weak when
+        deduplication has taken a third to a half of the units.
+        """
+
+        available = [
+            block for block in blocks
+            if block.get(field) and block.get("in_declared_panel")
+        ]
+        if len(available) < 2:
+            return (
+                {"undefined": f"{len(available)} declared arm(s) carry a value; a band needs two"},
+                None,
             )
-            panel["shared_backbones"] = len(universe)
-        else:
-            panel["simultaneous"] = {
-                "undefined": "fewer than two backbones are shared by every declared arm"
+        universe = set.intersection(*(set(block[field]) for block in available))
+        if len(universe) < 2:
+            return (
+                {"undefined": "fewer than two backbones are shared by every declared arm"},
+                len(universe),
+            )
+        restricted = {
+            block["arm"]: {
+                key: value for key, value in block[field].items() if key in universe
             }
-    else:
-        panel["simultaneous"] = {
-            "undefined": f"{len(usable)} declared arm(s) carry a backbone value; a band needs two"
+            for block in available
         }
+        return (
+            G.simultaneous_band(
+                [block["arm"] for block in available], restricted,
+                draws=args.draws, seed=args.seed,
+            ),
+            len(universe),
+        )
+
+    panel["simultaneous"], shared = _band("backbone_values")
+    panel["shared_backbones"] = shared
+    panel["simultaneous_all_units"], shared_all = _band("backbone_values_all_units")
+    panel["shared_backbones_all_units"] = shared_all
+    panel["band_roles"] = {
+        "simultaneous": (
+            f"the pre-registered primary ({G.PRIMARY_VARIANT}); this is the panel-wide "
+            "statement"
+        ),
+        "simultaneous_all_units": (
+            f"a pre-declared sensitivity on the all-units variant "
+            f"({G.ALL_UNITS_VARIANT}), with its own critical value; reported at equal "
+            "prominence because deduplication costs a third to a half of the units, and "
+            "never read in place of the primary"
+        ),
+    }
+    panel["support_finding"] = G.SUPPORT_FINDING
 
     args.out.mkdir(parents=True, exist_ok=True)
     write_json(args.out / COMPLETION, {
