@@ -50,6 +50,23 @@ from src.capability.context.homology import (  # noqa: E402
     prepare_diamond,
     run_diamond_blastp,
     assign_stratum,
+    truncated_alignment,
+    truncation_raises_stratum,
+)
+
+#: Why the masking setting is part of this measurement rather than a flag, said
+#: once and written into every artefact the corpus search produces.
+CORPUS_MASKING_REASON = (
+    "DIAMOND masks low-complexity and repetitive query regions by default, which "
+    "truncates the alignment of exactly the records a novelty endpoint is about and "
+    "biases identity downward, so a verbatim corpus member is binned as a distant "
+    "relative. The measured case in src.capability.context.homology: a record "
+    "byte-identical to UniRef50_Q3E8Z8 over all 732 residues was reported at pident "
+    "100 over 607 aligned residues, i.e. identity over query 82.9, and 5 of 48 "
+    "records were mis-binned that way, all in the same direction. The error runs in "
+    "the flattering direction for a novelty claim: it makes the most retrievable "
+    "sequences look the most novel. --masking 0 is therefore a correctness "
+    "requirement, not a tuning choice"
 )
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
 
@@ -723,9 +740,9 @@ def product_annotation(
     *,
     index: int,
     family: Sequence[Mapping[str, Any]],
-    corpus: Mapping[str, Any],
+    corpus: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """One product's alignment annotation: family membership, and copying.
+    """One product's alignment annotation: family membership, copying, and novelty.
 
     Separated from the search so the join can be tested without an aligner,
     because the join is where it went wrong. Two rules, and they are not the
@@ -746,6 +763,15 @@ def product_annotation(
     ``None`` for the context identity means the aligner found no alignment at
     all, which is different from an alignment at zero identity and is why the
     field is not defaulted.
+
+    Corpus novelty is a **third** question and shares nothing with the first two
+    but the aligner. "This product is not a copy of its four conditioning
+    homologues" and "this product is not a near-duplicate of anything in the
+    reference" are different claims, and a product can satisfy the first and fail
+    the second. The best corpus hit is therefore reported twice: once over every
+    hit, and once over hits that are *not* one of the product's own context items,
+    so retrieval of the prompt and retrieval of the corpus at large are never read
+    as one number.
     """
 
     target = row["target_id"]
@@ -783,8 +809,32 @@ def product_annotation(
             max(entry["coverage"] for entry in context_entries) if context_entries else None
         ),
         "context_items_aligned": len({entry["subject"] for entry in context_entries}),
-        "corpus_max_identity": corpus.get("identity_over_query"),
-        "corpus_best_subject": corpus.get("subject"),
+        **corpus_annotation(corpus, cited=cited),
+    }
+
+
+def corpus_annotation(
+    corpus: Sequence[Mapping[str, Any]], *, cited: set[str]
+) -> dict[str, Any]:
+    """The corpus-proximity fields of one product, with the prompt split out."""
+
+    hits = list(corpus)
+    outside = [hit for hit in hits if hit["subject"] not in cited]
+    best = max(hits, key=lambda hit: hit["identity_over_query"], default=None)
+    best_outside = max(outside, key=lambda hit: hit["identity_over_query"], default=None)
+    return {
+        "corpus_hits": len(hits),
+        "corpus_max_identity": None if best is None else best["identity_over_query"],
+        "corpus_best_subject": None if best is None else best["subject"],
+        "corpus_best_coverage": None if best is None else best["coverage"],
+        "corpus_best_is_own_context": None if best is None else best["subject"] in cited,
+        "corpus_max_identity_outside_context": (
+            None if best_outside is None else best_outside["identity_over_query"]
+        ),
+        "corpus_best_subject_outside_context": (
+            None if best_outside is None else best_outside["subject"]
+        ),
+        "corpus_truncated_alignments": sum(1 for hit in hits if hit["truncated_alignment"]),
     }
 
 
@@ -904,14 +954,15 @@ def annotate(args: argparse.Namespace) -> None:
             }
         )
 
-    corpus_rows: dict[str, dict] = {}
+    corpus_rows: dict[str, list[dict]] = {}
     corpus_identity = None
     corpus_record = None
+    corpus_search = None
     if not args.skip_corpus:
         database, corpus_identity = resolve_corpus(args, tool)
         corpus_record = database.record()
         corpus_hits_path = args.out / "corpus_hits_products.tsv"
-        run_diamond_blastp(
+        corpus_command, corpus_log = run_diamond_blastp(
             tool,
             database,
             query,
@@ -919,24 +970,62 @@ def annotate(args: argparse.Namespace) -> None:
             threads=args.threads,
             sensitivity=H.SENSITIVITY,
             evalue=H.EVALUE,
-            max_target_seqs=25,
+            max_target_seqs=args.corpus_max_target_seqs,
             fields=ALIGNMENT_FIELDS,
         )
+        # The literal command, in the artefact. The masking setting is the
+        # difference between this endpoint measuring novelty and measuring its
+        # opposite, so a reader must be able to check it from the artefact alone
+        # rather than from this file at some revision.
+        corpus_search = {
+            "command": list(corpus_command),
+            "log_tail": corpus_log,
+            "masking": H.MASKING,
+            "masking_reason": CORPUS_MASKING_REASON,
+            "sensitivity": H.SENSITIVITY,
+            "evalue": H.EVALUE,
+            "max_target_seqs": args.corpus_max_target_seqs,
+            "threads": args.threads,
+            "identity_definition": H.IDENTITY_DEFINITION,
+            "self_match_note": (
+                "the query set is generated product sequences and the database is the "
+                "reference corpus, so no query is a record of the database and no hit "
+                "can be the query itself; a hit to one of the product's own context "
+                "items is a different thing and is separated out rather than assumed "
+                "absent"
+            ),
+            "hits": sum(1 for _ in corpus_hits_path.open(encoding="utf-8")),
+        }
         for hit in parse_hits(corpus_hits_path, fields=ALIGNMENT_FIELDS):
-            current = corpus_rows.get(hit.query)
-            if current is None or hit.identity_over_query > current["identity_over_query"]:
-                corpus_rows[hit.query] = {
+            corpus_rows.setdefault(hit.query, []).append(
+                {
                     "subject": hit.subject,
                     "identity_over_query": hit.identity_over_query,
+                    "pident": hit.pident,
                     "coverage": H.hit_coverage(hit),
+                    "bitscore": hit.bitscore,
+                    "truncated_alignment": bool(truncated_alignment(hit)),
+                    "truncation_raises_stratum": bool(
+                        truncation_raises_stratum(hit, hit.identity_over_query)
+                    ),
                 }
+            )
+        corpus_search["truncated_alignments"] = sum(
+            1 for hits in corpus_rows.values() for hit in hits if hit["truncated_alignment"]
+        )
+        corpus_search["truncations_that_would_raise_a_stratum"] = sum(
+            1
+            for hits in corpus_rows.values()
+            for hit in hits
+            if hit["truncation_raises_stratum"]
+        )
 
     annotations = [
         product_annotation(
             row,
             index=index,
             family=best_family.get(f"p{index:06d}", []),
-            corpus=corpus_rows.get(f"p{index:06d}", {}),
+            corpus=corpus_rows.get(f"p{index:06d}", ()),
         )
         for index, row in enumerate(products)
     ]
@@ -964,6 +1053,7 @@ def annotate(args: argparse.Namespace) -> None:
             },
             "corpus_identity": corpus_identity,
             "corpus_database": corpus_record,
+            "corpus_search": corpus_search,
             "annotated_products": len(annotations),
             "products_below_min_residues": sum(
                 1 for row in products if len(row["sequence"]) < H.MIN_PRODUCT_RESIDUES
@@ -1000,6 +1090,12 @@ def main() -> None:
     parser.add_argument("--homologs", type=Path, help="annotate phase: the binned artifact")
     parser.add_argument("--products", type=Path, help="annotate phase: generated products JSONL")
     parser.add_argument("--skip-corpus", action="store_true", help="annotate phase: family search only")
+    parser.add_argument(
+        "--corpus-max-target-seqs",
+        type=int,
+        default=25,
+        help="annotate phase: corpus hits retained per product before the best is taken",
+    )
     parser.add_argument(
         "--diamond-tarball", type=Path, default=ROOT / "external/tools/diamond-linux64-v2.1.24.tar.gz"
     )

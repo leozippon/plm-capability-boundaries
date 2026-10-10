@@ -542,3 +542,119 @@ def test_a_group_that_never_attempted_one_condition_is_missing_from_that_contras
     assert column["paired_groups"] == 10
     # A zero-imputed missing referent would have dragged the contrast below zero.
     assert column["point"] == pytest.approx(0.0)
+
+
+# --------------------------------------------- corpus proximity, E11's third question
+
+
+def with_corpus(row: dict, identity: float | None, *, own_context: bool = False) -> dict:
+    return {
+        **row,
+        "corpus_hits": 0 if identity is None else 1,
+        "corpus_max_identity": identity,
+        "corpus_best_subject": None if identity is None else "UniRef90_X",
+        "corpus_best_coverage": None if identity is None else 1.0,
+        "corpus_best_is_own_context": None if identity is None else own_context,
+        "corpus_max_identity_outside_context": (
+            None if identity is None or own_context else identity
+        ),
+        "corpus_truncated_alignments": 0,
+    }
+
+
+def test_a_product_with_no_detectable_relative_is_counted_not_imputed_as_similar():
+    rows = [
+        with_corpus(product("a", H.CLOSE_HOMOLOG, 200), 98.0),
+        with_corpus(product("b", H.CLOSE_HOMOLOG, 200), 42.0),
+        with_corpus(product("c", H.CLOSE_HOMOLOG, 200), None),
+        with_corpus(product("d", H.CLOSE_HOMOLOG, 200), None),
+    ]
+    out = H.corpus_novelty_distribution(rows, conditions=[H.CLOSE_HOMOLOG])[H.CLOSE_HOMOLOG]
+    assert out["status"] == "evaluated"
+    assert out["products"] == 4
+    assert out["with_detectable_homology"] == 2
+    assert out["no_detectable_homology"] == 2
+    assert out["no_detectable_homology_share"] == pytest.approx(0.5)
+    # The two readings are different quantities and both are published.
+    assert out["among_products_with_a_hit_percent"]["mean"] == pytest.approx(70.0)
+    assert out["no_hit_as_zero_percent"]["mean"] == pytest.approx(35.0)
+    # A miss lands in the lowest declared band, which is where the bands put it.
+    assert out["band_counts"]["lt30_no_detectable_homology"] == 2
+    assert out["near_duplicates"] == 1
+    assert out["near_duplicate_share"] == pytest.approx(0.25)
+    assert out["near_duplicate_threshold_percent"] == 95.0
+    assert out["max_identity_percent"] == pytest.approx(98.0)
+
+
+def test_retrieving_the_prompt_is_separated_from_retrieving_the_corpus():
+    rows = [
+        with_corpus(product("a", H.CLOSE_HOMOLOG, 200), 99.0, own_context=True),
+        with_corpus(product("b", H.CLOSE_HOMOLOG, 200), 31.0),
+    ]
+    out = H.corpus_novelty_distribution(rows, conditions=[H.CLOSE_HOMOLOG])[H.CLOSE_HOMOLOG]
+    assert out["best_hit_is_own_context"] == 1
+    # The outside-context reading excludes the prompt hit entirely.
+    assert out["outside_own_context_percent"]["n"] == 1
+    assert out["outside_own_context_percent"]["mean"] == pytest.approx(31.0)
+    # The overall reading still counts it, because a near-duplicate of the prompt
+    # is a near-duplicate of the corpus too.
+    assert out["near_duplicates"] == 1
+
+
+def test_unannotated_products_report_not_evaluated_rather_than_perfect_novelty():
+    out = H.corpus_novelty_distribution(
+        [product("a", H.CLOSE_HOMOLOG, 200)], conditions=[H.CLOSE_HOMOLOG]
+    )[H.CLOSE_HOMOLOG]
+    assert out["status"] == "not evaluated"
+    assert H.corpus_novelty_panels([product("a", H.CLOSE_HOMOLOG, 200)])["status"] == (
+        "not evaluated"
+    )
+
+
+def test_the_novelty_contrast_is_reported_raw_and_length_matched():
+    rows: list[dict] = []
+    for index in range(10):
+        target = f"q{index}"
+        # Short products: the homologue condition is a near-duplicate, the
+        # referent is remote. Long products: both remote. A raw comparison mixes
+        # the two; a banded one does not.
+        rows += [
+            with_corpus(product(f"cs{index}", H.CLOSE_HOMOLOG, 200, target=target), 99.0),
+            with_corpus(product(f"us{index}", H.UNRELATED, 200, target=target), 40.0),
+            with_corpus(product(f"cl{index}", H.CLOSE_HOMOLOG, 400, target=target), 40.0),
+            with_corpus(product(f"ul{index}", H.UNRELATED, 400, target=target), 40.0),
+        ]
+    out = H.corpus_novelty_panels(
+        rows, contrasts=((H.CLOSE_HOMOLOG, H.UNRELATED),), draws=400
+    )
+    assert out["status"] == "estimated"
+    assert set(out["estimands"]) == {"raw", "length_matched"}
+    raw = out["raw"]["panels"]["corpus_near_duplicate_share"]["columns"][0]
+    assert raw["point"] == pytest.approx(0.5)
+    banded = {
+        column["stratum"]: column
+        for column in out["length_matched"]["panels"]["corpus_near_duplicate_share"]["columns"]
+    }
+    assert banded["len_129_256"]["point"] == pytest.approx(1.0)
+    assert banded["len_257_512"]["point"] == pytest.approx(0.0)
+    assert out["length_matched"]["mean_residues"]["len_129_256"][H.CLOSE_HOMOLOG] == 200.0
+
+
+def test_a_band_only_one_condition_populates_is_named_unused():
+    rows: list[dict] = []
+    for index in range(10):
+        target = f"q{index}"
+        rows += [
+            with_corpus(product(f"c{index}", H.CLOSE_HOMOLOG, 200, target=target), 40.0),
+            with_corpus(product(f"u{index}", H.UNRELATED, 200, target=target), 40.0),
+            # Only the homologue condition reaches the short band.
+            with_corpus(product(f"t{index}", H.CLOSE_HOMOLOG, 100, target=target), 40.0),
+        ]
+    out = H.corpus_novelty_panels(
+        rows, contrasts=((H.CLOSE_HOMOLOG, H.UNRELATED),), draws=400
+    )
+    unused = out["length_matched"]["unused_strata"]
+    assert "len_16_128" in unused
+    assert unused["len_16_128"]["per_condition"][H.UNRELATED] == 0
+    assert "no counterpart" in unused["len_16_128"]["reason"]
+    assert "len_16_128" not in out["length_matched"]["strata"]

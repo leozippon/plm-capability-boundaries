@@ -279,7 +279,7 @@ def test_the_copying_rule_matches_the_accessions_the_prompt_actually_held():
         generated(),
         index=0,
         family=[family_entry("q0", "UniRef90_B", identity=71.5, coverage=0.4)],
-        corpus={},
+        corpus=(),
     )
     assert out["context_alignment_identity"] == pytest.approx(71.5)
     # No coverage floor on the copying rule: a short high-identity run is exactly
@@ -294,7 +294,7 @@ def test_an_alignment_to_another_targets_context_is_not_this_products_copying():
         generated(),
         index=0,
         family=[family_entry("q9", "UniRef90_B", identity=88.0, coverage=0.9)],
-        corpus={},
+        corpus=(),
     )
     assert out["context_alignment_identity"] is None
     assert out["prompt_family_recognised"] is False
@@ -320,7 +320,7 @@ def test_an_unrelated_donor_can_be_copied_without_becoming_family_recognition():
         generated(condition="unrelated", subjects=("UniRef90_U",)),
         index=0,
         family=[family_entry("q0", "UniRef90_U", identity=100.0, coverage=1.0, in_family=False)],
-        corpus={},
+        corpus=(),
     )
     assert out["context_alignment_identity"] == pytest.approx(100.0)
     assert out["prompt_family_recognised"] is False
@@ -335,7 +335,7 @@ def test_family_recognition_still_needs_the_coverage_floor():
         generated(),
         index=0,
         family=[family_entry("q0", "UniRef90_Z", identity=95.0, coverage=H.FAMILY_COVERAGE_FLOOR / 2)],
-        corpus={},
+        corpus=(),
     )
     assert below["prompt_family_recognised"] is False
     assert below["prompt_family_best_coverage"] == pytest.approx(H.FAMILY_COVERAGE_FLOOR / 2)
@@ -343,6 +343,6 @@ def test_family_recognition_still_needs_the_coverage_floor():
         generated(),
         index=0,
         family=[family_entry("q0", "UniRef90_Z", identity=95.0, coverage=H.FAMILY_COVERAGE_FLOOR)],
-        corpus={},
+        corpus=(),
     )
     assert at_floor["prompt_family_recognised"] is True

@@ -754,9 +754,18 @@ def analyse(args: argparse.Namespace) -> None:
         row["prompt_family_recognised"] = (
             None if annotation is None else annotation["prompt_family_recognised"]
         )
-        row["corpus_max_identity"] = (
-            None if annotation is None else annotation.get("corpus_max_identity")
-        )
+        for field in (
+            "corpus_hits",
+            "corpus_max_identity",
+            "corpus_best_subject",
+            "corpus_best_coverage",
+            "corpus_best_is_own_context",
+            "corpus_max_identity_outside_context",
+            "corpus_best_subject_outside_context",
+            "corpus_truncated_alignments",
+        ):
+            if annotation is not None and field in annotation:
+                row[field] = annotation[field]
 
     conditions = sorted({row["condition"] for row in products})
     table = {}
@@ -825,13 +834,28 @@ def analyse(args: argparse.Namespace) -> None:
             "yields": table,
             "yield_contrast": H.yield_contrast_panel(products),
             "context_identity": H.context_identity_distribution(products, conditions=conditions),
+            "corpus_novelty": {
+                "search": None if annotation_record is None else annotation_record.get("corpus_search"),
+                "corpus": None if annotation_record is None else annotation_record.get("corpus_database"),
+                "distribution": H.corpus_novelty_distribution(products, conditions=conditions),
+                "contrasts": H.corpus_novelty_panels(products),
+                "bands": {
+                    "edges": list(H.STRATUM_EDGES),
+                    "names": list(H.STRATUM_NAMES),
+                },
+                "limitation": (
+                    "no detected relative is a property of one search against one "
+                    "corpus snapshot at e <= %g, not absence from any model's "
+                    "pretraining corpus" % H.EVALUE
+                ),
+            },
             "structure": structure,
             "structure_comparison_rule": H.STRUCTURE_COMPARISON_RULE,
             "structure_unmatched_rule": H.STRUCTURE_UNMATCHED_RULE,
             "pending": {
                 "alignment_identity_copy_rule": not annotations,
                 "corpus_novelty": annotation_record is None
-                or annotation_record.get("corpus_identity") is None,
+                or annotation_record.get("corpus_search") is None,
                 "predicted_structure": sorted(set(("length_matched", "unmatched")) - set(sets)),
             },
             "limitations": list(H.LIMITATIONS),

@@ -139,7 +139,7 @@ from typing import Any
 
 import numpy as np
 
-from .homology import Hit, STRATUM_EDGES, STRATUM_NAMES
+from .homology import Hit, STRATUM_EDGES, STRATUM_NAMES, assign_stratum
 from ..core.amino_acids import AA20
 from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor, mean_interval
 
@@ -2157,3 +2157,256 @@ def condition_level_summary(
         ),
         "per_stratum": out,
     }
+
+
+# ------------------------------------------------- corpus proximity of a product
+
+
+def corpus_novelty_distribution(
+    products: Sequence[Mapping[str, Any]], *, conditions: Sequence[str]
+) -> dict[str, Any]:
+    """How close each product is to the reference corpus, as a distribution.
+
+    A third question, and not the copying one. "This product is not a copy of its
+    own four conditioning homologues" and "this product is not a near-duplicate of
+    anything the reference holds" are different claims: a product can satisfy the
+    first and fail the second, which is exactly the competing explanation --
+    conditioned generation *retrieves* rather than designs -- that this endpoint
+    exists to price.
+
+    Three readings per condition, because they fail differently:
+
+    * the identity distribution over products that have any detectable relative;
+    * the same with a product that has none counted at zero, which is the reading
+      the declared bands are assigned on;
+    * the share with **no detectable homology** at all, which is a property of one
+      search against one corpus snapshot and not a statement about any model's
+      pretraining corpus.
+
+    The best hit is reported both over every hit and over hits outside the
+    product's own context, so retrieving the prompt and retrieving the corpus at
+    large are never read as one number.
+    """
+
+    quantiles = (0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0)
+
+    def spread(values: Sequence[float]) -> dict[str, Any]:
+        array = np.asarray(values, dtype=float)
+        if array.size == 0:
+            return {"n": 0, "mean": None, "quantiles": None}
+        return {
+            "n": int(array.size),
+            "mean": float(array.mean()),
+            "quantiles": {
+                f"q{int(level * 100):02d}": float(np.quantile(array, level))
+                for level in quantiles
+            },
+        }
+
+    out: dict[str, Any] = {}
+    for condition in conditions:
+        rows = [
+            row
+            for row in products
+            if str(row.get("condition")) == condition
+            and int(row["residues"]) >= MIN_PRODUCT_RESIDUES
+        ]
+        if not rows or any("corpus_hits" not in row for row in rows):
+            out[condition] = {
+                "products": len(rows),
+                "status": "not evaluated",
+                "reason": "no corpus search has annotated these products",
+            }
+            continue
+        with_hit = [row for row in rows if row["corpus_max_identity"] is not None]
+        identities = [float(row["corpus_max_identity"]) for row in with_hit]
+        with_zeros = identities + [0.0] * (len(rows) - len(with_hit))
+        outside = [
+            float(row["corpus_max_identity_outside_context"])
+            for row in rows
+            if row.get("corpus_max_identity_outside_context") is not None
+        ]
+        bands = {name: 0 for name in STRATUM_NAMES}
+        for value in with_zeros:
+            bands[assign_stratum(value)] += 1
+        out[condition] = {
+            "products": len(rows),
+            "status": "evaluated",
+            "with_detectable_homology": len(with_hit),
+            "no_detectable_homology": len(rows) - len(with_hit),
+            "no_detectable_homology_share": (len(rows) - len(with_hit)) / len(rows),
+            "among_products_with_a_hit_percent": spread(identities),
+            "no_hit_as_zero_percent": spread(with_zeros),
+            "outside_own_context_percent": spread(outside),
+            "band_counts": bands,
+            "band_shares": {name: count / len(rows) for name, count in bands.items()},
+            "near_duplicate_threshold_percent": STRATUM_EDGES[-2],
+            "near_duplicates": bands[STRATUM_NAMES[-1]],
+            "near_duplicate_share": bands[STRATUM_NAMES[-1]] / len(rows),
+            "best_hit_is_own_context": sum(
+                1 for row in rows if row.get("corpus_best_is_own_context") is True
+            ),
+            "truncated_alignments": sum(
+                int(row.get("corpus_truncated_alignments") or 0) for row in rows
+            ),
+            "max_identity_product": (
+                max(with_hit, key=lambda row: float(row["corpus_max_identity"]))["attempt_id"]
+                if with_hit
+                else None
+            ),
+            "max_identity_percent": max(identities, default=None),
+        }
+    return out
+
+
+def corpus_novelty_panels(
+    products: Sequence[Mapping[str, Any]],
+    *,
+    contrasts: Sequence[Sequence[str]] = STRUCTURE_CONTRASTS,
+    group_key: str = "target_id",
+    draws: int = BOOTSTRAP_DRAWS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """Corpus proximity contrasted between conditions, raw and length-matched.
+
+    Identity against a reference is length-sensitive, and these conditions differ
+    in length and completeness by construction, so the contrast is reported twice:
+    over every product, and within the declared length bands that **all**
+    conditions populate. A band one condition cannot populate is left out and
+    named, never given a manufactured counterpart.
+
+    Three endpoints, each a share or a mean over the family group's own products,
+    paired inside the group and bounded by the same shared bootstrap as the
+    structural and yield panels.
+    """
+
+    measurable = [
+        row
+        for row in products
+        if int(row["residues"]) >= MIN_PRODUCT_RESIDUES and "corpus_hits" in row
+    ]
+    if not measurable:
+        return {
+            "status": "not evaluated",
+            "reason": "no corpus search has annotated these products",
+        }
+
+    def endpoint_value(row: Mapping[str, Any], endpoint: str) -> float:
+        identity = row["corpus_max_identity"]
+        if endpoint == "corpus_near_duplicate_share":
+            return float(
+                identity is not None and assign_stratum(float(identity)) == STRATUM_NAMES[-1]
+            )
+        if endpoint == "corpus_no_homology_share":
+            return float(identity is None)
+        return 0.0 if identity is None else float(identity)
+
+    endpoints = {
+        "corpus_near_duplicate_share": False,
+        "corpus_no_homology_share": False,
+        "corpus_max_identity_no_hit_as_zero": False,
+    }
+    readings: dict[str, Any] = {}
+    for reading, strata in (
+        ("raw", {"all_products": measurable}),
+        (
+            "length_matched",
+            {
+                band: [
+                    row
+                    for row in measurable
+                    if structure_length_band(int(row["residues"])) == band
+                ]
+                for band in (f"len_{low}_{high}" for low, high in STRUCTURE_LENGTH_BANDS)
+            },
+        ),
+    ):
+        conditions = sorted({str(row["condition"]) for row in measurable})
+        usable: dict[str, list[Mapping[str, Any]]] = {}
+        unused: dict[str, Any] = {}
+        for stratum, rows in strata.items():
+            counts = {
+                condition: sum(1 for row in rows if str(row["condition"]) == condition)
+                for condition in conditions
+            }
+            if min(counts.values(), default=0) < 1:
+                if any(counts.values()):
+                    unused[stratum] = {
+                        "per_condition": counts,
+                        "status": "unused",
+                        "reason": (
+                            "at least one condition supplies no product in this band, so "
+                            "the comparison has no counterpart to make"
+                        ),
+                    }
+                continue
+            usable[stratum] = rows
+        panels = {}
+        for endpoint, higher_is_better in endpoints.items():
+            cells: dict[tuple[str, str], dict[str, float]] = {}
+            counts_by_cell: dict[tuple[str, str], dict[str, int]] = {}
+            for stratum, rows in usable.items():
+                collected: dict[tuple[str, str], dict[str, list[float]]] = {}
+                for row in rows:
+                    key = (stratum, str(row["condition"]))
+                    collected.setdefault(key, {}).setdefault(str(row[group_key]), []).append(
+                        endpoint_value(row, endpoint)
+                    )
+                for key, by_group in collected.items():
+                    cells[key] = {
+                        group: float(np.mean(values)) for group, values in by_group.items()
+                    }
+                    counts_by_cell[key] = {
+                        group: len(values) for group, values in by_group.items()
+                    }
+            panels[endpoint] = paired_contrast_panel(
+                cells,
+                counts_by_cell,
+                strata=list(usable),
+                contrasts=contrasts,
+                field=endpoint,
+                higher_is_better=higher_is_better,
+                draws=draws,
+                seed=seed,
+            )
+        readings[reading] = {
+            "strata": list(usable),
+            "unused_strata": unused,
+            "per_stratum_counts": {
+                stratum: {
+                    condition: sum(1 for row in rows if str(row["condition"]) == condition)
+                    for condition in conditions
+                }
+                for stratum, rows in usable.items()
+            },
+            "mean_residues": {
+                stratum: {
+                    condition: float(
+                        np.mean(
+                            [
+                                int(row["residues"])
+                                for row in rows
+                                if str(row["condition"]) == condition
+                            ]
+                        )
+                    )
+                    for condition in conditions
+                }
+                for stratum, rows in usable.items()
+            },
+            "panels": panels,
+        }
+    readings["estimands"] = {
+        "raw": (
+            "the difference in corpus proximity between two conditions over every "
+            "product each one made. It is the quantity that bears on the yield "
+            "effect, and it confounds homology with product length and completeness"
+        ),
+        "length_matched": (
+            "the same difference within a declared length band, which removes the "
+            "length dependence of identity against a reference and is silent about "
+            "the conditions' different length and termination behaviour"
+        ),
+    }
+    readings["status"] = "estimated"
+    return readings
