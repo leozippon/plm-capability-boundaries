@@ -88,10 +88,10 @@ def _load(name: str, *, device: str, dtype: str) -> Any:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     swept = ds.arm(args.arm)
-    settings = ds.config_shard(args.config_shard, args.num_config_shards)
+    settings = ds.config_shard(args.config_shard, args.num_config_shards, grid_name=args.grid)
     if args.only_config:
         wanted = set(args.only_config)
-        unknown = sorted(wanted - set(ds.CONFIG_KEYS))
+        unknown = sorted(wanted - set(ds.grid_keys(args.grid)))
         if unknown:
             raise SystemExit(f"unknown configuration keys: {unknown}")
         settings = tuple(row for row in settings if row.key in wanted)
@@ -200,6 +200,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "arm_note": swept.note,
         "conditioned": swept.conditioned,
         "modality": swept.modality,
+        "grid": args.grid,
         "config_shard": [args.config_shard, args.num_config_shards],
         "configurations": [setting.key for setting in settings],
         "n_configurations": len(settings),
@@ -243,6 +244,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", required=True, choices=list(ds.ARM_NAMES))
+    parser.add_argument("--grid", default="main", choices=sorted(ds.GRIDS))
     parser.add_argument("--config-shard", type=int, default=0)
     parser.add_argument("--num-config-shards", type=int, default=1)
     parser.add_argument(

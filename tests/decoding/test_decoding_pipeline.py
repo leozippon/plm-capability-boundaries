@@ -184,7 +184,8 @@ def test_the_builder_accepts_a_complete_sweep_and_keeps_every_attempt(sweep):
     out = sweep["dir"] / "cohort"
     record = builder.run(
         argparse.Namespace(
-            ledgers=[sweep["ledger"]], queue=builder.DEFAULT_QUEUE, device="cpu", out=out
+            ledgers=[sweep["ledger"]], queue=builder.DEFAULT_QUEUE, grid="main",
+            device="cpu", out=out,
         )
     )
     assert record["status"] == "complete"
@@ -210,7 +211,8 @@ def test_the_builder_refuses_an_incomplete_sweep(sweep, tmp_path):
     with pytest.raises(SystemExit) as error:
         builder.run(
             argparse.Namespace(
-                ledgers=[short], queue=builder.DEFAULT_QUEUE, device="cpu", out=tmp_path / "a"
+                ledgers=[short], queue=builder.DEFAULT_QUEUE, grid="main",
+                device="cpu", out=tmp_path / "a"
             )
         )
     assert "not complete" in str(error.value)
@@ -223,6 +225,7 @@ def test_the_builder_refuses_a_cell_sampled_twice(sweep, tmp_path):
             argparse.Namespace(
                 ledgers=[sweep["ledger"], sweep["ledger"]],
                 queue=builder.DEFAULT_QUEUE,
+                grid="main",
                 device="cpu",
                 out=tmp_path / "b",
             )
@@ -250,6 +253,7 @@ def analysed(sweep, tmp_path_factory):
             structure=[folds],
             natural_structure=[natural],
             novelty=None,
+            grid="main",
             seed=3,
             resamples=200,
             device="cpu",
@@ -419,6 +423,7 @@ def test_an_unfolded_in_band_product_is_refused(analysed, tmp_path):
                 structure=[partial],
                 natural_structure=[analysed["natural"]],
                 novelty=None,
+                grid="main",
                 seed=3,
                 resamples=50,
                 device="cpu",
@@ -480,6 +485,7 @@ def test_a_reference_band_from_another_contract_is_refused(analysed, tmp_path):
                 structure=[mine],
                 natural_structure=[analysed["natural"]],
                 novelty=None,
+                grid="main",
                 seed=3,
                 resamples=50,
                 device="cpu",
@@ -504,6 +510,7 @@ def test_folds_from_two_measurement_contracts_are_refused(analysed, tmp_path):
                 structure=[mixed],
                 natural_structure=[analysed["natural"]],
                 novelty=None,
+                grid="main",
                 seed=3,
                 resamples=50,
                 device="cpu",

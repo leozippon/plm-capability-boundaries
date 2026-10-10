@@ -220,6 +220,7 @@ def _novelty(path: Path | None) -> dict[str, dict[str, Any]]:
 
 def _arm_report(
     name: str,
+    grid_name: str,
     rows: Sequence[Mapping[str, Any]],
     natural: Sequence[Mapping[str, Any]],
     existing: Sequence[Mapping[str, Any]],
@@ -305,7 +306,8 @@ def _arm_report(
     # configuration's gain and degeneracy reference are measured against it. In
     # grid order it is eighth, and the seven before it would otherwise be
     # reported with no gain at all -- which would read as "did not improve".
-    order = [ds.REFERENCE_KEY] + [key for key in ds.CONFIG_KEYS if key != ds.REFERENCE_KEY]
+    keys = ds.grid_keys(grid_name)
+    order = [ds.REFERENCE_KEY] + [key for key in keys if key != ds.REFERENCE_KEY]
     for key in order:
         setting = ds.config(key)
         cell = by_config.get(key, [])
@@ -525,8 +527,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "with weights completely fixed, can a better decoding strategy recover "
             "generative performance?"
         ),
-        "grid": [setting.record() for setting in ds.GRID],
-        "n_configurations": len(ds.GRID),
+        "grid_name": args.grid,
+        "grid": [setting.record() for setting in ds.grid(args.grid)],
+        "n_configurations": len(ds.grid(args.grid)),
         "reference_configuration": ds.REFERENCE_KEY,
         "historical_unconditioned_configuration": ds.HISTORICAL_UNCONDITIONED_KEY,
         "deep_budget_configurations": list(ds.DEEP_BUDGET_KEYS),
@@ -550,6 +553,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for name in arms:
         report["arms"][name] = _arm_report(
             name,
+            args.grid,
             [row for row in joined if row["arm"] == name],
             natural,
             existing.get(name, []),
@@ -618,6 +622,7 @@ def main() -> None:
     parser.add_argument("--structure", nargs="+", type=Path, required=True)
     parser.add_argument("--natural-structure", nargs="+", type=Path, required=True)
     parser.add_argument("--novelty", type=Path, default=None)
+    parser.add_argument("--grid", default="main", choices=sorted(ds.GRIDS))
     parser.add_argument("--seed", type=int, default=20261010)
     parser.add_argument("--resamples", type=int, default=2000)
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")

@@ -54,7 +54,9 @@ COHORT_FIELDS: tuple[str, ...] = (
 )
 
 
-def expected_cells(arms: list[str], queue_path: Path) -> set[tuple[str, str, str, int]]:
+def expected_cells(
+    arms: list[str], queue_path: Path, grid_name: str
+) -> set[tuple[str, str, str, int]]:
     # The frozen queue is read only when a conditioned arm is present, so a sweep
     # over the unconditioned arm alone does not depend on it.
     queue = (
@@ -63,7 +65,7 @@ def expected_cells(arms: list[str], queue_path: Path) -> set[tuple[str, str, str
     wanted: set[tuple[str, str, str, int]] = set()
     for name in arms:
         clusters = ds.clusters_for(name, queue if ds.arm(name).conditioned else None)
-        for setting in ds.GRID:
+        for setting in ds.grid(grid_name):
             for cluster, _ in clusters:
                 for index in range(setting.draws_per_cluster):
                     wanted.add((name, setting.key, cluster, index))
@@ -93,7 +95,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         (str(row["arm"]), str(row["config_key"]), str(row["cluster"]), int(row["draw_index"]))
         for row in rows
     }
-    wanted = expected_cells(arms, args.queue)
+    wanted = expected_cells(arms, args.queue, args.grid)
     missing = sorted(wanted - observed)
     extra = sorted(observed - wanted)
     if missing or extra:
@@ -117,7 +119,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     census: dict[str, Any] = {}
     for name in arms:
         per_config = {}
-        for setting in ds.GRID:
+        for setting in ds.grid(args.grid):
             cell = [
                 row
                 for row in rows
@@ -136,8 +138,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "campaign": ds.CAMPAIGN,
         "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "arms": arms,
-        "n_configurations": len(ds.GRID),
-        "configurations": [setting.record() for setting in ds.GRID],
+        "grid": args.grid,
+        "n_configurations": len(ds.grid(args.grid)),
+        "configurations": [setting.record() for setting in ds.grid(args.grid)],
         "clusters_per_configuration": ds.CLUSTERS_PER_CONFIG,
         "evaluation_band": list(ds.EVALUATION_BAND),
         "n_attempts": len(rows),
@@ -163,6 +166,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledgers", nargs="+", type=Path, required=True)
     parser.add_argument("--queue", type=Path, default=DEFAULT_QUEUE)
+    parser.add_argument("--grid", default="main", choices=sorted(ds.GRIDS))
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()

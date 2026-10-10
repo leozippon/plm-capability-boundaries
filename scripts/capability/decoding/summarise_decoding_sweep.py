@@ -36,12 +36,12 @@ def _interval(value: Any, digits: int = 2) -> str:
     return f"[{float(value[0]):.{digits}f}, {float(value[1]):.{digits}f}]"
 
 
-def _census_table(block: Mapping[str, Any]) -> None:
+def _census_table(block: Mapping[str, Any], keys: tuple[str, ...]) -> None:
     print(
         f"  {'configuration':26s} {'axis':26s} {'draws':>5s} {'inband':>6s} {'native':>6s} "
         f"{'tok/dr':>6s} {'medlen':>6s} {'p95len':>6s}"
     )
-    for key in ds.CONFIG_KEYS:
+    for key in keys:
         census = block["census"][key]
         length = census["length_distribution_all_products"]
         print(
@@ -52,12 +52,12 @@ def _census_table(block: Mapping[str, Any]) -> None:
         )
 
 
-def _per_candidate_table(block: Mapping[str, Any], field: str) -> None:
+def _per_candidate_table(block: Mapping[str, Any], field: str, keys: tuple[str, ...]) -> None:
     print(
         f"  {'configuration':26s} {'nfold':>5s} {'ncl':>4s} {'mean':>7s} {'cluster CI95':>18s} "
         f"{'gap':>7s} {'gapCI95 (std)':>18s} {'paired gap':>10s}"
     )
-    for key in ds.CONFIG_KEYS:
+    for key in keys:
         candidate = block["per_candidate"][key].get(field, {})
         if "mean" not in candidate:
             print(f"  {key:26s} {candidate.get('n_folded', 0):5d} {DASH:>4s} {DASH:>7s} "
@@ -136,12 +136,12 @@ def _matched_compute_table(block: Mapping[str, Any], field: str) -> None:
             print(f"    absent at this budget: {len(row['configurations_absent'])} configurations")
 
 
-def _degeneracy_table(block: Mapping[str, Any]) -> None:
+def _degeneracy_table(block: Mapping[str, Any], keys: tuple[str, ...]) -> None:
     print(
         f"  {'configuration':26s} {'dup':>6s} {'kmerd':>6s} {'entropy':>7s} {'homopoly':>8s} "
         f"{'identity':>8s} {'neardup':>7s} {'flagged'}"
     )
-    for key in ds.CONFIG_KEYS:
+    for key in keys:
         value = block["degeneracy"].get(key, {})
         profile = value.get("profile")
         if profile is None:
@@ -168,11 +168,13 @@ def main() -> None:
     args = parser.parse_args()
     report = json.loads(args.report.read_text(encoding="utf-8"))
     field = args.field
+    keys = ds.grid_keys(report.get("grid_name", "main"))
     print(f"question: {report['question']}")
     print(f"evaluator: {field} -- {ds.EVALUATORS[field]}")
     print(f"evaluation band: {report['evaluation_band']} residues; "
           f"grid: {report['n_configurations']} configurations; "
-          f"reference: {report['reference_configuration']}")
+          f"reference: {report['reference_configuration']}; "
+          f"grid: {report.get('grid_name', 'main')}")
     print(f"fold contract: {report['join']['evaluation_signatures']} "
           f"(reference band {report['join'].get('reference_evaluation_signatures')})")
     print(f"novelty search attached: {report['novelty_available']}")
@@ -198,22 +200,22 @@ def main() -> None:
                       f"CI95={_interval(gap['interval'])} (n={gap['n']})")
         print()
         print("-- census (every attempt, in band or not)")
-        _census_table(block)
+        _census_table(block, keys)
         print()
         print(f"-- per candidate, and the length-matched gap to the natural band [{field}]")
-        _per_candidate_table(block, field)
+        _per_candidate_table(block, field, keys)
         print()
         print(f"-- length-standardised across configurations [{field}]")
         _length_table(block, field)
         print()
         print(f"-- best-of-k on the deep-budget configurations [{field}]")
-        _selection_table(block, field, [key for key in ds.DEEP_BUDGET_KEYS])
+        _selection_table(block, field, [key for key in keys if ds.config(key).draws_per_cluster == ds.DRAWS_PER_CLUSTER_DEEP])
         print()
         print(f"-- matched compute [{field}]")
         _matched_compute_table(block, field)
         print()
         print("-- degeneracy diagnostics")
-        _degeneracy_table(block)
+        _degeneracy_table(block, keys)
         print()
         print("-- simultaneous statement")
         simultaneous = block.get("simultaneous", {}).get(field, {}).get("simultaneous", {})

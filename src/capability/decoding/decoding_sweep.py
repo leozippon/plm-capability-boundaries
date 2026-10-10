@@ -332,15 +332,80 @@ def _build_grid() -> tuple[DecodingConfig, ...]:
 GRID: tuple[DecodingConfig, ...] = _build_grid()
 CONFIG_KEYS: tuple[str, ...] = tuple(row.key for row in GRID)
 
+#: Temperatures the main grid steps over in one jump, from 0.80 to 1.00. The
+#: main sweep showed that jump is where the answer lives: every configuration at
+#: 1.00 and above is clean on the degeneracy axes and sits near the reference,
+#: and every configuration at 0.80 and below closes part of the gap to the
+#: natural band while failing a degeneracy axis materially. The frontier between
+#: "clean" and "closes the gap" therefore falls inside an interval the main grid
+#: never sampled, and a clean configuration found there would change the answer
+#: from "no" to "partly". Each point carries the deep budget, because the
+#: question at the frontier is a question about an interval's width.
+FINE_TEMPERATURES: tuple[float, ...] = (0.85, 0.90, 0.95)
+
+
+def _build_fine_grid() -> tuple[DecodingConfig, ...]:
+    suffix = f"eos{REFERENCE_MAX_NEW_TOKENS}"
+    rows = [
+        DecodingConfig(
+            key=_key(temperature, 0.95, 0, suffix),
+            axis="temperature_frontier",
+            temperature=temperature,
+            top_p=0.95,
+            top_k=0,
+            max_new_tokens=REFERENCE_MAX_NEW_TOKENS,
+            min_new_tokens=0,
+            allow_terminator=True,
+            draws_per_cluster=DRAWS_PER_CLUSTER_DEEP,
+            note="between the main grid's 0.80 and 1.00, where clean and improved may meet",
+        )
+        for temperature in FINE_TEMPERATURES
+    ]
+    # The reference travels with this grid rather than being joined across runs,
+    # so the extension is one self-contained cohort read against one natural
+    # band. Its key, and therefore its per-cluster seeds, are the main grid's, so
+    # the cell draws the identical 512 sequences and the two runs' reference
+    # readings are comparable by construction rather than by assumption.
+    return (config(REFERENCE_KEY), *rows)
+
 
 def config(key: str) -> DecodingConfig:
-    for row in GRID:
-        if row.key == key:
-            return row
-    raise KeyError(f"unknown decoding configuration {key!r}; declared: {list(CONFIG_KEYS)}")
+    for grid in (GRID, _FINE):
+        for row in grid:
+            if row.key == key:
+                return row
+    raise KeyError(f"unknown decoding configuration {key!r}; declared: {sorted(_ALL_KEYS)}")
 
 
-def config_shard(index: int, num_shards: int) -> tuple[DecodingConfig, ...]:
+_FINE: tuple[DecodingConfig, ...] = ()
+_ALL_KEYS: frozenset[str] = frozenset(CONFIG_KEYS)
+FINE_GRID: tuple[DecodingConfig, ...] = _build_fine_grid()
+_FINE = FINE_GRID
+_ALL_KEYS = frozenset(CONFIG_KEYS) | frozenset(row.key for row in FINE_GRID)
+
+#: The declared grids, by name. ``main`` is the factorial sweep; ``fine`` is the
+#: frontier extension. Configuration keys are globally unique across grids, so a
+#: cell seed and a candidate identity never collide between the two.
+GRIDS: dict[str, tuple[DecodingConfig, ...]] = {"main": GRID, "fine": FINE_GRID}
+
+if len(_ALL_KEYS) != len(CONFIG_KEYS) + len(FINE_GRID) - 1:
+    raise AssertionError(
+        "the fine grid must share exactly one configuration -- the reference -- "
+        "with the main grid, and collide with it nowhere else"
+    )
+
+
+def grid(name: str) -> tuple[DecodingConfig, ...]:
+    if name not in GRIDS:
+        raise KeyError(f"unknown grid {name!r}; declared: {sorted(GRIDS)}")
+    return GRIDS[name]
+
+
+def grid_keys(name: str) -> tuple[str, ...]:
+    return tuple(row.key for row in grid(name))
+
+
+def config_shard(index: int, num_shards: int, *, grid_name: str = "main") -> tuple[DecodingConfig, ...]:
     """The configurations one generation cell samples.
 
     Round-robin over the grid sorted by descending draw count, so the deep
@@ -349,7 +414,7 @@ def config_shard(index: int, num_shards: int) -> tuple[DecodingConfig, ...]:
 
     if num_shards < 1 or not 0 <= index < num_shards:
         raise ValueError(f"shard {index} of {num_shards} is not a shard")
-    order = sorted(GRID, key=lambda row: (-row.draws, row.key))
+    order = sorted(grid(grid_name), key=lambda row: (-row.draws, row.key))
     return tuple(row for position, row in enumerate(order) if position % num_shards == index)
 
 
@@ -1008,6 +1073,12 @@ MAX_UNSUPPORTED_MASS: float = 0.05
 PAIRED_CONTRAST_CAP: int = 64
 PAIRED_TOLERANCE_RESIDUES: int = 6
 MIN_PAIRED_MATCH_RATE: float = 0.80
+#: Independent matched draws the paired comparator is averaged over. One draw is
+#: not an estimator: elsewhere in this programme a single-draw length-matched
+#: comparator moved the same reported quantity from +1.85 to +9.54 between two
+#: blocks purely from generator state, which was the whole distance between a
+#: resolved and an unresolved reading.
+PAIRED_COMPARATOR_DRAWS: int = 64
 
 
 def k_values(draws_per_cluster: int) -> tuple[int, ...]:
@@ -1254,6 +1325,7 @@ def natural_band_contrast(
     seed: int,
     tolerance: int = PAIRED_TOLERANCE_RESIDUES,
     cap: int = PAIRED_CONTRAST_CAP,
+    n_draws: int = PAIRED_COMPARATOR_DRAWS,
     n_bootstrap: int = 10000,
 ) -> dict[str, Any]:
     """A configuration minus its paired whole-natural comparator, by length.
@@ -1275,18 +1347,54 @@ def natural_band_contrast(
     makes the configurations' gaps correlated; this interval is marginal.
     """
 
-    sample = capped_by_cluster(candidates, cap=cap, seed=seed)
-    pairs, report = gp.match_natural_records(
-        list(sample), list(natural), tolerance=tolerance, seed=seed
-    )
-    rate = report["n_matched"] / report["n_targets"]
+    values: dict[str, float] = {}
+    clusters: dict[str, str] = {}
+    comparator: dict[str, list[float]] = {}
+    per_draw: list[float] = []
+    rates: list[float] = []
+    reports: list[Mapping[str, Any]] = []
+    for offset in range(n_draws):
+        sample = capped_by_cluster(candidates, cap=cap, seed=seed + offset)
+        pairs, report = gp.match_natural_records(
+            list(sample), list(natural), tolerance=tolerance, seed=seed + offset
+        )
+        reports.append(report)
+        rates.append(report["n_matched"] / report["n_targets"])
+        differences = []
+        for pair in pairs:
+            identifier = str(pair["target"]["id"])
+            values[identifier] = float(pair["target"][field])
+            clusters[identifier] = str(pair["target"]["cluster"])
+            comparator.setdefault(identifier, []).append(float(pair["natural"][field]))
+            differences.append(values[identifier] - comparator[identifier][-1])
+        per_draw.append(float(np.mean(differences)) if differences else float("nan"))
+    rate = float(np.mean(rates))
+    spread = np.asarray([value for value in per_draw if math.isfinite(value)], dtype=np.float64)
     record: dict[str, Any] = {
         "field": field,
         "cap": int(cap),
+        "n_draws": int(n_draws),
         "n_candidates_available": len(candidates),
-        "match_rate": float(rate),
+        "match_rate": rate,
+        "min_match_rate_over_draws": float(np.min(rates)),
         "minimum_match_rate": float(MIN_PAIRED_MATCH_RATE),
-        "matching": report,
+        "tolerance_residues": int(tolerance),
+        "mean_absolute_length_difference": float(
+            np.mean([report["mean_absolute_length_difference"] for report in reports])
+        ),
+        "across_draw_mean_difference": float(spread.mean()) if spread.size else None,
+        "across_draw_interval": (
+            [float(np.percentile(spread, 2.5)), float(np.percentile(spread, 97.5))]
+            if spread.size >= 2
+            else None
+        ),
+        "why_many_draws": (
+            "the comparator is averaged over independent matched draws rather than "
+            "read off one. A single draw of this estimator moved the same quantity by "
+            "several units of confidence between blocks purely from generator state "
+            "elsewhere in this programme, which is the difference between a resolved "
+            "and an unresolved reading"
+        ),
         "interval_is_marginal": (
             "a marginal 95% interval for this configuration alone. Simultaneous "
             "statements across configurations come from the joint cluster bootstrap"
@@ -1297,18 +1405,23 @@ def natural_band_contrast(
             {
                 "resolved": False,
                 "unresolved_reason": (
-                    f"only {report['n_matched']} of {report['n_targets']} candidates found a "
-                    f"whole natural record within {tolerance} residues. The paired contrast "
-                    "is not identifiable at this configuration's length concentration"
+                    f"a mean {rate:.2f} of candidates found a whole natural record within "
+                    f"{tolerance} residues, below the declared {MIN_PAIRED_MATCH_RATE:.2f}. "
+                    "The paired contrast is not identifiable at this configuration's length "
+                    "concentration and is not forced"
                 ),
                 "contrast": None,
             }
         )
         return record
-    left = [float(pair["target"][field]) for pair in pairs]
-    right = [float(pair["natural"][field]) for pair in pairs]
-    groups = [str(pair["target"]["cluster"]) for pair in pairs]
+    matched = sorted(comparator)
+    left = [values[identifier] for identifier in matched]
+    right = [float(np.mean(comparator[identifier])) for identifier in matched]
+    groups = [clusters[identifier] for identifier in matched]
     contrast = gp.matched_contrast(left, right, groups, seed=seed, n_bootstrap=n_bootstrap)
+    contrast["n_comparator_draws_per_candidate"] = float(
+        np.mean([len(comparator[identifier]) for identifier in matched])
+    )
     record.update({"resolved": bool(contrast["resolved"]), "contrast": contrast})
     return record
 

@@ -53,6 +53,22 @@ def test_the_deep_budget_configurations_are_declared_and_balanced_across_shards(
     assert sum(row.draws for row in left) == sum(row.draws for row in right)
 
 
+def test_the_fine_grid_shares_only_the_reference_with_the_main_grid():
+    fine = set(ds.grid_keys("fine"))
+    main = set(ds.grid_keys("main"))
+    assert fine & main == {ds.REFERENCE_KEY}
+    # Every frontier point sits strictly between the main grid's 0.80 and 1.00,
+    # which is the interval the main grid never sampled.
+    frontier = [ds.config(key) for key in fine - {ds.REFERENCE_KEY}]
+    assert all(0.80 < row.temperature < 1.00 for row in frontier)
+    assert all(row.top_p == 0.95 and row.top_k == 0 for row in frontier)
+    # Each carries the deep budget, because the question there is about width.
+    assert all(row.draws_per_cluster == ds.DRAWS_PER_CLUSTER_DEEP for row in ds.grid("fine"))
+    assert ds.grid("main") is ds.GRID
+    with pytest.raises(KeyError):
+        ds.grid("coarse")
+
+
 def test_an_unknown_configuration_or_shard_is_refused():
     with pytest.raises(KeyError):
         ds.config("t9.99_p0.95_k0_eos400")
@@ -406,6 +422,40 @@ def test_a_configuration_without_natural_support_is_named_not_forced():
     assert "not identifiable" in band["unresolved_reason"]
 
 
+def test_the_paired_comparator_averages_many_draws_rather_than_reading_one():
+    # A comparator pool whose values vary a lot at any given length: a single
+    # matched draw then reports whichever records it happened to pick, and two
+    # single draws disagree. Averaging many draws is what makes the point an
+    # estimator rather than a sample of the generator's state.
+    rng = np.random.default_rng(31)
+    lengths = [length for length in range(60, 400, 2) for _ in range(8)]
+    natural = _folded(lengths, [50.0 + rng.normal(0, 20.0) for _ in lengths])
+    targets = _folded(list(range(80, 336, 4)), [90.0] * 64)
+
+    singles = [
+        ds.natural_band_contrast(
+            targets, natural, field="mean_ca_plddt", seed=seed, n_draws=1, n_bootstrap=200
+        )["contrast"]["difference"]
+        for seed in (1, 2, 3, 4, 5, 6, 7, 8)
+    ]
+    averaged = ds.natural_band_contrast(
+        targets, natural, field="mean_ca_plddt", seed=1, n_draws=64, n_bootstrap=200
+    )
+    assert averaged["n_draws"] == 64
+    assert averaged["contrast"]["n_comparator_draws_per_candidate"] > 1.0
+    # The single draws scatter; the averaged point sits inside that scatter and is
+    # far more stable than any one of them.
+    assert np.std(singles) > 0.5
+    repeat = ds.natural_band_contrast(
+        targets, natural, field="mean_ca_plddt", seed=101, n_draws=64, n_bootstrap=200
+    )
+    assert abs(averaged["contrast"]["difference"] - repeat["contrast"]["difference"]) < np.std(singles)
+    # The matching-induced spread is reported in its own right, so a reader can
+    # see how much of the number the comparator draw decides.
+    assert averaged["across_draw_interval"] is not None
+    assert averaged["across_draw_interval"][0] < averaged["across_draw_interval"][1]
+
+
 def test_the_paired_comparator_declares_itself_unresolved_when_it_cannot_match():
     natural = _folded(list(range(60, 400, 2)), [50.0] * 170)
     # Sixty-four candidates all at one length: the folded natural pool holds only
@@ -413,7 +463,7 @@ def test_the_paired_comparator_declares_itself_unresolved_when_it_cannot_match()
     # cannot be formed and the contrast must say so.
     concentrated = _folded([201] * 128, [90.0] * 128)
     record = ds.natural_band_contrast(
-        concentrated, natural, field="mean_ca_plddt", seed=1, n_bootstrap=200
+        concentrated, natural, field="mean_ca_plddt", seed=1, n_draws=4, n_bootstrap=200
     )
     assert record["resolved"] is False
     assert record["contrast"] is None
@@ -421,7 +471,7 @@ def test_the_paired_comparator_declares_itself_unresolved_when_it_cannot_match()
 
     spread = _folded(list(range(80, 336, 4)), [90.0] * 64)
     good = ds.natural_band_contrast(
-        spread, natural, field="mean_ca_plddt", seed=1, n_bootstrap=200
+        spread, natural, field="mean_ca_plddt", seed=1, n_draws=4, n_bootstrap=200
     )
     assert good["resolved"]
     assert good["contrast"]["difference"] == pytest.approx(40.0)
