@@ -261,6 +261,13 @@ def run(args: argparse.Namespace) -> None:
                 target.write_text(pdb if isinstance(pdb, str) else pdb[0])
                 record["pdb"] = str(target.relative_to(args.out))
             handle.write(json.dumps(record, allow_nan=False) + "\n")
+            # Flushed per record, not left to the buffer. A fold of 128 products
+            # is minutes long, and with the default buffering the records file
+            # stayed empty while the pairwise archives accumulated beside it, so
+            # the only readable progress was a directory listing. Completion is
+            # still the expect JSON and its digest sidecar, so a partially
+            # written records file can never be mistaken for a finished cell.
+            handle.flush()
             written += 1
             del output
             if device.startswith("cuda"):
