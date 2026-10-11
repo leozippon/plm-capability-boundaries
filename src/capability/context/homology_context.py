@@ -2249,6 +2249,12 @@ def corpus_novelty_distribution(
             "truncated_alignments": sum(
                 int(row.get("corpus_truncated_alignments") or 0) for row in rows
             ),
+            "exact_full_length_hits": sum(
+                int(row.get("corpus_exact_full_length_hits") or 0) for row in rows
+            ),
+            "products_with_an_exact_full_length_hit": sum(
+                1 for row in rows if int(row.get("corpus_exact_full_length_hits") or 0) > 0
+            ),
             "max_identity_product": (
                 max(with_hit, key=lambda row: float(row["corpus_max_identity"]))["attempt_id"]
                 if with_hit

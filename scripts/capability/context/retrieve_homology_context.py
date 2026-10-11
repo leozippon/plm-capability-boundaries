@@ -835,6 +835,7 @@ def corpus_annotation(
             None if best_outside is None else best_outside["subject"]
         ),
         "corpus_truncated_alignments": sum(1 for hit in hits if hit["truncated_alignment"]),
+        "corpus_exact_full_length_hits": sum(1 for hit in hits if hit["exact_full_length"]),
     }
 
 
@@ -1008,10 +1009,28 @@ def annotate(args: argparse.Namespace) -> None:
                     "truncation_raises_stratum": bool(
                         truncation_raises_stratum(hit, hit.identity_over_query)
                     ),
+                    # The self-match signature, counted rather than assumed
+                    # absent: every residue of the query identically matched by a
+                    # subject of the query's own length. A coverage screen on
+                    # natural backbones found all 111 of its records here, because
+                    # the search finds the sequence itself. These queries are
+                    # generated and cannot be records of the database, so a hit
+                    # with this signature is a verbatim corpus member rather than
+                    # a self-match -- which makes the count the headline number of
+                    # this endpoint, not a diagnostic to be filtered away.
+                    "exact_full_length": bool(
+                        hit.nident == hit.qlen and hit.slen == hit.qlen
+                    ),
                 }
             )
         corpus_search["truncated_alignments"] = sum(
             1 for hits in corpus_rows.values() for hit in hits if hit["truncated_alignment"]
+        )
+        corpus_search["exact_full_length_hits"] = sum(
+            1 for hits in corpus_rows.values() for hit in hits if hit["exact_full_length"]
+        )
+        corpus_search["products_with_an_exact_full_length_hit"] = sum(
+            1 for hits in corpus_rows.values() if any(hit["exact_full_length"] for hit in hits)
         )
         corpus_search["truncations_that_would_raise_a_stratum"] = sum(
             1

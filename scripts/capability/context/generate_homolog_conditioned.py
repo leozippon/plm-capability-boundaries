@@ -763,6 +763,7 @@ def analyse(args: argparse.Namespace) -> None:
             "corpus_max_identity_outside_context",
             "corpus_best_subject_outside_context",
             "corpus_truncated_alignments",
+            "corpus_exact_full_length_hits",
         ):
             if annotation is not None and field in annotation:
                 row[field] = annotation[field]

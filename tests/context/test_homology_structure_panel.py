@@ -658,3 +658,18 @@ def test_a_band_only_one_condition_populates_is_named_unused():
     assert unused["len_16_128"]["per_condition"][H.UNRELATED] == 0
     assert "no counterpart" in unused["len_16_128"]["reason"]
     assert "len_16_128" not in out["length_matched"]["strata"]
+
+
+def test_a_verbatim_corpus_member_is_counted_not_filtered_as_a_self_match():
+    # A generated product cannot be a record of the reference, so a hit that
+    # matches every residue of the query against a subject of the query's own
+    # length is a verbatim corpus member and is the headline number here.
+    rows = [
+        {**with_corpus(product("a", H.CLOSE_HOMOLOG, 200), 100.0), "corpus_exact_full_length_hits": 1},
+        {**with_corpus(product("b", H.CLOSE_HOMOLOG, 200), 44.0), "corpus_exact_full_length_hits": 0},
+    ]
+    out = H.corpus_novelty_distribution(rows, conditions=[H.CLOSE_HOMOLOG])[H.CLOSE_HOMOLOG]
+    assert out["exact_full_length_hits"] == 1
+    assert out["products_with_an_exact_full_length_hit"] == 1
+    assert out["near_duplicates"] == 1
+    assert out["max_identity_percent"] == pytest.approx(100.0)
