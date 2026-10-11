@@ -346,3 +346,90 @@ def test_family_recognition_still_needs_the_coverage_floor():
         corpus=(),
     )
     assert at_floor["prompt_family_recognised"] is True
+
+
+# ------------------------------ the chunked novelty search's cut of the query set
+#
+# Measured on E11's 5983 products: under the identifier order the first chunk of
+# 1536 queries held 4 of the 12 family groups, because an attempt identifier
+# begins with its group. The final census is unaffected -- every query is searched
+# once either way -- but an interim read off one chunk then speaks for those groups
+# alone, which is why the stratified order exists and why the order is recorded.
+
+
+def novelty_products(targets=12, conditions=("a", "b", "c", "d"), per_cell=8):
+    rows = []
+    for group in range(targets):
+        for condition in conditions:
+            for index in range(per_cell):
+                rows.append(
+                    {
+                        "attempt_id": f"arm|q{group:05d}|{condition}|{index:04d}",
+                        "target_id": f"q{group:05d}",
+                        "condition": condition,
+                        "sequence": "M" * 200,
+                    }
+                )
+    return rows
+
+
+def chunk_groups(rows, *, chunk_size, order):
+    """The groups each chunk would carry, using the stage's own ordering rules."""
+
+    import argparse
+
+    measurable = sorted(rows, key=lambda row: str(row["attempt_id"]))
+    if order == "stratified":
+        cells = {}
+        for row in measurable:
+            cells.setdefault((row["target_id"], row["condition"]), []).append(row)
+        ordered = []
+        for position in range(max(len(value) for value in cells.values())):
+            for key in sorted(cells):
+                if position < len(cells[key]):
+                    ordered.append(cells[key][position])
+        measurable = ordered
+    return [
+        sorted({row["target_id"] for row in measurable[index : index + chunk_size]})
+        for index in range(0, len(measurable), chunk_size)
+    ]
+
+
+def test_the_identifier_cut_gives_a_chunk_only_a_few_family_groups():
+    rows = novelty_products()
+    chunks = chunk_groups(rows, chunk_size=len(rows) // 4, order="identifier")
+    assert len(chunks) == 4
+    # Every chunk holds a contiguous slice of the groups, not a sample of them.
+    assert all(len(groups) <= 4 for groups in chunks)
+    assert chunks[0][0] == "q00000"
+    assert chunks[-1][-1] == "q00011"
+
+
+def test_the_stratified_cut_gives_every_chunk_every_group():
+    rows = novelty_products()
+    chunks = chunk_groups(rows, chunk_size=len(rows) // 4, order="stratified")
+    assert len(chunks) == 4
+    expected = sorted({row["target_id"] for row in rows})
+    assert all(groups == expected for groups in chunks), (
+        "a stratified chunk must carry every family group, or an interim read off "
+        "one chunk does not speak for the cohort"
+    )
+
+
+def test_neither_cut_loses_or_duplicates_a_product():
+    rows = novelty_products()
+    for order in ("identifier", "stratified"):
+        measurable = sorted(rows, key=lambda row: str(row["attempt_id"]))
+        if order == "stratified":
+            cells = {}
+            for row in measurable:
+                cells.setdefault((row["target_id"], row["condition"]), []).append(row)
+            ordered = []
+            for position in range(max(len(value) for value in cells.values())):
+                for key in sorted(cells):
+                    if position < len(cells[key]):
+                        ordered.append(cells[key][position])
+            measurable = ordered
+        identifiers = [row["attempt_id"] for row in measurable]
+        assert len(identifiers) == len(rows)
+        assert len(set(identifiers)) == len(rows)

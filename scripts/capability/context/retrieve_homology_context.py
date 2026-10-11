@@ -909,8 +909,22 @@ def novelty(args: argparse.Namespace) -> None:
     chunk_dir = args.out / "chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    # Deterministic chunking on the attempt identifier, so a resumed run and a
-    # fresh one cut the query set the same way.
+    # Deterministic chunking, so a resumed run and a fresh one cut the query set
+    # the same way. Two orders, and which one to use depends on what the chunks
+    # are for.
+    #
+    # ``identifier`` sorts by attempt identifier. It is the simplest cut and the
+    # cheapest to reason about, but because an identifier begins with its family
+    # group, a chunk covers only the few groups that fall inside it: the first
+    # chunk of E11's 5983 products held 1536 queries from 4 of the 12 groups. The
+    # final census is unaffected -- every query is searched exactly once either
+    # way -- but a chunk is then not a sample of the cohort and an interim read
+    # off one is a statement about those groups alone.
+    #
+    # ``stratified`` interleaves the groups and conditions round-robin, so each
+    # chunk carries every group and every condition in proportion and an interim
+    # after one chunk is a representative quarter. Use it whenever a partial
+    # result is meant to be read.
     measurable = sorted(
         (
             row
@@ -919,6 +933,20 @@ def novelty(args: argparse.Namespace) -> None:
         ),
         key=lambda row: str(row["attempt_id"]),
     )
+    if args.chunk_order == "stratified":
+        cells: dict[tuple[str, str], list[dict]] = {}
+        for row in measurable:
+            cells.setdefault(
+                (str(row.get("target_id", "")), str(row.get("condition", ""))), []
+            ).append(row)
+        ordered: list[dict] = []
+        for position in range(max(len(value) for value in cells.values())):
+            for key in sorted(cells):
+                if position < len(cells[key]):
+                    ordered.append(cells[key][position])
+        if len(ordered) != len(measurable):
+            raise SystemExit("the stratified interleave lost or duplicated a product")
+        measurable = ordered
     if not measurable:
         raise SystemExit(
             f"no product of {args.products} reaches {H.MIN_PRODUCT_RESIDUES} residues"
@@ -950,13 +978,28 @@ def novelty(args: argparse.Namespace) -> None:
         hits = Path(chunk["hits"])
         sidecar = hits.with_suffix(hits.suffix + ".sha256")
         if hits.is_file() and sidecar.is_file():
-            recorded = sidecar.read_text(encoding="utf-8").split()[0]
-            if recorded == sha256_file(hits):
-                return {**chunk, "status": "reused", "seconds": 0.0, "command": None}
-            raise SystemExit(
-                f"{hits} does not match its digest sidecar; a partially written chunk "
-                "is not a completed one, so remove it rather than resuming over it"
+            # Two digests, not one. The hits digest catches a partial write; the
+            # query digest catches the subtler failure, which is a resume under a
+            # different --chunk-size or --chunk-order silently adopting hits that
+            # were searched for a different set of queries. Reusing those would
+            # report a novelty census over a query set nobody chose.
+            recorded = dict(
+                zip(("hits", "query"), sidecar.read_text(encoding="utf-8").split()[:3:2])
             )
+            if recorded.get("hits") != sha256_file(hits):
+                raise SystemExit(
+                    f"{hits} does not match its digest sidecar; a partially written "
+                    "chunk is not a completed one, so remove it rather than resuming "
+                    "over it"
+                )
+            if recorded.get("query") != chunk["query_sha256"]:
+                raise SystemExit(
+                    f"{hits} was searched for a different query set than chunk "
+                    f"{chunk['chunk']} now holds; the chunking changed between runs, so "
+                    "remove the chunk directory rather than resuming across two "
+                    "different cuts of the product set"
+                )
+            return {**chunk, "status": "reused", "seconds": 0.0, "command": None}
         started = time.monotonic()
         command, log = run_diamond_blastp(
             tool,
@@ -971,7 +1014,10 @@ def novelty(args: argparse.Namespace) -> None:
             progress_log=Path(chunk["progress_log"]),
         )
         digest = sha256_file(hits)
-        sidecar.write_text(f"{digest}  {hits.name}\n", encoding="utf-8")
+        sidecar.write_text(
+            f"{digest}  {hits.name}  {chunk['query_sha256']}  {Path(chunk['query_fasta']).name}\n",
+            encoding="utf-8",
+        )
         return {
             **chunk,
             "status": "searched",
@@ -1020,6 +1066,13 @@ def novelty(args: argparse.Namespace) -> None:
                 "max_target_seqs": args.corpus_max_target_seqs,
                 "identity_definition": H.IDENTITY_DEFINITION,
                 "chunk_size": args.chunk_size,
+                "chunk_order": args.chunk_order,
+                "chunk_order_note": (
+                    "under 'identifier' a chunk covers only the family groups that "
+                    "fall inside it, so a partial result speaks for those groups and "
+                    "not for the cohort; 'stratified' makes each chunk a "
+                    "representative sample"
+                ),
                 "workers": args.workers,
                 "threads_per_worker": args.threads,
                 "chunks": len(chunks),
@@ -1387,6 +1440,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--workers", type=int, default=6, help="novelty phase: chunks searched concurrently"
+    )
+    parser.add_argument(
+        "--chunk-order",
+        choices=["identifier", "stratified"],
+        default="identifier",
+        help="novelty phase: how the query set is cut. 'stratified' interleaves "
+        "family groups and conditions so each chunk is a representative sample and "
+        "an interim read off one chunk speaks for the cohort",
     )
     parser.add_argument(
         "--corpus-max-target-seqs",
