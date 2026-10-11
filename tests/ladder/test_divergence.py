@@ -313,6 +313,39 @@ def test_a_ladder_that_never_reaches_zero_reports_no_crossing():
     assert record["measured_range"] == [1.0, 40.0]
 
 
+def test_a_nearly_flat_ladder_does_not_overflow_on_an_extrapolated_crossing():
+    """The failure this function actually hit on real data.
+
+    A ladder that barely moves fits a slope near zero, which puts the crossing
+    at an exponent of order 10^300. Raising two to that raises OverflowError and
+    lost an hour of completed bootstrap work, so the solve stays in log2 and the
+    unconstrained value is reported as an exponent.
+    """
+
+    extents = [1, 2, 5, 10, 20, 40]
+    points = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5 + 1e-300]
+    matrix = np.tile(points, (50, 1))
+    record = dv.continuous_crossing(extents, matrix, point_estimates=points)
+    assert record["crossing_extent"] is None
+    assert record["fraction_without_crossing"] == pytest.approx(1.0)
+    assert record["crossing_log2_extent_unconstrained"] is None or abs(
+        record["crossing_log2_extent_unconstrained"]
+    ) > 10.0
+
+
+def test_a_perfectly_flat_ladder_reports_no_crossing_rather_than_dividing_by_zero():
+    extents = [1, 2, 5, 10, 20, 40]
+    points = [0.4] * 6
+    record = dv.continuous_crossing(extents, np.tile(points, (20, 1)), point_estimates=points)
+    assert record["crossing_extent"] is None
+    assert record["interval"] is None
+    assert record["n_draws_with_crossing_in_range"] == 0
+    exponent = record["crossing_log2_extent_unconstrained"]
+    # A flat ladder fits a slope that is zero or numerically indistinguishable
+    # from it, so the solve is either undefined or absurdly far out of range.
+    assert exponent is None or abs(exponent) > 100.0
+
+
 def test_a_crossing_needs_at_least_three_rungs():
     with pytest.raises(ValueError, match="at least three"):
         dv.continuous_crossing([1, 2], np.zeros((5, 2)), point_estimates=[0.1, 0.1])

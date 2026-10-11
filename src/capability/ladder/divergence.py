@@ -462,6 +462,14 @@ def continuous_crossing(
     draw whose line never reaches zero between the smallest and largest extent is
     counted in ``fraction_without_crossing``: an extrapolated crossing at k = 900
     would be an artefact of the fit and is not a finding about any model.
+
+    The solve stays in ``log2`` throughout and is exponentiated only after it has
+    been found to lie inside the measured range. A ladder that is nearly flat
+    fits a slope near zero, which puts the crossing at an exponent of order
+    10^300 -- and raising two to that overflows rather than producing a number to
+    discard, which is how this function first failed on real data. An
+    extrapolated crossing is meaningless anyway, so the unconstrained value is
+    reported as its exponent and never as an extent.
     """
 
     k = np.asarray(extents, dtype=np.float64)
@@ -475,25 +483,32 @@ def continuous_crossing(
     if point.shape != k.shape:
         raise ValueError("the point estimates must align with the extents")
 
-    def crossing(values: np.ndarray) -> float:
+    def crossing_log2(values: np.ndarray) -> float:
+        """Where the fitted line reaches zero, as an exponent of two."""
+
         if not np.isfinite(values).all():
             return float("nan")
         coefficients, *_ = np.linalg.lstsq(design, values, rcond=None)
         intercept, slope = float(coefficients[0]), float(coefficients[1])
         if slope == 0.0:
             return float("nan")
-        return float(2.0 ** (-intercept / slope))
+        return -intercept / slope
 
-    observed = crossing(point)
-    draws = np.asarray([crossing(row) for row in matrix], dtype=np.float64)
     low, high = float(k.min()), float(k.max())
-    inside = draws[np.isfinite(draws) & (draws >= low) & (draws <= high)]
+    low_log2, high_log2 = float(np.log2(low)), float(np.log2(high))
+    observed_log2 = crossing_log2(point)
+    draws_log2 = np.asarray([crossing_log2(row) for row in matrix], dtype=np.float64)
+    inside_mask = np.isfinite(draws_log2) & (draws_log2 >= low_log2) & (draws_log2 <= high_log2)
+    inside = np.exp2(draws_log2[inside_mask])
+    in_range = bool(np.isfinite(observed_log2) and low_log2 <= observed_log2 <= high_log2)
     tail = (1.0 - confidence) / 2.0
     return {
         "axis": "log2 nominal extent in residues",
         "extents": [int(value) for value in k],
-        "crossing_extent": observed if np.isfinite(observed) and low <= observed <= high else None,
-        "crossing_extent_unconstrained": float(observed) if np.isfinite(observed) else None,
+        "crossing_extent": float(np.exp2(observed_log2)) if in_range else None,
+        "crossing_log2_extent_unconstrained": (
+            float(observed_log2) if np.isfinite(observed_log2) else None
+        ),
         "interval": (
             [float(np.quantile(inside, tail)), float(np.quantile(inside, 1.0 - tail))]
             if inside.size >= 2
