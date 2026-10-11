@@ -973,6 +973,7 @@ def annotate(args: argparse.Namespace) -> None:
             evalue=H.EVALUE,
             max_target_seqs=args.corpus_max_target_seqs,
             fields=ALIGNMENT_FIELDS,
+            progress_log=args.out / "corpus_search_progress.log",
         )
         # The literal command, in the artefact. The masking setting is the
         # difference between this endpoint measuring novelty and measuring its

@@ -422,6 +422,7 @@ def run_diamond_blastp(
     evalue: float,
     max_target_seqs: int,
     fields: Sequence[str] = DIAMOND_FIELDS,
+    progress_log: Path | None = None,
 ) -> tuple[list[str], str]:
     """Search the cohort against the corpus; return the command and the log tail.
 
@@ -447,6 +448,14 @@ def run_diamond_blastp(
     test.  The bias is also the reverse of the upward bias the module docstring
     declares, and it grows with repeat content, the one property the cohort is
     selected on.
+
+    ``progress_log`` makes a long search watchable. DIAMOND reports its
+    reference-block and seed-shape progress on stderr, and capturing that in
+    memory means a search in progress shows nothing at all until it ends: the
+    E11 novelty search ran forty minutes with an empty output file and no way to
+    tell a working process from a stalled one. With a path given, the combined
+    output is streamed to it line by line and the returned tail is read back from
+    it; with none, the behaviour is exactly what it was.
 
     ``fields`` selects the tabular columns and defaults to
     :data:`DIAMOND_FIELDS`, which is what a stratification consumes. A caller
@@ -494,8 +503,17 @@ def run_diamond_blastp(
     if sensitivity != "default":
         command.append(f"--{sensitivity}")
     output_tsv.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    log = (completed.stdout + completed.stderr).strip().splitlines()
+    if progress_log is None:
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        log = (completed.stdout + completed.stderr).strip().splitlines()
+        return command, "\n".join(log[-12:])
+    progress_log = Path(progress_log)
+    progress_log.parent.mkdir(parents=True, exist_ok=True)
+    with progress_log.open("w", encoding="utf-8", buffering=1) as stream:
+        stream.write(f"$ {' '.join(command)}\n")
+        stream.flush()
+        subprocess.run(command, check=True, stdout=stream, stderr=subprocess.STDOUT, text=True)
+    log = progress_log.read_text(encoding="utf-8").strip().splitlines()
     return command, "\n".join(log[-12:])
 
 
