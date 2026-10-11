@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Retrieve identity-binned homologous contexts for the anchor targets (CPU).
 
-Three phases, all CPU and all on the host that holds the corpus indexes:
+Four phases, all CPU and all on the host that holds the corpus indexes:
 
 ``search``
     One DIAMOND ``blastp`` of the anchor cohort's wild types against one named
@@ -13,10 +13,16 @@ Three phases, all CPU and all on the host that holds the corpus indexes:
     the target, retain per-bin candidates and a composition-matched donor pool,
     and record the distance of every target to the searched corpus. The product
     is the frozen input every GPU stage of E09 and E11 consumes.
+``novelty``
+    Search every generated product (E11) against the same corpus, in bounded,
+    resumable, concurrently searchable chunks. Separate from ``annotate`` because
+    the search is hours and the join is seconds, and because one invocation over
+    the whole product set is not a bounded unit: it ran 55 minutes and 20
+    CPU-hours without reaching its output phase.
 ``annotate``
-    Search generated sequences (E11) back against the same corpus and against the
-    prompt's own family, which supplies the alignment-identity copying rule and
-    the corpus-novelty endpoint.
+    Join the products onto the prompt's own family -- which supplies the
+    alignment-identity copying rule -- and onto the corpus hits, either from a
+    search it runs itself or from the ones ``novelty`` already produced.
 
 The corpus is never rebuilt here. An index staged against a published release is
 adopted only after its own ``dbinfo`` counts match that release's record; an index
@@ -839,6 +845,196 @@ def corpus_annotation(
     }
 
 
+EXPECT_NOVELTY = "product_novelty_search.json"
+
+
+def novelty(args: argparse.Namespace) -> None:
+    """Search every generated product against the reference corpus, in chunks.
+
+    **Why chunks, measured rather than assumed.** A single invocation over all
+    6144 E11 products ran 55 minutes and 20 CPU-hours without reaching its output
+    phase, against 10.7 minutes for a 64-query probe over the same index. The
+    database scan *is* amortised across a query block, but it is not what
+    dominates: DIAMOND iterates 114 reference blocks times 14 seed shapes, and the
+    per-shape query-side work -- query seed array, hash join, alignment search --
+    scales with query letters and is paid inside every one of those iterations. At
+    96 times the query residues the query side swamps the reference side, so cost
+    grows with query count rather than being flat in it.
+
+    So the query set is split into chunks, each its own invocation with its own
+    progress log and its own hits file. Three properties follow, and they are the
+    point:
+
+    * **bounded** -- a chunk is a unit whose cost is known from the previous one;
+    * **resumable** -- a chunk whose hits file and digest sidecar are already
+      present is skipped, so an interrupted search resumes instead of restarting;
+    * **observable** -- each chunk streams DIAMOND's block-by-block progress to a
+      file, which the single invocation could not do.
+
+    Chunks may run concurrently. Physical reads were 7.7 GB over 55 minutes on a
+    62 GB index, so the index is page-cached and the constraint is CPU, not I/O:
+    several chunks at fewer threads each beat one chunk at many.
+
+    The corpus is **not** reduced to a smaller reference to save time. Changing
+    the reference changes the estimand, and this number exists to be set beside a
+    measurement made on this one.
+    """
+
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+
+    products = [
+        json.loads(line)
+        for line in args.products.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not products:
+        raise SystemExit(f"{args.products} holds no generated product")
+    if args.chunk_size < 1 or args.workers < 1:
+        raise SystemExit("the chunk size and the worker count must be positive")
+    tool = tool_for(args)
+    database, corpus_identity = resolve_corpus(args, tool)
+    args.out.mkdir(parents=True, exist_ok=True)
+    chunk_dir = args.out / "chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    # Deterministic chunking on the attempt identifier, so a resumed run and a
+    # fresh one cut the query set the same way.
+    measurable = sorted(
+        (
+            row
+            for row in products
+            if len(str(row["sequence"])) >= H.MIN_PRODUCT_RESIDUES
+        ),
+        key=lambda row: str(row["attempt_id"]),
+    )
+    if not measurable:
+        raise SystemExit(
+            f"no product of {args.products} reaches {H.MIN_PRODUCT_RESIDUES} residues"
+        )
+    chunks: list[dict] = []
+    for index in range(0, len(measurable), args.chunk_size):
+        members = measurable[index : index + args.chunk_size]
+        number = len(chunks)
+        fasta = chunk_dir / f"chunk_{number:03d}.faa"
+        fasta.write_text(
+            "".join(
+                f">{row['attempt_id']}\n{row['sequence']}\n" for row in members
+            ),
+            encoding="utf-8",
+        )
+        chunks.append(
+            {
+                "chunk": number,
+                "queries": len(members),
+                "residues": sum(len(str(row["sequence"])) for row in members),
+                "query_fasta": str(fasta),
+                "hits": str(chunk_dir / f"chunk_{number:03d}.tsv"),
+                "progress_log": str(chunk_dir / f"chunk_{number:03d}.progress.log"),
+                "query_sha256": sha256_file(fasta),
+            }
+        )
+
+    def search_chunk(chunk: dict) -> dict:
+        hits = Path(chunk["hits"])
+        sidecar = hits.with_suffix(hits.suffix + ".sha256")
+        if hits.is_file() and sidecar.is_file():
+            recorded = sidecar.read_text(encoding="utf-8").split()[0]
+            if recorded == sha256_file(hits):
+                return {**chunk, "status": "reused", "seconds": 0.0, "command": None}
+            raise SystemExit(
+                f"{hits} does not match its digest sidecar; a partially written chunk "
+                "is not a completed one, so remove it rather than resuming over it"
+            )
+        started = time.monotonic()
+        command, log = run_diamond_blastp(
+            tool,
+            database,
+            Path(chunk["query_fasta"]),
+            hits,
+            threads=args.threads,
+            sensitivity=H.SENSITIVITY,
+            evalue=H.EVALUE,
+            max_target_seqs=args.corpus_max_target_seqs,
+            fields=ALIGNMENT_FIELDS,
+            progress_log=Path(chunk["progress_log"]),
+        )
+        digest = sha256_file(hits)
+        sidecar.write_text(f"{digest}  {hits.name}\n", encoding="utf-8")
+        return {
+            **chunk,
+            "status": "searched",
+            "seconds": time.monotonic() - started,
+            "command": list(command),
+            "log_tail": log,
+            "hits_sha256": digest,
+            "hit_lines": sum(1 for _ in hits.open(encoding="utf-8")),
+        }
+
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        completed = list(pool.map(search_chunk, chunks))
+    elapsed = time.monotonic() - started
+
+    combined = args.out / "corpus_hits_products.tsv"
+    with combined.open("w", encoding="utf-8") as handle:
+        for chunk in completed:
+            handle.write(Path(chunk["hits"]).read_text(encoding="utf-8"))
+    queries_with_a_hit = len(
+        {line.split("\t", 1)[0] for line in combined.read_text(encoding="utf-8").splitlines() if line}
+    )
+    write_json(
+        args.out / EXPECT_NOVELTY,
+        {
+            "schema_version": H.SCHEMA_VERSION,
+            "stage": "novelty",
+            "status": "complete",
+            **H.declaration_digests(),
+            "products": str(args.products),
+            "products_sha256": sha256_file(args.products),
+            "queries": len(measurable),
+            "queries_below_min_residues": len(products) - len(measurable),
+            "min_product_residues": H.MIN_PRODUCT_RESIDUES,
+            "queries_with_a_hit": queries_with_a_hit,
+            "hits": combined.name,
+            "hits_sha256": sha256_file(combined),
+            "corpus_identity": corpus_identity,
+            "corpus_database": database.record(),
+            "diamond": tool.record(),
+            "search": {
+                "masking": H.MASKING,
+                "masking_reason": CORPUS_MASKING_REASON,
+                "sensitivity": H.SENSITIVITY,
+                "evalue": H.EVALUE,
+                "max_target_seqs": args.corpus_max_target_seqs,
+                "identity_definition": H.IDENTITY_DEFINITION,
+                "chunk_size": args.chunk_size,
+                "workers": args.workers,
+                "threads_per_worker": args.threads,
+                "chunks": len(chunks),
+                "elapsed_seconds": elapsed,
+                "self_match_note": (
+                    "the queries are generated product sequences and the database is "
+                    "the reference corpus, so no query is a record of the database and "
+                    "no hit can be the query itself; a hit to one of a product's own "
+                    "context items is a different thing and the annotate phase "
+                    "separates it out rather than assuming it absent"
+                ),
+            },
+            "chunk_records": [
+                {key: value for key, value in chunk.items() if key != "log_tail"}
+                for chunk in completed
+            ],
+        },
+    )
+    print(
+        f"novelty: {len(measurable)} queries in {len(chunks)} chunks "
+        f"({sum(1 for c in completed if c['status'] == 'reused')} reused), "
+        f"{queries_with_a_hit} with a hit, {elapsed:.0f}s",
+        flush=True,
+    )
+
+
 def annotate(args: argparse.Namespace) -> None:
     """Search generated products back against the corpus and the prompt family.
 
@@ -959,7 +1155,44 @@ def annotate(args: argparse.Namespace) -> None:
     corpus_identity = None
     corpus_record = None
     corpus_search = None
-    if not args.skip_corpus:
+    if args.corpus_hits is not None:
+        # The search is the expensive half and the join is the cheap one, so a
+        # hits file the novelty phase already produced is read rather than
+        # recomputed. Its own completion record carries the literal per-chunk
+        # commands, and they are copied into this artefact so the masking setting
+        # travels with the number that depends on it.
+        if not args.corpus_hits.is_file():
+            raise SystemExit(f"{args.corpus_hits} does not exist")
+        corpus_hits_path = args.corpus_hits
+        if args.novelty_search is None:
+            raise SystemExit(
+                "--corpus-hits needs --novelty-search: a novelty number whose search "
+                "command is not in the artefact cannot be checked from the artefact"
+            )
+        searched = json.loads(args.novelty_search.read_text(encoding="utf-8"))
+        H.require_declaration(searched, scope="context")
+        if searched.get("hits_sha256") != sha256_file(corpus_hits_path):
+            raise SystemExit(
+                f"{args.corpus_hits} does not match the digest its search recorded; "
+                "the hits and the search record are from different runs"
+            )
+        corpus_identity = searched.get("corpus_identity")
+        corpus_record = searched.get("corpus_database")
+        corpus_search = {
+            **searched["search"],
+            "source": "novelty phase",
+            "novelty_search": str(args.novelty_search),
+            "novelty_search_sha256": sha256_file(args.novelty_search),
+            "hits": searched.get("hits_sha256"),
+            "commands": [
+                chunk["command"]
+                for chunk in searched.get("chunk_records", ())
+                if chunk.get("command")
+            ],
+            "queries": searched.get("queries"),
+            "queries_with_a_hit": searched.get("queries_with_a_hit"),
+        }
+    elif not args.skip_corpus:
         database, corpus_identity = resolve_corpus(args, tool)
         corpus_record = database.record()
         corpus_hits_path = args.out / "corpus_hits_products.tsv"
@@ -998,6 +1231,7 @@ def annotate(args: argparse.Namespace) -> None:
             ),
             "hits": sum(1 for _ in corpus_hits_path.open(encoding="utf-8")),
         }
+    if corpus_search is not None:
         for hit in parse_hits(corpus_hits_path, fields=ALIGNMENT_FIELDS):
             corpus_rows.setdefault(hit.query, []).append(
                 {
@@ -1040,15 +1274,30 @@ def annotate(args: argparse.Namespace) -> None:
             if hit["truncation_raises_stratum"]
         )
 
+    # The family search and this phase's own corpus search share one query file
+    # and so name their queries positionally; the novelty phase names its queries
+    # by attempt identifier, because its chunking is by identifier and positions
+    # would not survive it. The lookup key therefore follows the route the hits
+    # came by rather than being assumed.
+    by_attempt = args.corpus_hits is not None
     annotations = [
         product_annotation(
             row,
             index=index,
             family=best_family.get(f"p{index:06d}", []),
-            corpus=corpus_rows.get(f"p{index:06d}", ()),
+            corpus=corpus_rows.get(
+                str(row["attempt_id"]) if by_attempt else f"p{index:06d}", ()
+            ),
         )
         for index, row in enumerate(products)
     ]
+    if by_attempt:
+        matched = sum(1 for row in annotations if row["corpus_hits"])
+        if matched < 1:
+            raise SystemExit(
+                f"{args.corpus_hits} holds hits for none of these products by attempt "
+                "identifier; the hits and the product file are from different runs"
+            )
     write_json(
         args.out / EXPECT_ANNOTATE,
         {
@@ -1087,7 +1336,7 @@ def annotate(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=["search", "bin", "annotate"])
+    parser.add_argument("phase", choices=["search", "bin", "annotate", "novelty"])
     parser.add_argument("--out", type=Path, required=True)
     # Accepted because every campaign runner injects it; this stage is CPU-only
     # and refuses a GPU rather than silently ignoring the request.
@@ -1110,6 +1359,24 @@ def main() -> None:
     parser.add_argument("--homologs", type=Path, help="annotate phase: the binned artifact")
     parser.add_argument("--products", type=Path, help="annotate phase: generated products JSONL")
     parser.add_argument("--skip-corpus", action="store_true", help="annotate phase: family search only")
+    parser.add_argument(
+        "--corpus-hits",
+        type=Path,
+        help="annotate phase: a hits TSV the novelty phase already produced, read "
+        "instead of searching the corpus again",
+    )
+    parser.add_argument(
+        "--novelty-search",
+        type=Path,
+        help="annotate phase: the novelty phase's completion JSON, whose literal "
+        "per-chunk commands are carried into this artefact",
+    )
+    parser.add_argument(
+        "--chunk-size", type=int, default=384, help="novelty phase: queries per invocation"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=6, help="novelty phase: chunks searched concurrently"
+    )
     parser.add_argument(
         "--corpus-max-target-seqs",
         type=int,
@@ -1137,6 +1404,10 @@ def main() -> None:
         if args.search is None:
             raise SystemExit("--search is required for the bin phase")
         bin_hits(args)
+    elif args.phase == "novelty":
+        if args.products is None:
+            raise SystemExit("--products is required for the novelty phase")
+        novelty(args)
     else:
         if args.homologs is None or args.products is None:
             raise SystemExit("--homologs and --products are required for the annotate phase")
