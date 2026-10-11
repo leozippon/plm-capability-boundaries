@@ -871,9 +871,20 @@ def novelty(args: argparse.Namespace) -> None:
     * **observable** -- each chunk streams DIAMOND's block-by-block progress to a
       file, which the single invocation could not do.
 
-    Chunks may run concurrently. Physical reads were 7.7 GB over 55 minutes on a
-    62 GB index, so the index is page-cached and the constraint is CPU, not I/O:
-    several chunks at fewer threads each beat one chunk at many.
+    **Chunk few and large, and run them one at a time.** Concurrency looked free
+    -- physical reads were 7.7 GB over 55 minutes on a 62 GB index, so the index
+    is page-cached and the constraint is CPU, not I/O -- and it is not. Two
+    measurements say so. The reference-side work is *per invocation*, so cutting
+    the set into k chunks pays it k times; and six concurrent invocations at ten
+    threads each realised only about 5.2 threads' worth of progress apiece, each
+    holding 1-2 GB resident while streaming the same 62 GB index. Sixteen chunks
+    at six workers reached 6% of each chunk for 228 CPU-minutes, which projects to
+    roughly 165 CPU-hours for the set, against about 27 CPU-hours for one
+    invocation over the whole of it. Chunking is for resumability, and it is worth
+    a few invocations of the fixed cost, not sixteen: a handful of large chunks run
+    sequentially at a high thread count keeps the resumable unit without paying for
+    it six times over. ``--workers`` above one is retained for a corpus small
+    enough that the reference side is cheap.
 
     The corpus is **not** reduced to a smaller reference to save time. Changing
     the reference changes the estimand, and this number exists to be set beside a
