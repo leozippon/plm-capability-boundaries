@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from src.capability.core.io import sha256_file
 from src.capability.ladder import design
 
 
@@ -61,6 +62,13 @@ def _analyse(tmp_path, mode):
                        ("likelihood", likelihood), ("structure", structure)):
         paths[name] = tmp_path / f"{name}.jsonl"
         design.write_jsonl(paths[name], rows)
+    paths["likelihood"].with_suffix(".json").write_text(json.dumps({
+        "schema_version": "ladder_likelihood_v1", "arm": "protgpt2",
+        "records": "ladder_likelihood.jsonl",
+        "records_sha256": sha256_file(paths["likelihood"]), "n_sequences": len(likelihood),
+        "backbones": {"path": str(paths["backbones"]), "sha256": sha256_file(paths["backbones"])},
+        "variants": {str(paths["variants"]): sha256_file(paths["variants"])},
+    }), encoding="utf-8")
     payload = stage.run(argparse.Namespace(
         out=tmp_path / "out", backbones=paths["backbones"],
         variants=[paths["variants"]], likelihood=[paths["likelihood"]],

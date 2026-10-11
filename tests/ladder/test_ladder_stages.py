@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from src.capability.core.io import sha256_file
 from src.capability.ladder import design, runtime
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "capability" / "ladder"
@@ -307,7 +308,17 @@ def _fixture(tmp_path: Path, *, planted_divergence_rung: str = "k5"):
     }
     design.write_jsonl(paths["backbones"], backbones)
     design.write_jsonl(paths["variants"], variants)
+    # The real producer scores each distinct sequence once, including overlaps
+    # between draws or parents; retain the same digest lookup as the analysis.
+    likelihood = list({row["sequence_sha256"]: row for row in likelihood}.values())
     design.write_jsonl(paths["likelihood"], likelihood)
+    paths["likelihood"].with_suffix(".json").write_text(json.dumps({
+        "schema_version": "ladder_likelihood_v1", "arm": ARM,
+        "records": "ladder_likelihood.jsonl",
+        "records_sha256": sha256_file(paths["likelihood"]), "n_sequences": len(likelihood),
+        "backbones": {"path": str(paths["backbones"]), "sha256": sha256_file(paths["backbones"])},
+        "variants": {str(paths["variants"]): sha256_file(paths["variants"])},
+    }), encoding="utf-8")
     return paths | {"variant_root": variant_root, "parent_root": parent_root}
 
 

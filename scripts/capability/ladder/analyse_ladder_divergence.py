@@ -50,7 +50,7 @@ from src.capability.ladder import design, divergence  # noqa: E402
 
 COMPLETION = "ladder_divergence.json"
 REPORT = "ladder_divergence.md"
-SCHEMA_VERSION = "ladder_divergence_v1"
+SCHEMA_VERSION = "ladder_divergence_v2"
 
 #: Structural readouts the ladder correlates likelihood against. The first is the
 #: primary; the others are reported beside it and are not substitutes for it.
@@ -105,18 +105,109 @@ def _summary(values: list[float]) -> dict[str, Any]:
     return record
 
 
+def load_scope(
+    backbones_path: Path,
+    variant_paths: list[Path],
+    likelihood_paths: list[Path],
+    receipt_paths: list[Path] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, set[str]], dict[str, Any]]:
+    """Bind supplied rows to producer-declared files, independent of sequence overlap.
+
+    Paths may change when artifacts are staged locally; file hashes are their
+    identity. Receipts normally sit beside records with the same stem. Explicit
+    receipt paths, in likelihood-file order, support separately retained receipts.
+    The producer has no status field: schema and content bindings certify it.
+    """
+
+    receipts = receipt_paths if receipt_paths is not None else [path.with_suffix(".json") for path in likelihood_paths]
+    if len(receipts) != len(likelihood_paths):
+        raise SystemExit("one likelihood receipt is required per likelihood records file")
+    backbone_sha = sha256_file(backbones_path)
+    supplied = {str(path): sha256_file(path) for path in variant_paths}
+    variants = [
+        {**row, "source_file_sha256": supplied[str(path)]}
+        for path in variant_paths for row in design.read_jsonl(path)
+    ]
+    likelihood: list[dict[str, Any]] = []
+    scorer_sources: dict[str, set[str]] = {}
+    bindings: dict[str, Any] = {}
+    for records_path, receipt_path in zip(likelihood_paths, receipts):
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"missing or invalid likelihood producer receipt: {receipt_path}: {exc}") from exc
+        if not isinstance(receipt, dict) or receipt.get("schema_version") != "ladder_likelihood_v1":
+            raise SystemExit(f"unsupported likelihood producer schema: {receipt_path}")
+        scorer = receipt.get("arm")
+        if not isinstance(scorer, str) or scorer not in set(design.CAUSAL_ARMS) | set(design.INFILL_ARMS):
+            raise SystemExit(f"invalid likelihood producer arm: {receipt_path}")
+        if scorer in scorer_sources:
+            raise SystemExit(f"duplicate likelihood producer for arm {scorer}")
+        if receipt.get("records") != "ladder_likelihood.jsonl" or receipt.get("records_sha256") != sha256_file(records_path):
+            raise SystemExit(f"likelihood records SHA/binding mismatch: {records_path}")
+        if not isinstance(receipt.get("backbones"), dict) or receipt["backbones"].get("sha256") != backbone_sha:
+            raise SystemExit(f"likelihood producer backbone SHA mismatch: {receipt_path}")
+        declared = receipt.get("variants")
+        if not isinstance(declared, dict) or not declared or any(
+            not isinstance(path, str) or not isinstance(digest, str)
+            or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+            for path, digest in declared.items()
+        ):
+            raise SystemExit(f"invalid likelihood producer variant input SHA map: {receipt_path}")
+        for path, digest in supplied.items():
+            if path in declared and declared[path] != digest:
+                raise SystemExit(f"likelihood producer variant input SHA mismatch: {path}")
+        rows = design.read_jsonl(records_path)
+        if len(rows) != receipt.get("n_sequences") or any(row.get("scored_by") != scorer for row in rows):
+            raise SystemExit(f"likelihood records count/scored_by contradicts producer: {records_path}")
+        digests = [row.get("sequence_sha256") for row in rows]
+        if any(not isinstance(digest, str) or not digest for digest in digests) or len(set(digests)) != len(digests):
+            raise SystemExit(f"invalid or duplicate likelihood sequence SHA: {records_path}")
+        likelihood.extend(rows)
+        selected = set(supplied.values()) & set(declared.values())
+        scorer_sources[scorer] = selected
+        bindings[scorer] = {
+            "receipt": {"path": str(receipt_path), "sha256": sha256_file(receipt_path)},
+            "records": {"path": str(records_path), "sha256": receipt["records_sha256"]},
+            "backbones": receipt["backbones"],
+            "declared_variant_sources": declared,
+            "selected_variant_sources": {path: digest for path, digest in supplied.items() if digest in selected},
+            "unselected_declared_variant_sources": {path: digest for path, digest in declared.items() if digest not in selected},
+        }
+    uncovered = set(supplied.values()) - set().union(*scorer_sources.values())
+    if uncovered:
+        raise SystemExit("supplied variant input SHA is not declared by any likelihood producer: " + ", ".join(sorted(uncovered)))
+    expected = {
+        (scorer, str(row["arm"]), str(row["condition"]))
+        for row in variants if row["rung"] != design.FULL_GENERATION
+        for scorer, sources in scorer_sources.items() if row["source_file_sha256"] in sources
+    }
+    crosspairs = {
+        (scorer, str(row["arm"]), str(row["condition"]))
+        for scorer in scorer_sources for row in variants if row["rung"] != design.FULL_GENERATION
+    }
+    scope = {
+        "rule": "producer-declared variant file SHA intersected with explicitly supplied variant files; sequence identity never expands scope",
+        "likelihood_producers": bindings,
+        "expected_ladders": ["|".join(key) for key in sorted(expected)],
+        "omitted_crosspairs": ["|".join(key) for key in sorted(crosspairs - expected)],
+    }
+    return variants, likelihood, scorer_sources, scope
+
+
 def build_table(
     variants: list[dict[str, Any]],
     likelihood: list[dict[str, Any]],
     structure: list[dict[str, Any]],
+    *,
+    scorer_sources: dict[str, set[str]],
 ) -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
-    """Every joined observation, keyed by (scoring arm, product arm, condition, rung)."""
+    """Join only receipt-bound source rows, then match sequence SHA within a scorer."""
 
     by_digest: dict[tuple[str, str], dict[str, Any]] = {
         (str(row["scored_by"]), str(row["sequence_sha256"])): row for row in likelihood
     }
     by_id = {str(row["id"]): row for row in structure}
-    scoring_arms = sorted({str(row["scored_by"]) for row in likelihood})
     cells: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for variant in variants:
         if variant["status"] != "filled" or not variant["sequence"]:
@@ -125,7 +216,9 @@ def build_table(
         if folded is None or folded.get("fold_status") != "ok":
             continue
         parent_digest = str(variant["parent_sequence_sha256"])
-        for scorer in scoring_arms:
+        for scorer, sources in sorted(scorer_sources.items()):
+            if variant["source_file_sha256"] not in sources:
+                continue
             scored = by_digest.get((scorer, str(variant["sequence_sha256"])))
             parent_scored = by_digest.get((scorer, parent_digest))
             if scored is None:
@@ -176,16 +269,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     design.require_fresh_out(args.out, COMPLETION)
     backbones = design.read_jsonl(args.backbones)
     units = [str(row["backbone_id"]) for row in backbones]
-    variants = [row for path in args.variants for row in design.read_jsonl(path)]
-    likelihood = [row for path in args.likelihood for row in design.read_jsonl(path)]
+    variants, likelihood, scorer_sources, scope = load_scope(
+        args.backbones, args.variants, args.likelihood, getattr(args, "likelihood_receipts", None)
+    )
     structure = [row for path in args.structure for row in design.read_jsonl(path)]
-    scoring_arms = {str(row["scored_by"]) for row in likelihood}
-    expected_ladders = {
-        (scorer, str(row["arm"]), str(row["condition"]))
-        for row in variants if row["rung"] != design.FULL_GENERATION
-        for scorer in scoring_arms
-    }
-    cells = build_table(variants, likelihood, structure)
+    expected_ladders = {tuple(name.split("|")) for name in scope["expected_ladders"]}
+    cells = build_table(variants, likelihood, structure, scorer_sources=scorer_sources)
     if not cells:
         raise SystemExit(
             "nothing joined: no variant carries both a likelihood and a completed fold. "
@@ -394,6 +483,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "declaration": design.declaration(),
+        "scientific_scope": scope,
         "likelihood_axis": (
             "log likelihood per scored symbol, so a positive correlation means the "
             "sequences the arm finds more likely are the ones the structure predictor "
@@ -456,6 +546,10 @@ def render_report(payload: dict[str, Any]) -> str:
         payload["estimand"] + ".",
         "",
         payload["likelihood_axis"] + ".",
+        "",
+        f"Scientific scope: {len(payload['scientific_scope']['expected_ladders'])} declared ladders; "
+        f"{len(payload['scientific_scope']['omitted_crosspairs'])} undeclared scorer/product/condition pairs omitted. "
+        + payload["scientific_scope"]["rule"] + ".",
         "",
     ]
     for name, ladder in sorted(payload["ladders"].items()):
@@ -541,8 +635,11 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cpu", help="accepted and unused; this stage is CPU-only")
     parser.add_argument("--backbones", type=Path, required=True)
-    parser.add_argument("--variants", type=Path, nargs="+", required=True)
+    parser.add_argument("--variants", type=Path, nargs="+", required=True,
+                        help="explicit analysis subset of producer-declared variant files")
     parser.add_argument("--likelihood", type=Path, nargs="+", required=True)
+    parser.add_argument("--likelihood-receipts", type=Path, nargs="+", default=None,
+                        help="producer receipts in --likelihood order; defaults to sibling .json files")
     parser.add_argument("--structure", type=Path, nargs="+", required=True)
     parser.add_argument("--draws", type=int, default=divergence.DEFAULT_DRAWS)
     parser.add_argument("--seed", type=int, default=design.CAMPAIGN_SEED)
