@@ -101,7 +101,7 @@ def _selection_table(block: Mapping[str, Any], field: str, keys: list[str]) -> N
             print(f"    selector {selector} [{ds.SELECTORS[selector]['kind']}]")
             print(
                 f"      {'k':>3s} {'blocks':>6s} {'yield':>6s} {'mean':>7s} {'CI95':>18s} "
-                f"{'tok/blk':>8s} {'folds/blk':>9s} {'sel len':>8s}"
+                f"{'tok/blk':>8s} {'folds/blk':>9s} {'sel len':>8s} {'lmgap':>7s} {'lmCI95':>18s}"
             )
             for point in curve:
                 print(
@@ -110,7 +110,9 @@ def _selection_table(block: Mapping[str, Any], field: str, keys: list[str]) -> N
                     f"{_interval(point['interval']):>18s} "
                     f"{_number(point['generation_tokens_per_block'], 0):>8s} "
                     f"{_number(point['folds_per_block'], 2):>9s} "
-                    f"{_number(point['selected_length_mean'], 0):>8s}"
+                    f"{_number(point['selected_length_mean'], 0):>8s} "
+                    f"{_number(point.get('mean_length_matched_gap')):>7s} "
+                    f"{_interval(point.get('length_matched_gap_interval')):>18s}"
                 )
 
 
@@ -120,7 +122,7 @@ def _matched_compute_table(block: Mapping[str, Any], field: str) -> None:
         print(f"  budget {budget:.0f} generation tokens per kept candidate "
               f"(tolerance {row['tolerance_fraction']:.0%}); best = {row['best_configuration']}")
         print(f"    {'configuration':26s} {'k':>3s} {'tok/blk':>8s} {'blocks':>6s} {'yield':>6s} "
-              f"{'mean':>7s} {'CI95':>18s} {'sel len':>8s}")
+              f"{'mean':>7s} {'CI95':>18s} {'sel len':>8s} {'lmgap':>7s} {'lmCI95':>18s}")
         entries = sorted(
             row["entries"], key=lambda entry: (entry["mean"] is None, -(entry["mean"] or 0.0))
         )
@@ -130,7 +132,9 @@ def _matched_compute_table(block: Mapping[str, Any], field: str) -> None:
                 f"{entry['generation_tokens_per_block']:8.0f} "
                 f"{entry['n_blocks_with_candidate']:6d} {entry['block_yield']:6.3f} "
                 f"{_number(entry['mean']):>7s} {_interval(entry['interval']):>18s} "
-                f"{_number(entry['selected_length_mean'], 0):>8s}"
+                f"{_number(entry['selected_length_mean'], 0):>8s} "
+                f"{_number(entry.get('mean_length_matched_gap')):>7s} "
+                f"{_interval(entry.get('length_matched_gap_interval')):>18s}"
             )
         if row["configurations_absent"]:
             print(f"    absent at this budget: {len(row['configurations_absent'])} configurations")

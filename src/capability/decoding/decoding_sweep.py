@@ -1680,6 +1680,7 @@ def selection_curve(
     field: str,
     k_values: Sequence[int],
     draws_per_cluster: int,
+    gap_field: str | None = None,
 ) -> list[dict[str, Any]]:
     """Best-of-k within a cluster, with the compute each point spent.
 
@@ -1693,6 +1694,15 @@ def selection_curve(
     ``rows`` must be *all* draws of the configuration, in-band or not, each
     carrying ``cluster``, ``draw_index``, ``n_new_tokens`` and the selector
     field; only in-band rows need the evaluator field.
+
+    ``gap_field`` names a per-candidate length-matched quantity -- the
+    candidate's value minus the natural pool's mean in its own length stratum --
+    and is the reason this function reports more than a mean. Best-of-k does not
+    hold length fixed: a selector that prefers the model's own high-likelihood
+    products can walk the selected set from 154 to 318 residues as k grows,
+    which is most of what a rising confidence curve would then be showing. The
+    length-matched gap of the selected set is what says how much of the budget's
+    gain is not length.
     """
 
     if selector not in SELECTORS:
@@ -1737,6 +1747,11 @@ def selection_curve(
                 selected.append(dict(winner))
         values = [float(row[field]) for row in selected]
         floor = bootstrap_unit_floor(len(values))
+        gaps = (
+            [float(row[gap_field]) for row in selected if row.get(gap_field) is not None]
+            if gap_field
+            else []
+        )
         curve.append(
             {
                 "k": int(k),
@@ -1759,6 +1774,18 @@ def selection_curve(
                 "folds_per_block": float(np.mean(folds)) if folds else None,
                 "selected_length_mean": (
                     float(np.mean([int(row["length"]) for row in selected])) if selected else None
+                ),
+                "n_length_matched": len(gaps),
+                "mean_length_matched_gap": float(np.mean(gaps)) if gaps else None,
+                "length_matched_gap_interval": (
+                    mean_interval(gaps)["interval"]
+                    if len(gaps) >= 2 and not bootstrap_unit_floor(len(gaps))["degenerate"]
+                    else None
+                ),
+                "length_matched_estimand": (
+                    "the selected set's mean confidence minus the folded natural pool's "
+                    "mean confidence in each selected candidate's own length stratum. A "
+                    "best-of-k gain that is really a length gain does not survive here"
                 ),
                 "selected_ids": [str(row["id"]) for row in selected],
             }
@@ -1811,6 +1838,8 @@ def matched_compute_table(
                     "block_yield": best["block_yield"],
                     "folds_per_block": best["folds_per_block"],
                     "selected_length_mean": best["selected_length_mean"],
+                    "mean_length_matched_gap": best["mean_length_matched_gap"],
+                    "length_matched_gap_interval": best["length_matched_gap_interval"],
                     "resolved": best["resolved"],
                 }
             )

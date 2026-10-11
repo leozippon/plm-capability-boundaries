@@ -174,30 +174,71 @@ def _stratum_means(natural: Sequence[Mapping[str, Any]], field: str) -> dict[int
     }
 
 
+def _attach_deltas(
+    rows: Sequence[dict[str, Any]], strata: Mapping[int, Mapping[str, Any]], field: str
+) -> None:
+    """Write each folded candidate's length-matched gap onto the row in place.
+
+    Done once per arm so that every reading -- the per-candidate table, the
+    simultaneous bootstrap and the best-of-k curve -- is length-matched against
+    the same strata rather than against three separately built comparators.
+    """
+
+    key = f"delta__{field}"
+    for row in rows:
+        row.pop(key, None)
+        if not row.get("folded"):
+            continue
+        block = strata.get(ds._length_stratum(int(row["length"])))
+        if block is None or block["n"] < ds.MIN_NATURAL_PER_BIN:
+            continue
+        row[key] = float(row[field]) - float(block["mean"])
+
+
 def _delta_rows(
     rows: Sequence[Mapping[str, Any]], strata: Mapping[int, Mapping[str, Any]], field: str
 ) -> list[dict[str, Any]]:
-    """Each folded candidate's value minus the natural mean in its own length stratum.
+    """The candidates that carry a length-matched gap, with it named ``delta``.
 
-    The per-candidate length-matched gap. Candidates in a stratum the natural
-    pool barely populates are dropped here and counted, because a gap against a
-    comparator built from a handful of records is not a length control.
+    Read off the gap :func:`_attach_deltas` already wrote, so the per-candidate
+    table, the simultaneous bootstrap and the best-of-k curve cannot drift onto
+    three separately built comparators. Candidates in a stratum the natural pool
+    barely populates carry no gap: a comparator built from a handful of records
+    is not a length control, and they are dropped and counted rather than
+    compared against it.
     """
 
+    key = f"delta__{field}"
     out: list[dict[str, Any]] = []
     for row in rows:
-        if not row.get("folded"):
+        if row.get(key) is None:
             continue
-        key = ds._length_stratum(int(row["length"]))
-        block = strata.get(key)
-        if block is None or block["n"] < ds.MIN_NATURAL_PER_BIN:
-            continue
-        item = dict(row)
-        item["delta"] = float(row[field]) - float(block["mean"])
-        item["natural_stratum_mean"] = float(block["mean"])
-        item["natural_stratum_n"] = int(block["n"])
-        out.append(item)
+        block = strata[ds._length_stratum(int(row["length"]))]
+        out.append(
+            dict(
+                row,
+                delta=float(row[key]),
+                natural_stratum_mean=float(block["mean"]),
+                natural_stratum_n=int(block["n"]),
+            )
+        )
     return out
+
+
+def _existing_gap(
+    records: Sequence[Mapping[str, Any]], strata: Mapping[int, Mapping[str, Any]], field: str
+) -> dict[str, Any] | None:
+    """The existing generation results' gap, through the same arithmetic.
+
+    The programme's own folded products are read against the same length strata
+    as the sweep's, so the sweep can be placed beside them rather than described
+    as beating them.
+    """
+
+    rows = [dict(record, folded=True) for record in records]
+    _attach_deltas(rows, strata, field)
+    gaps = [row[f"delta__{field}"] for row in rows if row.get(f"delta__{field}") is not None]
+    return mean_interval(gaps) if len(gaps) >= 2 else None
 
 
 def _novelty(path: Path | None) -> dict[str, dict[str, Any]]:
@@ -247,6 +288,8 @@ def _arm_report(
     }
 
     strata = {field: _stratum_means(natural, field) for field in REPORTED}
+    for field in REPORTED:
+        _attach_deltas([row for row in rows if isinstance(row, dict)], strata[field], field)
     report["natural_pool"] = {
         "n_records": len(natural),
         "comparator_kind": "whole Swiss-Prot entries, already folded at one evaluation signature",
@@ -272,21 +315,7 @@ def _arm_report(
                 for field in REPORTED
             },
             "length_matched_gap": {
-                field: (
-                    mean_interval(
-                        [
-                            row["delta"]
-                            for row in _delta_rows(
-                                [dict(item, folded=True) for item in existing], strata[field], field
-                            )
-                        ]
-                    )
-                    if _delta_rows(
-                        [dict(item, folded=True) for item in existing], strata[field], field
-                    )
-                    else None
-                )
-                for field in REPORTED
+                field: _existing_gap(existing, strata[field], field) for field in REPORTED
             },
         }
 
@@ -375,6 +404,7 @@ def _arm_report(
                     field=field,
                     k_values=budgets,
                     draws_per_cluster=setting.draws_per_cluster,
+                    gap_field=f"delta__{field}",
                 )
                 report["selection"][key]["curves"].setdefault(field, {})[selector] = [
                     {item: point[item] for item in point if item != "selected_ids"}

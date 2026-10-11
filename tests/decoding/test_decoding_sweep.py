@@ -305,6 +305,46 @@ def test_best_of_k_charges_each_selector_the_compute_it_spends():
     assert oracle[1]["mean"] > cheap[1]["mean"]
 
 
+def test_best_of_k_reports_the_length_matched_gap_of_what_it_selected():
+    # The selector prefers long candidates, and confidence here is a pure
+    # function of length. The raw curve therefore rises with k while the
+    # length-matched gap does not move at all -- which is the whole point of
+    # carrying it: a best-of-k gain that is a length gain must not read as one.
+    rows = []
+    for cluster in range(8):
+        for index in range(8):
+            length = 100 + 20 * index
+            rows.append(
+                {
+                    "id": f"dc_{cluster}_{index}",
+                    "cluster": f"c{cluster}",
+                    "draw_index": index,
+                    "sequence": "M" + "A" * (length - 1),
+                    "length": length,
+                    "n_new_tokens": length,
+                    "model_logprob_per_token": float(length),
+                    "mean_ca_plddt": 0.25 * length,
+                    "delta__mean_ca_plddt": 0.0,
+                }
+            )
+    curve = ds.selection_curve(
+        rows, selector="model_logprob_per_token", field="mean_ca_plddt",
+        k_values=(1, 8), draws_per_cluster=8, gap_field="delta__mean_ca_plddt",
+    )
+    assert curve[1]["mean"] > curve[0]["mean"]
+    assert curve[1]["selected_length_mean"] > curve[0]["selected_length_mean"]
+    assert curve[0]["mean_length_matched_gap"] == pytest.approx(0.0)
+    assert curve[1]["mean_length_matched_gap"] == pytest.approx(0.0)
+    assert curve[0]["n_length_matched"] == 64
+    # Without the gap field the columns are present and empty, never invented.
+    plain = ds.selection_curve(
+        rows, selector="model_logprob_per_token", field="mean_ca_plddt",
+        k_values=(1,), draws_per_cluster=8,
+    )
+    assert plain[0]["mean_length_matched_gap"] is None
+    assert plain[0]["n_length_matched"] == 0
+
+
 def test_a_block_with_no_in_band_product_is_counted_not_dropped():
     rows = _cell(8, clusters=8, in_band_mask=lambda c, i: c != 0)
     curve = ds.selection_curve(
