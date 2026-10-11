@@ -502,7 +502,8 @@ class TestVerdict:
 
     def test_a_significant_interval_without_calibration_is_not_the_claim(self):
         verdict = G.gate_verdict({"point": 0.12, "interval": [0.06, 0.18]}, {})
-        assert verdict["verdict"] == "resolved_below_claimable"
+        assert verdict["verdict"] == "calibration_failed"
+        assert verdict["structure_channel_gated"] is False
 
     def test_a_bounded_null_excludes_the_claimable_effect(self):
         verdict = G.gate_verdict(
@@ -523,6 +524,91 @@ class TestVerdict:
     def test_every_verdict_carries_the_non_identifiable_list(self):
         verdict = G.gate_verdict({"point": 0.12, "interval": [0.06, 0.18]}, {"two_sided_p": 0.001})
         assert "stability_and_function" in verdict["non_identifiable"]
+
+
+class TestBalancedEstimand:
+    values = {"S1": 0.0, "S2": 2.0, "L1": 10.0, "L2": 10.0, "L3": 10.0}
+    bands = {"S1": "short", "S2": "short", "L1": "long", "L2": "long", "L3": "long"}
+
+    def test_unequal_band_counts_have_equal_band_weight(self):
+        result = G.bootstrap_interval(self.values, bands=self.bands, draws=100, seed=2)
+        assert result["point"] == pytest.approx(5.5)
+        assert result["point"] != np.mean(list(self.values.values()))
+        assert result["band_counts"] == {"short": 2, "long": 3}
+        assert result["band_weights"] == {"short": 0.5, "long": 0.5}
+        assert result["standard_error"] == pytest.approx(0.5)
+
+    def test_replicating_pairs_does_not_reweight_backbones(self):
+        rows = [{"accession": key, "length_band": self.bands[key], "endpoint_nats": value}
+                for key, value in self.values.items()]
+        replicated = rows + [rows[0]] * 20
+        assert G.bootstrap_interval(G.backbone_values(replicated), bands=G.backbone_bands(replicated), draws=100)["point"] == pytest.approx(5.5)
+
+    @pytest.mark.parametrize("values", [{"S1": 1.0, "S2": 1.0}, {"S1": 1.0, "L1": 1.0, "L2": 1.0}])
+    def test_missing_or_singleton_band_is_unavailable(self, values):
+        result = G.bootstrap_interval(values, bands=self.bands, draws=100)
+        assert result["point"] is None and result["interval"] is None
+        assert result["undefined"]
+
+    def test_contradictory_backbone_metadata_is_refused(self):
+        with pytest.raises(ValueError, match="contradictory"):
+            G.backbone_bands([{"accession": "A", "length_band": "short"},
+                              {"accession": "A", "length_band": "long"}])
+
+    def test_each_length_stratum_retains_its_own_estimand(self):
+        rows = [{"accession": key, "length_band": self.bands[key], "endpoint_nats": value,
+                 "coverage_band": "close" if key.startswith("S") else "remote"}
+                for key, value in self.values.items()]
+        lengths = G.by_stratum(rows, stratum="length_band", bands=self.bands, draws=100)
+        assert lengths["short"]["point"] == pytest.approx(1.0)
+        assert lengths["short"]["band_weights"] == {"short": 1.0}
+        coverage = G.by_stratum(rows, stratum="coverage_band", bands=self.bands, draws=100)
+        assert coverage["close"]["point"] is None
+
+    def test_joint_columns_share_stratified_resamples(self):
+        result = G.simultaneous_band(["a", "b"], {"a": self.values, "b": self.values}, bands=self.bands, draws=100)
+        assert result["band_counts"] == {"short": 2, "long": 3}
+        assert result["columns"][0]["point_nats"] == pytest.approx(5.5)
+        assert result["columns"][0]["simultaneous_interval_nats"] == result["columns"][1]["simultaneous_interval_nats"]
+
+    def test_permutations_use_the_same_balanced_estimand(self, monkeypatch):
+        table = uniform((70, 71, 72, 73), "ACDE", 24)
+        cells = [cell(native_residues=table, transplant_residues=table, accession=key,
+                      unit_id=key) | {"length_band": self.bands[key]} for key in self.values]
+        monkeypatch.setattr(G, "_permuted_cell_endpoint", lambda item, assigned, estimator:
+                            {"accession": item["accession"], "endpoint_nats": self.values[item["accession"]]})
+        result = G.permutation_calibration(cells, 5.5, bands=self.bands, draws=5)
+        assert result["mean_nats"] == pytest.approx(5.5)
+        assert result["two_sided_p"] == 1.0
+        assert result["band_counts"] == {"short": 2, "long": 3}
+        absent = G.permutation_calibration(cells[:2], 1.0, bands=self.bands, draws=5)
+        assert absent["draws"] == 0 and "two_sided_p" not in absent
+
+    def test_permutation_support_loss_is_not_retried_or_zero_imputed(self, monkeypatch):
+        table = uniform((70, 71, 72, 73), "ACDE", 24)
+        cells = [cell(native_residues=table, transplant_residues=table, accession=key,
+                      unit_id=key) | {"length_band": self.bands[key]} for key in self.values]
+        monkeypatch.setattr(G, "_permuted_cell_endpoint", lambda item, assigned, estimator:
+                            {"accession": item["accession"], "endpoint_nats": None})
+        result = G.permutation_calibration(cells, 5.5, bands=self.bands, draws=5)
+        assert result["draws"] == 0 and "lost fixed" in result["status"]
+
+
+class TestPositiveGateDirection:
+    def test_a_large_negative_calibrated_effect_cannot_open_structure(self):
+        result = G.gate_verdict({"point": -0.12, "interval": [-0.18, -0.06]}, {"two_sided_p": 0.001})
+        assert result["verdict"] == "resolved_negative"
+        assert result["structure_channel_gated"] is False
+
+    @pytest.mark.parametrize("p", [None, 0.05, 0.8, float("nan"), float("inf")])
+    def test_claimable_positive_without_calibration_is_not_below_claimable(self, p):
+        result = G.gate_verdict({"point": 0.12, "interval": [0.06, 0.18]}, {"two_sided_p": p})
+        assert result["verdict"] == "calibration_failed"
+        assert result["structure_channel_gated"] is False
+
+    def test_nonfinite_interval_is_unresolved_and_closed(self):
+        result = G.gate_verdict({"point": 0.12, "interval": [float("nan"), 0.18]}, {})
+        assert result["verdict"] == "unresolved" and not result["structure_channel_gated"]
 
 
 class TestHydrophobicBins:

@@ -237,6 +237,92 @@ class TestCoverageBands:
         assert report["counts"] == {"ge95_near_duplicate": 2}
 
 
+class TestBalancedRetainedAnalysis:
+    def test_real_arm_analysis_passes_declared_weighting_to_all_estimators(self, monkeypatch):
+        from argparse import Namespace
+        from test_gate_divergence import cell, uniform
+
+        rows = []
+        cells = []
+        positions = (70, 71, 72, 73)
+        for band, count in (("short", 2), ("long", 3)):
+            for index in range(count):
+                accession = f"{band}{index}"
+                table = uniform(positions, "ACDE", 24)
+                transplant = dict(table)
+                if band == "long":
+                    transplant[70] = ["K"] * 24
+                cells.append(cell(native_residues=table, transplant_residues=transplant,
+                                  accession=accession, unit_id=accession) |
+                             {"length_band": band, "anchor_rsa_band": "buried",
+                              "anchor_ss_class": "coil", "separation_stratum": "32-63",
+                              "coverage_band": "close", "separation_imbalance": 0.0})
+                rows.append({"accession": accession, "length_band": band})
+        monkeypatch.setattr(STAGE, "paired_cells", lambda arm, cohort, mode, coverage:
+                            cells if mode == D.MODE_SAMPLED else [])
+        block = STAGE.analyse_arm({"summary": {"arm": "progen2-medium"}}, {"unit_rows": rows},
+                                 coverage={}, args=Namespace(draws=50, seed=1, permutation_draws=5))
+        for estimator in block["variants"].values():
+            for variant in estimator.values():
+                assert variant["point"] == pytest.approx(np.log(2) / 2)
+                assert variant["band_counts"] == {"short": 2, "long": 3}
+        assert block["calibration"]["band_weights"] == {"short": 0.5, "long": 0.5}
+        assert block["hydrophobic_bins"]["band_weights"] == {"short": 0.5, "long": 0.5}
+
+    def test_run_emits_both_four_arm_families_on_their_shared_band_support(self, tmp_path, monkeypatch):
+        from argparse import Namespace
+
+        rows = [{"accession": key, "length_band": band}
+                for band, keys in (("short", ["S1", "S2", "S3"]),
+                                   ("long", ["L1", "L2", "L3"])) for key in keys]
+        cohort = {"unit_rows": rows, "backbones": 6, "units": 6,
+                  "backbones_per_band": {"short": 3, "long": 3},
+                  "units_per_band": {"short": 3, "long": 3},
+                  "pairs_per_backbone": {"1": 6}, "forced_residue_multisets": {"matches": True}}
+        cohort_path = tmp_path / "cohort.json"
+        cohort_path.write_text(json.dumps(cohort))
+        generation = tmp_path / "generation"
+        generation.mkdir()
+        (generation / "forcing_generation.json").write_text("{}")
+        arms = [{"summary": {"arm": arm}, "directories": [str(generation)], "shards": []}
+                for arm in D.ARMS]
+        all_values = {row["accession"]: float(index) for index, row in enumerate(rows)}
+        primary = {key: value for key, value in all_values.items() if key not in {"S3", "L3"}}
+        monkeypatch.setattr(STAGE, "load_cohort", lambda path: cohort)
+        monkeypatch.setattr(STAGE, "read_arms", lambda dirs, cohort_sha256: arms)
+        monkeypatch.setattr(STAGE, "analyse_arm", lambda arm, cohort, coverage, args:
+                            {"arm": arm["summary"]["arm"], "in_declared_panel": True,
+                             "backbone_values": all_values if arm["summary"]["arm"] == D.ARMS[0] else primary,
+                             "backbone_values_all_units": all_values})
+        args = Namespace(cohort=cohort_path, coverage=None, generation=[generation],
+                         out=tmp_path / "out", draws=100, seed=1)
+        STAGE.run(args)
+        payload = json.loads((args.out / STAGE.COMPLETION).read_text())
+        panel = payload["panel"]
+        assert panel["simultaneous"]["band_counts"] == {"short": 2, "long": 2}
+        assert panel["simultaneous_all_units"]["band_counts"] == {"short": 3, "long": 3}
+        for name in ("simultaneous", "simultaneous_all_units"):
+            assert {column["column"] for column in panel[name]["columns"]} == set(D.ARMS)
+            assert panel[name]["band_weights"] == {"short": 0.5, "long": 0.5}
+        assert payload["schema"] == "forcing_gate_divergence_v2"
+
+    def test_join_rejects_generation_band_contradicting_cohort(self):
+        unit = {"unit_id": "P:40:70", "accession": "P", "length_band": "short",
+                "partner": 70, "reference_partners": [{"position": 71}]}
+        record = {"accession": "P", "length_band": "long", "partner": 70}
+        arm = {"records": {(unit["unit_id"], condition, D.MODE_SAMPLED): record
+                           for condition in D.CONDITIONS}}
+        with pytest.raises(ValueError, match="contradicts cohort length_band"):
+            STAGE.paired_cells(arm, {"unit_rows": [unit]}, mode=D.MODE_SAMPLED, coverage={})
+
+    def test_generation_declaration_and_seed_binding_remain_frozen(self):
+        import hashlib
+
+        encoded = json.dumps(D.pre_registration(), sort_keys=True, separators=(",", ":")).encode()
+        assert hashlib.sha256(encoded).hexdigest() == "975c4fe360a9d0c0e4cfe850c623857757343a78bfad4a7b103451771acd383e"
+        assert D.cell_seed(arm="rita-xl", unit="P0:1:2", condition="native", mode="sampled") == 1944715332
+
+
 class TestMaskingIsOff:
     """Low-complexity masking off is a correctness requirement in both searches.
 

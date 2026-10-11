@@ -46,7 +46,9 @@ from ..core.amino_acids import AA20
 from ..generation.near_duplicates import near_duplicate_groups
 from . import forcing_design as D
 
-SCHEMA = "forcing_gate_divergence_v1"
+SCHEMA = "forcing_gate_divergence_v2"
+METHOD = "equal_length_band_backbone_mean_v2"
+DECLARED_BANDS = tuple(name for name, _, _ in D.LENGTH_BANDS)
 
 #: Fewest usable draws a condition must contribute at a position for the
 #: divergence there to be estimated. Below it the histogram is noise and the cell
@@ -72,7 +74,8 @@ SUPPORT_FINDING = (
     "of 111 backbones for progen2-medium and 46 of 111 for rita-xl. The "
     "pre-registered primary is therefore the LESS powerful reading, running on 93 "
     "and 65 backbones against the all-units variant's 111. Both are reported at "
-    "equal prominence and both read zero. The primary is not moved: a "
+    "equal prominence; their corrected estimates must be read from this artifact, "
+    "not inferred from the archived unbalanced analysis. The primary is not moved: a "
     "pre-registered primary changed after seeing the data is a post-hoc choice "
     "even when it moves toward more power, and especially then. The grouping is "
     "also doing visible work rather than sitting decoratively -- on the "
@@ -287,7 +290,7 @@ def cell_endpoint(
             {
                 "position": position,
                 "role": "prescribed_partner" if slot == 0 else "reference_partner",
-                "divergence_nats": jensen_shannon(left, right) if resolved else None,
+                "divergence_nats": jensen_shannon(left, right) if resolved and left is not None and right is not None else None,
                 "native_draws": left_n,
                 "transplant_draws": right_n,
                 "native_entropy_nats": _entropy(left) if left is not None else None,
@@ -429,6 +432,7 @@ def teacher_forced_endpoint(
             [AA20[index] for index in generator.choice(
                 len(AA20), size=int(resample_draws), p=transplant[slot])]
         )
+        assert left is not None and right is not None
         resampled.append(jensen_shannon(left, right))
     return {
         "unit_id": cell["unit_id"],
@@ -461,43 +465,113 @@ def backbone_values(records: Sequence[Mapping[str, Any]], *, key: str = "endpoin
     }
 
 
+def backbone_bands(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Validate one declared length band per backbone, including unresolved units."""
+
+    result: dict[str, str] = {}
+    for record in records:
+        accession, band = str(record["accession"]), str(record["length_band"])
+        if band not in DECLARED_BANDS:
+            raise ValueError(f"backbone {accession!r} has undeclared length band {band!r}")
+        if accession in result and result[accession] != band:
+            raise ValueError(f"backbone {accession!r} has contradictory length bands")
+        result[accession] = band
+    return result
+
+
+def _groups(universe, bands, required_bands):
+    if bands is None:
+        return {"all_backbones": list(range(len(universe)))}
+    required = DECLARED_BANDS if required_bands is None else tuple(required_bands)
+    if not required or len(set(required)) != len(required) or set(required) - set(DECLARED_BANDS):
+        raise ValueError("required bands must be distinct declared length bands")
+    groups = {band: [] for band in required}
+    for index, accession in enumerate(universe):
+        band = bands.get(accession)
+        if band not in groups:
+            raise ValueError(f"backbone {accession!r} lacks a required length band")
+        groups[band].append(index)
+    return groups
+
+
+def _metadata(groups, bands):
+    return {
+        "method_version": METHOD if bands is not None else "backbone_mean_v1",
+        "estimand": (
+            "equal-weight mean of within-length-band backbone means; each backbone is "
+            "the equal-weight mean of its resolved paired units"
+            if bands is not None else "equal-weight mean over retained backbones"
+        ),
+        "band_counts": {band: len(indices) for band, indices in groups.items()},
+        "band_weights": {band: 1.0 / len(groups) for band in groups},
+        "resampling": "independent backbone resampling within each required band",
+        "standard_error_definition": "sqrt(sum_b weight_b^2 * sample_variance_b / n_b)",
+    }
+
+
+def _aggregate(table, groups):
+    """Single source for the point, permutation null and bootstrap estimand."""
+
+    return np.mean([table[indices].mean(axis=0) for indices in groups.values()], axis=0)
+
+
+def _resample(table, groups, *, draws, seed):
+    generator = np.random.default_rng(int(seed))
+    means = []
+    for indices in groups.values():
+        index = np.asarray(indices)
+        sampled = index[generator.integers(len(index), size=(int(draws), len(index)))]
+        means.append(table[sampled].mean(axis=1))
+    return np.mean(means, axis=0)
+
+
+def _standard_error(table, groups):
+    return np.sqrt(sum(table[index].var(axis=0, ddof=1) / len(index)
+                       for index in groups.values())) / len(groups)
+
+
 def bootstrap_interval(
     values: Mapping[str, float], *, draws: int = D.BOOTSTRAP_DRAWS, seed: int = D.BOOTSTRAP_SEED,
+    bands: Mapping[str, str] | None = None, required_bands: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Percentile interval on the mean over backbones, resampling backbones.
+    """Percentile backbone interval; with bands, equal-weight band means.
 
-    The unit is the backbone and nothing else. Resampling draws would treat 24
-    samples of one prompt as 24 independent observations of a protein, which is
-    how a null becomes a finding.
+    Bands are resampled independently at their retained counts. Missing bands or
+    fewer than two independent backbones in any required band are unavailable,
+    never replaced by the unweighted helper's compatibility estimand.
     """
 
-    ordered = [float(values[key]) for key in sorted(values)]
-    if len(ordered) < 2:
-        return {
-            "point": float(ordered[0]) if ordered else None,
-            "interval": None, "units": len(ordered), "excludes_zero": None,
-            "undefined": "an interval over backbones needs at least two backbones",
+    if int(draws) < 1:
+        raise ValueError("bootstrap draws must be positive")
+    universe = sorted(values)
+    groups = _groups(universe, bands, required_bands)
+    metadata = _metadata(groups, bands)
+    array = np.asarray([float(values[key]) for key in universe], dtype=np.float64)
+    if not np.isfinite(array).all():
+        raise ValueError("backbone values must be finite")
+    if any(len(index) < 2 for index in groups.values()):
+        return metadata | {
+            "point": float(array[0]) if bands is None and len(array) == 1 else None,
+            "interval": None, "units": len(universe), "excludes_zero": None,
+            "undefined": "each required band needs at least two independent backbones",
         }
-    array = np.asarray(ordered, dtype=np.float64)
-    generator = np.random.default_rng(int(seed))
-    means = array[generator.integers(array.size, size=(int(draws), array.size))].mean(axis=1)
+    means = _resample(array, groups, draws=draws, seed=seed)
     low, high = (float(value) for value in np.percentile(means, [2.5, 97.5]))
-    return {
-        "point": float(array.mean()),
-        "interval": [low, high],
-        "units": int(array.size),
+    return metadata | {
+        "point": float(_aggregate(array, groups)), "interval": [low, high],
+        "units": len(universe),
         "unit_sd": float(array.std(ddof=1)),
-        "standard_error": float(array.std(ddof=1) / np.sqrt(array.size)),
+        "unit_sd_definition": "descriptive SD across retained backbone values, not the balanced SE",
+        "standard_error": float(_standard_error(array, groups)),
         "excludes_zero": bool(low > 0.0 or high < 0.0),
-        "draws": int(draws),
-        "seed": int(seed),
-        "unit": D.SAMPLING_UNIT,
+        "draws": int(draws), "seed": int(seed), "unit": D.SAMPLING_UNIT,
     }
 
 
 def by_stratum(
     records: Sequence[Mapping[str, Any]], *, stratum: str,
     draws: int = D.BOOTSTRAP_DRAWS, seed: int = D.BOOTSTRAP_SEED,
+    bands: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The endpoint inside each level of one declared stratum, never pooled across them."""
 
@@ -508,7 +582,10 @@ def by_stratum(
             continue
         levels.setdefault(str(level), []).append(record)
     return {
-        level: bootstrap_interval(backbone_values(rows), draws=draws, seed=seed)
+        level: bootstrap_interval(
+            backbone_values(rows), draws=draws, seed=seed, bands=bands,
+            required_bands=(level,) if bands is not None and stratum == "length_band" else None,
+        )
         | {"units_in_level": len(rows)}
         for level, rows in sorted(levels.items())
     }
@@ -521,6 +598,7 @@ def permutation_calibration(
     cells: Sequence[Mapping[str, Any]], observed: float | None, *,
     estimator: str = "empirical", draws: int = D.PERMUTATION_DRAWS,
     seed: int = D.PERMUTATION_SEED,
+    bands: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The endpoint's distribution when the forced-anchor label carries no information.
 
@@ -533,10 +611,23 @@ def permutation_calibration(
     argued. It calibrates the bootstrap; it does not replace it.
     """
 
-    if observed is None:
+    if observed is None or not np.isfinite(float(observed)):
         return {"draws": 0, "status": "no observed endpoint to calibrate"}
+    if int(draws) < 1:
+        return {"draws": 0, "status": "no permutation draws requested"}
+    observed_records = [cell_endpoint(cell, estimator=estimator) for cell in cells]
+    support = sorted(backbone_values(observed_records))
+    groups = _groups(support, bands, None)
+    metadata = _metadata(groups, bands) | {
+        "resampling": "within-cell condition-label permutation on fixed observed paired-unit/backbone support",
+    }
+    if any(len(index) < 2 for index in groups.values()):
+        return metadata | {"draws": 0, "status": "insufficient independent band support"}
+    resolved_units = {row["unit_id"] for row in observed_records if row["endpoint_nats"] is not None}
     prepared = []
     for cell in cells:
+        if cell["unit_id"] not in resolved_units:
+            continue
         selection = select_draws(
             cell["native"]["draws"], cell["transplant"]["draws"],
             completed_only=False, exclude_repeat_flagged=False, deduplicate=True,
@@ -566,15 +657,19 @@ def permutation_calibration(
                 )
                 assigned[condition].append(pooled[slot])
             records.append(_permuted_cell_endpoint(cell, assigned, estimator=estimator))
-        values = backbone_values([row for row in records if row["endpoint_nats"] is not None])
-        if values:
-            nulls.append(float(np.mean(list(values.values()))))
+        if any(row["endpoint_nats"] is None for row in records):
+            return metadata | {"draws": 0, "status": "permutation lost fixed observed paired-unit support"}
+        values = backbone_values(records)
+        if sorted(values) != support:
+            return metadata | {"draws": 0, "status": "permutation lost fixed observed backbone support"}
+        nulls.append(float(_aggregate(np.asarray([values[key] for key in support]), groups)))
     if not nulls:
         return {"draws": 0, "status": "the permutation produced no backbone value"}
     array = np.asarray(nulls, dtype=np.float64)
     extreme = int(np.sum(np.abs(array) >= abs(float(observed))))
-    return {
+    return metadata | {
         "draws": int(array.size),
+        "units": len(support),
         "seed": int(seed),
         "estimator": estimator,
         "mean_nats": float(array.mean()),
@@ -649,6 +744,7 @@ def _permuted_cell_endpoint(
 def simultaneous_band(
     columns: Sequence[str], values: Mapping[str, Mapping[str, float]], *,
     draws: int = D.BOOTSTRAP_DRAWS, seed: int = D.BOOTSTRAP_SEED,
+    bands: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """A studentised-maximum band over the arms, on shared backbone draws.
 
@@ -658,6 +754,11 @@ def simultaneous_band(
     refused here rather than patched by rejecting draws: the simpler estimator is
     correct precisely because the design removed the missingness the general one
     exists to handle.
+
+    With length-band metadata, each band has equal weight and independent
+    within-band resamples, shared across columns. Missing or insufficient band
+    support is explicitly unavailable. The unweighted mode is a compatibility
+    helper only; production gate callers always supply the declared bands.
 
     One set of backbone draws is shared by every column, so the dependence that
     makes the arms correlated is preserved; the critical value is the 95th
@@ -678,26 +779,32 @@ def simultaneous_band(
                 f"({len(missing)} differing, e.g. {missing[:5]}); the arms did not "
                 "measure one panel and a simultaneous band over them is refused"
             )
-    if len(universe) < 2:
-        raise ValueError("a simultaneous band needs at least two backbones")
+    groups = _groups(universe, bands, None)
+    metadata = _metadata(groups, bands)
+    if any(len(index) < 2 for index in groups.values()):
+        if bands is None:
+            raise ValueError("a simultaneous band needs at least two backbones")
+        return metadata | {"backbones": len(universe), "undefined": "each required band needs at least two independent backbones"}
+    if int(draws) < 1:
+        raise ValueError("bootstrap draws must be positive")
     table = np.asarray(
         [[float(values[name][backbone]) for name in names] for backbone in universe],
         dtype=np.float64,
     )
-    point = table.mean(axis=0)
-    standard_error = table.std(axis=0, ddof=1) / np.sqrt(table.shape[0])
-    generator = np.random.default_rng(int(seed))
-    index = generator.integers(table.shape[0], size=(int(draws), table.shape[0]))
-    boot = table[index].mean(axis=1)
+    if not np.isfinite(table).all():
+        raise ValueError("backbone values must be finite")
+    point = _aggregate(table, groups)
+    standard_error = _standard_error(table, groups)
+    boot = _resample(table, groups, draws=draws, seed=seed)
     varying = standard_error > 0
     maxima = (
         np.max(np.abs((boot[:, varying] - point[varying]) / standard_error[varying]), axis=1)
         if varying.any() else np.zeros(int(draws))
     )
     critical = float(np.quantile(maxima, 0.95))
-    return {
+    return metadata | {
         "method": (
-            "shared backbone bootstrap over a complete table; maximum absolute centred "
+            "shared within-band backbone bootstrap over a complete table; maximum absolute centred "
             "mean over fixed per-column standard errors"
         ),
         "confidence": 0.95,
@@ -737,15 +844,21 @@ def gate_verdict(
 ) -> dict[str, Any]:
     """Whether the gate resolved, against the pre-registered claimable effect.
 
-    Four outcomes and no fifth, because the three that are usually collapsed say
-    different things:
+    Resolved negative effects and claimable positive effects without successful
+    calibration are distinct closed-gate outcomes, not below-threshold positives:
 
     ``resolved_positive``
-        the interval excludes zero, the point estimate reaches the pre-registered
+        the interval is strictly positive, the point estimate reaches the pre-registered
         claimable effect, and the permutation calibration rejects at alpha. Only
         this outcome opens the structure channel.
+    ``resolved_negative``
+        the interval is strictly negative: an opposite-direction effect cannot
+        open the positive gate, regardless of magnitude or calibration.
+    ``calibration_failed``
+        the positive interval and point reach the claimable effect, but finite
+        permutation calibration does not reject at alpha or is unavailable.
     ``resolved_below_claimable``
-        the interval excludes zero but the point estimate is smaller than the
+        the interval is strictly positive but the point estimate is smaller than the
         design pre-registered as claimable. An effect is present and the claim is
         still not made: the threshold was fixed before the run and is not revised
         to meet the result.
@@ -759,14 +872,17 @@ def gate_verdict(
     """
 
     point, interval = estimate.get("point"), estimate.get("interval")
-    if point is None or interval is None:
-        return {"verdict": "unresolved", "reason": "the endpoint has no interval"}
+    if point is None or interval is None or not np.isfinite(float(point)) or not np.isfinite(interval).all():
+        return {"verdict": "unresolved", "reason": "the endpoint has no finite interval",
+                "structure_channel_gated": False}
     low, high = float(interval[0]), float(interval[1])
+    if low > high:
+        raise ValueError("interval endpoints must be ordered")
     p_value = calibration.get("two_sided_p")
     excludes_zero = low > 0.0 or high < 0.0
     threshold = float(claimable)
-    if excludes_zero and abs(float(point)) >= threshold and (
-        p_value is not None and float(p_value) < D.ALPHA
+    if low > 0.0 and float(point) >= threshold and (
+        p_value is not None and np.isfinite(float(p_value)) and 0 <= float(p_value) < D.ALPHA
     ):
         verdict = "resolved_positive"
         reason = (
@@ -774,6 +890,12 @@ def gate_verdict(
             f"{float(point):.4f} reaches the pre-registered {threshold} nats, and the "
             f"permutation p-value is {p_value:.4g}"
         )
+    elif high < 0.0:
+        verdict = "resolved_negative"
+        reason = "the interval excludes zero in the opposite direction; negative excess cannot open the positive gate"
+    elif low > 0.0 and float(point) >= threshold:
+        verdict = "calibration_failed"
+        reason = "a claimable positive estimate lacks finite permutation calibration rejecting at alpha"
     elif excludes_zero:
         verdict = "resolved_below_claimable"
         reason = (

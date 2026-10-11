@@ -143,6 +143,7 @@ def read_arms(directories: list[Path], *, cohort_sha256: str) -> list[dict]:
 def paired_cells(arm: dict, cohort: dict, *, mode: str, coverage: dict) -> list[dict]:
     """Join the two conditions of every unit this arm completed in one mode."""
 
+    G.backbone_bands(cohort["unit_rows"])
     by_unit = {unit["unit_id"]: unit for unit in cohort["unit_rows"]}
     cells = []
     for unit_id, unit in sorted(by_unit.items()):
@@ -150,6 +151,13 @@ def paired_cells(arm: dict, cohort: dict, *, mode: str, coverage: dict) -> list[
         transplant = arm["records"].get((unit_id, D.CONDITION_TRANSPLANT, mode))
         if native is None or transplant is None:
             continue
+        for record in (native, transplant):
+            for field in ("accession", "length_band", "partner"):
+                if record.get(field) != unit[field]:
+                    raise ValueError(f"{unit_id}: generation contradicts cohort {field}")
+            references = [int(row["position"]) for row in unit["reference_partners"]]
+            if record.get("reference_positions") != references:
+                raise ValueError(f"{unit_id}: generation contradicts cohort reference positions")
         cells.append(
             {
                 "unit_id": unit_id,
@@ -191,6 +199,7 @@ def _carry(records: list[dict], cells: list[dict]) -> list[dict]:
 
 
 def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Namespace) -> dict:
+    bands = G.backbone_bands(cohort["unit_rows"])
     sampled = paired_cells(arm, cohort, mode=D.MODE_SAMPLED, coverage=coverage)
     if not sampled:
         return {
@@ -225,10 +234,11 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                 G.cell_endpoint(cell, estimator=estimator, **settings) for cell in sampled
             ]
             values = G.backbone_values(records)
-            estimate = G.bootstrap_interval(values, draws=args.draws, seed=args.seed)
+            estimate = G.bootstrap_interval(values, draws=args.draws, seed=args.seed, bands=bands)
             block["variants"].setdefault(estimator, {})[name] = estimate | {
                 "settings": dict(settings),
                 "resolved_units": sum(1 for row in records if row["endpoint_nats"] is not None),
+                "divergence_summary_weighting": "descriptive equal-paired-unit means, not the pooled gate estimand",
                 "partner_divergence_nats": _mean_of(records, "partner_divergence_nats"),
                 "reference_divergence_nats": _mean_of(records, "reference_divergence_nats"),
             }
@@ -239,7 +249,7 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                 block["strata"] = {
                     stratum: G.by_stratum(
                         _carry(records, sampled), stratum=stratum,
-                        draws=args.draws, seed=args.seed,
+                        draws=args.draws, seed=args.seed, bands=bands,
                     )
                     for stratum in STRATA
                 }
@@ -248,11 +258,11 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                         [G.hydrophobic_bin_endpoint(cell, estimator=estimator)
                          for cell in sampled]
                     ),
-                    draws=args.draws, seed=args.seed,
+                    draws=args.draws, seed=args.seed, bands=bands,
                 )
                 block["calibration"] = G.permutation_calibration(
                     sampled, estimate.get("point"), estimator=estimator,
-                    draws=args.permutation_draws, seed=D.PERMUTATION_SEED,
+                    draws=args.permutation_draws, seed=D.PERMUTATION_SEED, bands=bands,
                 )
     teacher = paired_cells(arm, cohort, mode=D.MODE_TEACHER_FORCED, coverage=coverage)
     if teacher:
@@ -260,11 +270,11 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
         block["teacher_forced"] = {
             "units": len(records),
             "exact": G.bootstrap_interval(
-                G.backbone_values(records, key="exact_nats"), draws=args.draws, seed=args.seed,
+                G.backbone_values(records, key="exact_nats"), draws=args.draws, seed=args.seed, bands=bands,
             ),
             "resampled_to_matched_support": G.bootstrap_interval(
                 G.backbone_values(records, key="resampled_nats"),
-                draws=args.draws, seed=args.seed,
+                draws=args.draws, seed=args.seed, bands=bands,
             ),
             "reads_as": (
                 "the same intervention with the residues between the anchor and the partner "
@@ -285,7 +295,7 @@ def analyse_arm(arm: dict, cohort: dict, *, coverage: dict, args: argparse.Names
                     accession: float((primary_values or {})[accession] - teacher_values[accession])
                     for accession in shared
                 },
-                draws=args.draws, seed=args.seed,
+                draws=args.draws, seed=args.seed, bands=bands,
             )
     block["verdict"] = G.gate_verdict(
         block["variants"]["empirical"][G.PRIMARY_VARIANT], block.get("calibration", {}),
@@ -348,6 +358,7 @@ def _mean_of(records: list[dict], key: str) -> float | None:
 
 def run(args: argparse.Namespace) -> None:
     cohort = load_cohort(args.cohort)
+    bands = G.backbone_bands(cohort["unit_rows"])
     coverage: dict = {}
     coverage_source = None
     if args.coverage is not None:
@@ -404,17 +415,13 @@ def run(args: argparse.Namespace) -> None:
             block for block in blocks
             if block.get(field) and block.get("in_declared_panel")
         ]
-        if len(available) < 2:
+        if {block["arm"] for block in available} != set(D.ARMS):
             return (
-                {"undefined": f"{len(available)} declared arm(s) carry a value; a band needs two"},
+                {"undefined": "the simultaneous family requires all four predeclared arms",
+                 "required_columns": list(D.ARMS)},
                 None,
             )
         universe = set.intersection(*(set(block[field]) for block in available))
-        if len(universe) < 2:
-            return (
-                {"undefined": "fewer than two backbones are shared by every declared arm"},
-                len(universe),
-            )
         restricted = {
             block["arm"]: {
                 key: value for key, value in block[field].items() if key in universe
@@ -424,8 +431,9 @@ def run(args: argparse.Namespace) -> None:
         return (
             G.simultaneous_band(
                 [block["arm"] for block in available], restricted,
-                draws=args.draws, seed=args.seed,
-            ),
+                draws=args.draws, seed=args.seed, bands=bands,
+            ) | {"variant": G.PRIMARY_VARIANT if field == "backbone_values" else G.ALL_UNITS_VARIANT,
+                 "support_policy": "intersection of retained backbones across all four predeclared arms"},
             len(universe),
         )
 
@@ -450,6 +458,7 @@ def run(args: argparse.Namespace) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     write_json(args.out / COMPLETION, {
         "schema": G.SCHEMA,
+        "analysis_method": G.METHOD,
         "status": "complete",
         "created_utc": _now(),
         "experiment": D.EXPERIMENT,
