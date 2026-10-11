@@ -14,7 +14,7 @@ structural evaluation should start out agreeing and, at some extent, stop.
 
 The ladder is therefore one axis and one axis only: the number of contiguous
 residues ``k`` the model is asked to write. :data:`WINDOW_EXTENTS` is that axis.
-``k = 1`` is a single substitution and ``k = 2`` a double substitution, proposed
+``k = 1`` rewrites one position and ``k = 2`` rewrites two positions, proposed
 by the model rather than drawn by us, so the bottom of the ladder is the same
 construction as the top and not a different experiment with the same label.
 
@@ -25,7 +25,7 @@ Three design points that decide what may be claimed
 Both likelihood and predicted structural confidence are strongly
 length-dependent in this project's own measurements, and they are dependent in
 *opposite* directions, so a comparison across rungs of different length is a
-comparison of lengths. Every window rung substitutes exactly ``k`` residues into
+comparison of lengths. Every window rung rewrites exactly ``k`` positions in
 a fixed backbone, so the variant has the parent's length to the residue and the
 parent's own fold is a legitimate referent. The full-generation rung has neither
 property: it is an **anchor**, read as a marginal distribution, and its
@@ -83,8 +83,8 @@ AA20 = "ACDEFGHIKLMNPQRSTVWY"
 
 # --------------------------------------------------------------- the ladder
 
-#: The modification-extent axis, in residues. ``1`` is a single substitution and
-#: ``2`` a double substitution; both are the model's own proposal under exactly
+#: The nominal modification-extent axis, in residues. ``1`` rewrites one position
+#: and ``2`` two positions; original residues may be re-emitted. Both use exactly
 #: the construction the larger rungs use, which is why they are rungs of this
 #: ladder rather than a separately drawn mutant set.
 #:
@@ -556,8 +556,9 @@ def realised_substitutions(parent: str, variant: str) -> int:
     """How many residues actually differ. Not the same number as the extent.
 
     A model asked to rewrite one residue may re-emit the original, so the nominal
-    extent is an upper bound on the realised one. Both are reported, and the
-    realised count is the continuous axis the finer localisation uses.
+    extent is an upper bound on the realised one. Both are reported, but the
+    continuous crossing fit uses log2 nominal window extent, not the realised
+    substitution count.
     """
 
     if len(parent) != len(variant):

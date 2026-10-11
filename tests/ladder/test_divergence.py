@@ -370,3 +370,119 @@ def test_a_zero_effect_cannot_be_resolved_at_any_sample_size():
 def test_a_scaling_statement_needs_an_admissible_interval():
     with pytest.raises(ValueError, match="admissible"):
         dv.required_units(bootstrap_sd=0.2, n_units=4, target_effect=0.2)
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_exact_collinearity_has_a_reason_and_diagnostics(sign):
+    x = np.tile(np.arange(7), 8).tolist()
+    groups = np.repeat(np.arange(8), 7).tolist()
+    record = dv.partial_within_stratum_rank_correlation(
+        x, x, (sign * np.asarray(x)).tolist(), groups, return_diagnostics=True
+    )
+    assert record["point"] is None
+    assert "collinear" in record["reason"]
+    assert record["n_informative_backbones"] == 0
+    assert record["original_rank_norms"][0] > 0
+
+
+def test_constant_covariate_reproduces_raw():
+    values, groups, _ = _cell(0.7)
+    assert dv.partial_within_stratum_rank_correlation(
+        values["x"], values["y"], [1] * len(groups), groups
+    ) == pytest.approx(_statistic(values, groups))
+
+
+@pytest.mark.parametrize("column", [0, 1, 2])
+def test_partial_refuses_nonfinite_inputs(column):
+    vectors = [[1., 2., 3.] for _ in range(3)]
+    vectors[column][1] = float("inf")
+    with pytest.raises(ValueError, match="non-finite"):
+        dv.partial_within_stratum_rank_correlation(*vectors, ["a"] * 3)
+
+
+@pytest.mark.parametrize("epsilon,undefined", [(1e-15, True), (1e-6, False)])
+def test_residual_tolerance_separates_roundoff_from_real_signal(monkeypatch, epsilon, undefined):
+    # Exercise projection tolerance directly, independently of discretised ranks.
+    z = np.array([-1., 0., 1.])
+    residual = np.array([1., -2., 1.]) * epsilon
+    vectors = iter([z + residual, z + residual, z])
+    monkeypatch.setattr(dv, "_centred_within", lambda *args: next(vectors))
+    record = dv.partial_within_stratum_rank_correlation(
+        [1, 2, 3], [1, 2, 3], [1, 2, 3], ["a"] * 3, return_diagnostics=True
+    )
+    assert (record["point"] is None) == undefined
+    if not undefined:
+        assert record["point"] == pytest.approx(1)
+
+
+def test_panel_size_is_not_informative_backbone_support():
+    units = [f"b{i}" for i in range(16)]
+    groups = np.repeat(units, 3).tolist()
+    x = [1, 2, 3] + [1] * 45
+    values = {"x": x, "y": x}
+    record = dv.cluster_bootstrap(values, groups, _statistic, units=units,
+                                  resamples=dv.stratum_resamples(units, seed=1, draws=100))
+    assert record["point"] == 1
+    assert record["n_informative_units"] == 1
+    assert record["interval"] is None
+    assert "informative" in record["interval_reason"]
+    assert record["n_finite_draws"] + record["n_undefined_draws"] == 100
+
+
+def test_all_undefined_bootstrap_has_null_and_reason():
+    values, groups, units = _cell(1)
+    values["x"] = [1] * len(groups)
+    record = dv.cluster_bootstrap(values, groups, _statistic, units=units,
+                                  resamples=dv.stratum_resamples(units, seed=1, draws=30))
+    assert record["point"] is None and record["interval"] is None
+    assert record["point_reason"] and record["interval_reason"]
+    assert record["n_undefined_draws"] == 30
+
+
+def test_joint_band_requires_same_declared_columns_in_each_valid_draw():
+    a = np.linspace(-1, 1, 100)
+    b = a.copy()
+    b[:10] = np.nan
+    cells = {"a": {"point": 0., "bootstrap_sd": 1., "draws": a},
+             "b": {"point": 0., "bootstrap_sd": 1., "draws": b}}
+    record = dv.simultaneous_band(cells)
+    assert not record["available"] and record["n_joint_valid_draws"] == 90
+    assert record["intervals"] == {}
+    b[:8] = a[:8]
+    record = dv.simultaneous_band(cells)
+    assert record["available"] and record["n_joint_valid_draws"] == 98
+    assert record["quantile"] == pytest.approx(np.quantile(abs(a[np.isfinite(b)]), .95))
+
+
+def test_unavailable_primary_or_simultaneous_is_not_lost_significance():
+    ladder = _ladder([.5] * 6, [[.2, .8]] * 6)
+    ladder[2]["point"] = None
+    ladder[2]["interval"] = None
+    result = dv.divergence_rung(ladder, simultaneous={"k1": [.2, .8]})
+    assert result["loses_significance"] is None
+    assert result["resolved"][2] is None
+    assert not result["inferential_available"]
+    assert not result["simultaneous_available"]
+    assert result["loses_significance_simultaneous"] is None
+
+
+def test_paired_contrast_uses_same_draw_not_independent_intervals_and_keeps_gaps():
+    a = np.linspace(-1, 1, 100)
+    base = {"informative_units": [f"b{i}" for i in range(8)]}
+    cells = {"k1": dict(base, point=.5, draws=a + .5),
+             "k2": dict(base, point=.2, draws=a + .2),
+             "k10": dict(base, point=.1, draws=a + .1)}
+    records = dv.adjacent_rung_contrasts(cells, rungs=["k1", "k2", "k5", "k10"])
+    assert records[0]["point"] == pytest.approx(-.3)
+    assert records[0]["interval"] == pytest.approx([-.3, -.3])
+    assert records[0]["supports_decline"]
+    assert all(record["reason"] == "missing adjacent rung" for record in records[1:])
+
+
+def test_crossing_interval_is_explicitly_conditional():
+    extents = [1, 2, 5]
+    points = [1 - np.log2(k) for k in extents]
+    matrix = np.array([points] * 20 + [[1, 1, 1]] * 20)
+    record = dv.continuous_crossing(extents, matrix, point_estimates=points)
+    assert "conditional" in record["interval_interpretation"]
+    assert record["fraction_without_crossing"] == .5

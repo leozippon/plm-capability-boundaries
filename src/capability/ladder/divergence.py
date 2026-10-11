@@ -44,7 +44,7 @@ measured range returns no crossing, and that is a result.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence, overload
 
 import numpy as np
 from scipy import stats
@@ -58,6 +58,8 @@ from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor  # n
 
 DEFAULT_DRAWS = 10000
 CONFIDENCE = 0.95
+MINIMUM_VALID_FRACTION = 0.95
+MINIMUM_VALID_DRAWS = 20
 
 
 def _ranks(values: np.ndarray) -> np.ndarray:
@@ -127,9 +129,24 @@ def within_stratum_rank_correlation(
     return float((left * right).sum() / denominator)
 
 
+@overload
 def partial_within_stratum_rank_correlation(
-    x: Sequence[float], y: Sequence[float], z: Sequence[float], strata: Sequence[Any]
-) -> float:
+    x: Sequence[float], y: Sequence[float], z: Sequence[float], strata: Sequence[Any],
+    *, return_diagnostics: Literal[False] = False,
+) -> float: ...
+
+
+@overload
+def partial_within_stratum_rank_correlation(
+    x: Sequence[float], y: Sequence[float], z: Sequence[float], strata: Sequence[Any],
+    *, return_diagnostics: Literal[True],
+) -> dict[str, Any]: ...
+
+
+def partial_within_stratum_rank_correlation(
+    x: Sequence[float], y: Sequence[float], z: Sequence[float], strata: Sequence[Any],
+    *, return_diagnostics: bool = False,
+) -> float | dict[str, Any]:
     """The same correlation after linearly removing a covariate's within-stratum rank.
 
     The covariate this experiment conditions on is composition distance from the
@@ -145,17 +162,35 @@ def partial_within_stratum_rank_correlation(
     groups = np.asarray(strata)
     if not (xs.shape == ys.shape == zs.shape == groups.shape) or xs.ndim != 1:
         raise ValueError("x, y, z and strata must be one-dimensional and aligned")
+    if not all(np.isfinite(vector).all() for vector in (xs, ys, zs)):
+        raise ValueError("a partial within-stratum correlation refuses non-finite values")
     left = _centred_within(xs, groups)
     right = _centred_within(ys, groups)
     covariate = _centred_within(zs, groups)
+    original = [float(np.linalg.norm(vector)) for vector in (left, right)]
     norm = float((covariate**2).sum())
     if norm > 0.0:
         left = left - covariate * float((left * covariate).sum()) / norm
         right = right - covariate * float((right * covariate).sum()) / norm
-    denominator = math.sqrt(float((left**2).sum()) * float((right**2).sum()))
-    if denominator == 0.0:
-        return float("nan")
-    return float((left * right).sum() / denominator)
+    residual = [float(np.linalg.norm(vector)) for vector in (left, right)]
+    tolerances = [64 * np.finfo(np.float64).eps * value for value in original]
+    reason = None
+    if any(value == 0 for value in original):
+        reason = "constant within-backbone ranks"
+    elif any(value <= tolerance for value, tolerance in zip(residual, tolerances)):
+        reason = "covariate-collinear ranks: residual norm at float64 roundoff scale"
+    informative = [str(group) for group in np.unique(groups)
+        if all(float(np.linalg.norm(vector[groups == group])) > tolerance
+               for vector, tolerance in zip((left, right), tolerances))
+    ]
+    point = None if reason else float(np.dot(left, right) / (residual[0] * residual[1]))
+    diagnostics = {
+        "point": point, "reason": reason, "original_rank_norms": original,
+        "residual_rank_norms": residual, "residual_tolerances": tolerances,
+        "n_informative_backbones": len(informative),
+        "informative_backbones": informative,
+    }
+    return diagnostics if return_diagnostics else (float("nan") if point is None else point)
 
 
 def per_stratum_spearman(
@@ -189,8 +224,10 @@ def per_stratum_spearman(
     return {
         "per_stratum": values,
         "n_strata_scored": int(finite.size),
-        "mean": float(finite.mean()) if finite.size else float("nan"),
-        "sd": float(finite.std(ddof=1)) if finite.size > 1 else float("nan"),
+        "mean": float(finite.mean()) if finite.size else None,
+        "mean_reason": None if finite.size else "no informative backbone correlations",
+        "sd": float(finite.std(ddof=1)) if finite.size > 1 else None,
+        "sd_reason": None if finite.size > 1 else "fewer than two informative backbone correlations",
     }
 
 
@@ -223,6 +260,7 @@ def cluster_bootstrap_many(
     units: Sequence[Any],
     resamples: np.ndarray,
     confidence: float = CONFIDENCE,
+    informative_units: Mapping[str, Sequence[Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Every statistic of one cell, in a single pass over the resamples.
 
@@ -236,7 +274,11 @@ def cluster_bootstrap_many(
     count exactly where the bootstrap is measuring it.
 
     The draw vector is returned, not just summarised, because the simultaneous
-    band needs the raw draws to take a maximum across cells.
+    band needs the raw draws to take a maximum across cells. Intervals require
+    the floor of informative independent backbones for each statistic, at least
+    20 finite draws and a fixed 95% valid fraction; undefined draws are counted,
+    never retried. Callers with residual diagnostics can supply their informative
+    unit identities; otherwise support is counted by finite single-unit statistics.
     """
 
     groups = np.asarray(strata)
@@ -251,6 +293,14 @@ def cluster_bootstrap_many(
         raise ValueError("a bootstrap needs at least one statistic")
     rows_by_unit = [np.flatnonzero(groups == unit) for unit in unit_list]
     point = {name: float(function(arrays, groups)) for name, function in statistics.items()}
+    support = {
+        name: list(informative_units[name]) if informative_units is not None else [
+            unit_list[index] for index, rows in enumerate(rows_by_unit)
+            if rows.size >= 2 and np.isfinite(function(
+                {key: vector[rows] for key, vector in arrays.items()}, groups[rows]
+            ))
+        ] for name, function in statistics.items()
+    }
     draws = {name: np.empty(resamples.shape[0], dtype=np.float64) for name in statistics}
     for index in range(resamples.shape[0]):
         resample = resamples[index]
@@ -271,20 +321,34 @@ def cluster_bootstrap_many(
     for name in statistics:
         vector = draws[name]
         finite = vector[np.isfinite(vector)]
+        interval_reason = None
+        if not np.isfinite(point[name]):
+            interval_reason = "undefined point statistic"
+        elif len(support[name]) < MINIMUM_BOOTSTRAP_UNITS:
+            interval_reason = "too few informative independent backbones"
+        elif finite.size < MINIMUM_VALID_DRAWS or finite.size / vector.size < MINIMUM_VALID_FRACTION:
+            interval_reason = "too few finite bootstrap draws"
         records[name] = {
-            "point": point[name],
+            "point": point[name] if np.isfinite(point[name]) else None,
+            "point_reason": None if np.isfinite(point[name]) else "undefined within-backbone statistic",
             "interval": (
                 [float(np.quantile(finite, tail)), float(np.quantile(finite, 1.0 - tail))]
-                if finite.size
-                else [float("nan"), float("nan")]
+                if interval_reason is None else None
             ),
+            "interval_reason": interval_reason,
+            "inferential_available": interval_reason is None,
+            "informative_units": [str(unit) for unit in support[name]],
+            "n_informative_units": len(support[name]),
+            "minimum_valid_fraction": MINIMUM_VALID_FRACTION,
+            "minimum_valid_draws": MINIMUM_VALID_DRAWS,
+            "n_undefined_draws": int(vector.size - finite.size),
             "confidence": float(confidence),
             "n_observations": int(groups.size),
             "n_units": int(np.unique(groups).size),
             "n_panel_units": int(unit_list.size),
             "n_draws": int(resamples.shape[0]),
             "n_finite_draws": int(finite.size),
-            "bootstrap_sd": float(finite.std(ddof=1)) if finite.size > 1 else float("nan"),
+            "bootstrap_sd": float(finite.std(ddof=1)) if finite.size > 1 else None,
             "draws": vector,
         }
     return records
@@ -317,24 +381,33 @@ def simultaneous_band(
     """Sup-t simultaneous intervals over a panel of cells.
 
     The maximum of the standardised deviations is taken draw by draw across every
-    cell, and its ``confidence`` quantile scales each cell's own bootstrap
-    standard deviation. Cells whose bootstrap standard deviation is not finite or
-    is zero cannot enter the maximum and are named in the artefact instead of
-    being given an interval that would not be simultaneous with anything.
+    cell, using only draws finite in every declared column, and its ``confidence``
+    quantile scales each cell's own bootstrap standard deviation. An unavailable
+    cell or insufficient joint-valid draws makes the declared family's band
+    unavailable; the family is never silently reduced.
     """
 
     usable = {
         name: cell
         for name, cell in cells.items()
-        if np.isfinite(cell.get("bootstrap_sd", float("nan"))) and cell["bootstrap_sd"] > 0.0
+        if cell.get("point") is not None and np.isfinite(cell["point"])
+        and cell.get("bootstrap_sd") is not None and np.isfinite(cell["bootstrap_sd"])
+        and cell["bootstrap_sd"] > 0.0 and cell.get("inferential_available", True)
     }
     excluded = sorted(set(cells) - set(usable))
-    if not usable:
+    if excluded or not usable:
         return {
+            "available": False,
+            "declared_family": list(cells),
+            "n_draws": max((len(cell.get("draws", [])) for cell in cells.values()), default=0),
+            "n_joint_valid_draws": 0,
+            "n_undefined_draws": max((len(cell.get("draws", [])) for cell in cells.values()), default=0),
+            "minimum_valid_fraction": MINIMUM_VALID_FRACTION,
+            "minimum_valid_draws": MINIMUM_VALID_DRAWS,
             "quantile": None,
             "intervals": {},
             "excluded_cells": excluded,
-            "reason": "no cell carries a positive finite bootstrap standard deviation",
+            "reason": "declared family contains unavailable cells or is empty",
         }
     lengths = {len(cell["draws"]) for cell in usable.values()}
     if len(lengths) != 1:
@@ -348,19 +421,29 @@ def simultaneous_band(
             for cell in usable.values()
         ]
     )
-    with np.errstate(invalid="ignore"):
-        maxima = np.nanmax(np.abs(stacked), axis=0)
-    finite = maxima[np.isfinite(maxima)]
-    if finite.size == 0:
+    joint_valid = np.isfinite(stacked).all(axis=0)
+    finite = np.max(np.abs(stacked[:, joint_valid]), axis=0)
+    counts = {
+        "n_draws": stacked.shape[1], "n_joint_valid_draws": int(joint_valid.sum()),
+        "n_undefined_draws": int((~joint_valid).sum()),
+        "minimum_valid_fraction": MINIMUM_VALID_FRACTION,
+        "minimum_valid_draws": MINIMUM_VALID_DRAWS,
+        "declared_family": list(cells),
+    }
+    if finite.size < MINIMUM_VALID_DRAWS or finite.size / stacked.shape[1] < MINIMUM_VALID_FRACTION:
         return {
             "quantile": None,
             "intervals": {},
             "excluded_cells": excluded,
-            "reason": "every resample produced a non-finite standardised deviation",
+            "reason": "too few joint-valid draws for the declared family",
+            "available": False,
+            **counts,
         }
     quantile = float(np.quantile(finite, confidence))
     return {
         "quantile": quantile,
+        "available": True,
+        **counts,
         "confidence": float(confidence),
         "n_cells": len(usable),
         "excluded_cells": excluded,
@@ -374,8 +457,12 @@ def simultaneous_band(
     }
 
 
-def _excludes_zero(interval: Sequence[float]) -> bool:
+def _excludes_zero(interval: Sequence[float] | None) -> bool | None:
+    if interval is None or len(interval) != 2 or any(value is None for value in interval):
+        return None
     low, high = float(interval[0]), float(interval[1])
+    if not np.isfinite([low, high]).all() or low > high:
+        return None
     return (low > 0.0 and high > 0.0) or (low < 0.0 and high < 0.0)
 
 
@@ -396,7 +483,8 @@ def divergence_rung(
     finding.
 
     ``changes_sign`` is the first rung whose point estimate has the opposite sign
-    from the bottom rung. It is the stronger reading and needs no interval.
+    from the bottom rung. Both criteria are descriptive heuristics, not tests of
+    a decline or a mechanism; a decline needs a paired rung contrast.
 
     A ladder whose bottom rung already admits zero has no divergence point to
     find, and that is reported as ``undetermined_at_bottom`` rather than as a
@@ -407,48 +495,97 @@ def divergence_rung(
     if not entries:
         raise ValueError("a divergence needs a ladder")
     resolved = [_excludes_zero(entry["interval"]) for entry in entries]
-    points = [float(entry["point"]) for entry in entries]
+    points = [float(entry["point"]) if entry.get("point") is not None
+              and np.isfinite(entry["point"]) else None for entry in entries]
     result: dict[str, Any] = {
         "rungs": [str(entry["rung"]) for entry in entries],
         "points": points,
         "resolved": resolved,
         "loses_significance": None,
         "changes_sign": None,
-        "undetermined_at_bottom": not resolved[0],
+        "undetermined_at_bottom": None if resolved[0] is None else not resolved[0],
+        "interpretation": "descriptive sign/first-loss heuristics; not evidence of a decline or mechanism",
+        "inferential_available": all(value is not None for value in resolved + points),
+        "reason": None if all(value is not None for value in resolved + points) else "missing or undefined primary inference",
     }
-    if resolved[0]:
+    if result["inferential_available"] and resolved[0] and all(point is not None for point in points):
         for index in range(1, len(entries)):
             if not resolved[index] and not any(resolved[index + 1 :]):
                 result["loses_significance"] = str(entries[index]["rung"])
                 break
         bottom = points[0]
         for index in range(1, len(entries)):
-            if bottom != 0.0 and points[index] * bottom < 0.0:
+            current = points[index]
+            if bottom is not None and current is not None and bottom != 0.0 and current * bottom < 0.0:
                 result["changes_sign"] = str(entries[index]["rung"])
                 break
-    if simultaneous:
-        simultaneous_resolved = [
-            _excludes_zero(simultaneous[str(entry["rung"])])
-            if str(entry["rung"]) in simultaneous
-            else False
-            for entry in entries
-        ]
-        result["simultaneous_resolved"] = simultaneous_resolved
-        result["loses_significance_simultaneous"] = None
-        if simultaneous_resolved and simultaneous_resolved[0]:
-            for index in range(1, len(entries)):
-                if not simultaneous_resolved[index] and not any(simultaneous_resolved[index + 1 :]):
-                    result["loses_significance_simultaneous"] = str(entries[index]["rung"])
-                    break
+    simultaneous = simultaneous or {}
+    simultaneous_resolved = [_excludes_zero(simultaneous.get(str(entry["rung"]))) for entry in entries]
+    result["simultaneous_resolved"] = simultaneous_resolved
+    result["loses_significance_simultaneous"] = None
+    result["simultaneous_available"] = all(value is not None for value in simultaneous_resolved)
+    result["simultaneous_reason"] = None if result["simultaneous_available"] else "missing or undefined simultaneous inference"
+    if result["simultaneous_available"] and simultaneous_resolved[0]:
+        for index in range(1, len(entries)):
+            if not simultaneous_resolved[index] and not any(simultaneous_resolved[index + 1 :]):
+                result["loses_significance_simultaneous"] = str(entries[index]["rung"])
+                break
     return result
+
+
+def adjacent_rung_contrasts(
+    cells: Mapping[str, Mapping[str, Any]], *, rungs: Sequence[str],
+    confidence: float = CONFIDENCE,
+) -> list[dict[str, Any]]:
+    """Later minus earlier raw-primary correlations on the SAME cluster draws.
+
+    These are marginal paired contrasts, not simultaneous evidence or a mechanism.
+    Missing rungs stay missing: a contrast never bridges a gap in the declaration.
+    """
+    records = []
+    for earlier, later in zip(rungs, rungs[1:]):
+        left, right = cells.get(earlier), cells.get(later)
+        record = {"earlier_rung": earlier, "later_rung": later,
+                  "direction": "later minus earlier", "confidence": confidence,
+                  "interval": None, "point": None, "supports_decline": None}
+        reason = "missing adjacent rung"
+        if left is not None and right is not None:
+            a, b = np.asarray(left["draws"]), np.asarray(right["draws"])
+            if a.shape != b.shape:
+                raise ValueError("paired contrasts require the same bootstrap draws")
+            draws = b - a
+            finite = draws[np.isfinite(draws)]
+            support = set(left.get("informative_units", [])) & set(right.get("informative_units", []))
+            record.update(n_draws=int(draws.size), n_finite_draws=int(finite.size),
+                          n_undefined_draws=int(draws.size - finite.size),
+                          n_informative_units=len(support),
+                          minimum_valid_fraction=MINIMUM_VALID_FRACTION,
+                          minimum_valid_draws=MINIMUM_VALID_DRAWS)
+            reason = None
+            if left.get("point") is None or right.get("point") is None:
+                reason = "undefined primary point"
+            else:
+                record["point"] = float(right["point"] - left["point"])
+            if reason is None and len(support) < MINIMUM_BOOTSTRAP_UNITS:
+                reason = "too few jointly informative independent backbones"
+            if reason is None and (finite.size < MINIMUM_VALID_DRAWS or finite.size / draws.size < MINIMUM_VALID_FRACTION):
+                reason = "too few finite paired bootstrap draws"
+            if reason is None:
+                tail = (1 - confidence) / 2
+                record["interval"] = [float(np.quantile(finite, tail)), float(np.quantile(finite, 1 - tail))]
+                record["supports_decline"] = record["interval"][1] < 0
+        record.update(reason=reason, inferential_available=reason is None)
+        records.append(record)
+    return records
 
 
 def continuous_crossing(
     extents: Sequence[int],
-    draw_matrix: Sequence[Sequence[float]],
+    draw_matrix: Sequence[Sequence[float]] | np.ndarray,
     *,
     point_estimates: Sequence[float],
     confidence: float = CONFIDENCE,
+    primary_inference_available: bool = True,
 ) -> dict[str, Any]:
     """The extent at which the fitted correlation reaches zero, with an interval.
 
@@ -456,7 +593,9 @@ def continuous_crossing(
     geometric and a linear-in-k fit would let the k = 40 rung determine the whole
     line. The fit is ordinary least squares over the rungs of one arm, repeated
     inside each cluster-bootstrap draw, so the crossing carries the same
-    backbone-level uncertainty the rung intervals do.
+    backbone-level uncertainty the rung intervals do. If required primary-rung
+    inference is unavailable, the point fit remains descriptive but no crossing
+    interval is issued, regardless of how many draws cross inside the range.
 
     The crossing is reported only where it falls inside the measured range. A
     draw whose line never reaches zero between the smallest and largest extent is
@@ -473,11 +612,11 @@ def continuous_crossing(
     """
 
     k = np.asarray(extents, dtype=np.float64)
-    if k.ndim != 1 or k.size < 3 or (k <= 0).any():
+    if k.ndim != 1 or k.size < 3 or not np.isfinite(k).all() or (k <= 0).any():
         raise ValueError("a continuous crossing needs at least three positive extents")
     design = np.vstack([np.ones(k.size), np.log2(k)]).T
     matrix = np.asarray(draw_matrix, dtype=np.float64)
-    if matrix.ndim != 2 or matrix.shape[1] != k.size:
+    if matrix.ndim != 2 or matrix.shape[1] != k.size or matrix.shape[0] == 0:
         raise ValueError("the draw matrix must be (draws, rungs) aligned with the extents")
     point = np.asarray(point_estimates, dtype=np.float64)
     if point.shape != k.shape:
@@ -502,16 +641,28 @@ def continuous_crossing(
     inside = np.exp2(draws_log2[inside_mask])
     in_range = bool(np.isfinite(observed_log2) and low_log2 <= observed_log2 <= high_log2)
     tail = (1.0 - confidence) / 2.0
+    interval_reason = (
+        "required primary inference unavailable" if not primary_inference_available
+        else "fewer than two in-range crossings" if inside.size < 2 else None
+    )
     return {
         "axis": "log2 nominal extent in residues",
+        "inferential_available": interval_reason is None,
+        "interval_interpretation": "conditional on a fitted crossing inside the measured range",
+        "interval_reason": interval_reason,
+        "n_undefined_draws": int((~np.isfinite(matrix).all(axis=1)).sum()),
         "extents": [int(value) for value in k],
         "crossing_extent": float(np.exp2(observed_log2)) if in_range else None,
+        "crossing_reason": None if in_range else (
+            "undefined primary estimates" if not np.isfinite(point).all()
+            else "fitted crossing absent or outside measured range"
+        ),
         "crossing_log2_extent_unconstrained": (
             float(observed_log2) if np.isfinite(observed_log2) else None
         ),
         "interval": (
             [float(np.quantile(inside, tail)), float(np.quantile(inside, 1.0 - tail))]
-            if inside.size >= 2
+            if interval_reason is None
             else None
         ),
         "confidence": float(confidence),

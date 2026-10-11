@@ -350,7 +350,7 @@ def test_a_missing_parent_fold_is_a_refusal_rather_than_a_refold(tmp_path):
         stage.run(args)
 
 
-def test_the_pipeline_finds_the_divergence_where_it_was_planted(tmp_path):
+def test_a_three_rung_pipeline_is_incomplete_not_a_declared_ladder(tmp_path):
     compare = _stage("compare_ladder_folds")
     analyse = _stage("analyse_ladder_divergence")
     fixture = _fixture(tmp_path, planted_divergence_rung="k5")
@@ -396,22 +396,24 @@ def test_the_pipeline_finds_the_divergence_where_it_was_planted(tmp_path):
     )
     key = f"{ARM}|{ARM}|{design.CONDITION_CAUSAL_PREFIX}"
     ladder = payload["ladders"][key]
-    assert ladder["status"] == "complete"
-    points = {row["rung"]: row["point"] for row in ladder["ladder"]}
+    assert ladder["status"] == "incomplete"
+    assert ladder["missing_rungs"] == ["k10", "k20", "k40"]
+    assert not ladder["inferential_available"]
+    points = {rung: payload["cells"][f"{key}|{rung}"]["correlations"][design.PRIMARY_STRUCTURE_READOUT]["raw"]["point"] for rung in RUNGS}
     assert points["k1"] > 0.8 and points["k2"] > 0.8
     assert abs(points["k5"]) < 0.6
-    assert ladder["divergence"]["loses_significance"] == "k5"
-    assert ladder["divergence"]["undetermined_at_bottom"] is False
+    assert "divergence" not in ladder
+    assert not payload["simultaneous_band"]["available"]
     # Every cell carries its own sample size and backbone count.
-    for row in ladder["ladder"]:
-        cell = payload["cells"][f"{key}|{row['rung']}"]
+    for rung in RUNGS:
+        cell = payload["cells"][f"{key}|{rung}"]
         primary = cell["correlations"][design.PRIMARY_STRUCTURE_READOUT]["raw"]
         assert primary["n_observations"] == N_BACKBONES * DRAWS
         assert primary["n_units"] == N_BACKBONES
         assert cell["distributions"]["length"]["mean"] == LENGTH
     assert (analysis_out / "ladder_divergence.md").is_file()
     report = (analysis_out / "ladder_divergence.md").read_text(encoding="utf-8")
-    assert "rho(likelihood, TM to parent)" in report
+    assert "Incomplete:" in report
     assert "confidence_is_not_stability" in report
 
 

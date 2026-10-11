@@ -36,7 +36,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -142,14 +142,17 @@ def build_table(
                     else float("nan")
                 ),
                 "composition_distance_to_parent": float(
-                    variant.get("composition_distance_to_parent", float("nan"))
+                    variant["composition_distance_to_parent"]
+                    if variant.get("composition_distance_to_parent") is not None else float("nan")
                 ),
                 "realised_substitutions": variant.get("realised_substitutions"),
                 "longest_homopolymer": variant.get("longest_homopolymer"),
                 "likelihood_kind": str(scored.get("likelihood_kind", "")),
             }
             for readout in READOUTS:
-                observation[readout] = float(folded.get(readout, float("nan")))
+                observation[readout] = float(
+                    folded[readout] if folded.get(readout) is not None else float("nan")
+                )
             cells[
                 (scorer, str(variant["arm"]), str(variant["condition"]), str(variant["rung"]))
             ].append(observation)
@@ -159,9 +162,9 @@ def build_table(
 def _statistic(readout: str, adjusted: bool):
     def inner(values, strata):
         if adjusted:
-            return divergence.partial_within_stratum_rank_correlation(
+            return cast(float, divergence.partial_within_stratum_rank_correlation(
                 values["likelihood"], values[readout], values["composition"], strata
-            )
+            ))
         return divergence.within_stratum_rank_correlation(
             values["likelihood"], values[readout], strata
         )
@@ -176,6 +179,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     variants = [row for path in args.variants for row in design.read_jsonl(path)]
     likelihood = [row for path in args.likelihood for row in design.read_jsonl(path)]
     structure = [row for path in args.structure for row in design.read_jsonl(path)]
+    scoring_arms = {str(row["scored_by"]) for row in likelihood}
+    expected_ladders = {
+        (scorer, str(row["arm"]), str(row["condition"]))
+        for row in variants if row["rung"] != design.FULL_GENERATION
+        for scorer in scoring_arms
+    }
     cells = build_table(variants, likelihood, structure)
     if not cells:
         raise SystemExit(
@@ -194,8 +203,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "likelihood": [row["log_likelihood_per_symbol"] for row in observations],
             "composition": [
                 row["composition_distance_to_parent"]
-                if np.isfinite(row["composition_distance_to_parent"])
-                else 0.0
                 for row in observations
             ],
         }
@@ -250,13 +257,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             # of this cell: the resample's row index is the expensive part and it
             # does not depend on which column is being correlated.
             functions = {f"raw|{readout}": _statistic(readout, False) for readout in usable}
-            functions |= {f"adjusted|{readout}": _statistic(readout, True) for readout in usable}
+            composition_available = bool(np.isfinite(payload["composition"]).all())
+            if composition_available:
+                functions |= {f"adjusted|{readout}": _statistic(readout, True) for readout in usable}
+            diagnostics = {}
+            for readout in usable:
+                diagnostics[f"raw|{readout}"] = divergence.partial_within_stratum_rank_correlation(
+                    payload["likelihood"], payload[readout], [0.0] * len(strata), strata,
+                    return_diagnostics=True,
+                )
+                if composition_available:
+                    diagnostics[f"adjusted|{readout}"] = divergence.partial_within_stratum_rank_correlation(
+                        payload["likelihood"], payload[readout], payload["composition"], strata,
+                        return_diagnostics=True,
+                    )
             bootstrapped = divergence.cluster_bootstrap_many(
-                payload, strata, functions, units=units, resamples=resamples
+                payload, strata, functions, units=units, resamples=resamples,
+                informative_units={key: value["informative_backbones"] for key, value in diagnostics.items()},
             )
             for readout in usable:
                 raw = bootstrapped[f"raw|{readout}"]
-                adjusted = bootstrapped[f"adjusted|{readout}"]
+                adjusted = bootstrapped.get(f"adjusted|{readout}", {
+                    "point": None, "interval": None, "inferential_available": False,
+                    "point_reason": "missing or non-finite composition covariate",
+                    "interval_reason": "missing or non-finite composition covariate",
+                })
+                if composition_available:
+                    adjusted["diagnostics"] = diagnostics[f"adjusted|{readout}"]
+                    adjusted["point_reason"] = adjusted["diagnostics"]["reason"]
+                raw["diagnostics"] = diagnostics[f"raw|{readout}"]
+                raw["point_reason"] = raw["diagnostics"]["reason"]
                 entry["correlations"][readout] = {
                     "raw": {key2: value for key2, value in raw.items() if key2 != "draws"},
                     "composition_adjusted": {
@@ -266,14 +296,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         payload["likelihood"], payload[readout], strata
                     ),
                 }
-                if readout == design.PRIMARY_STRUCTURE_READOUT:
+                if readout == design.PRIMARY_STRUCTURE_READOUT and rung != design.FULL_GENERATION:
                     bootstrap_cells[name] = raw
         results[name] = entry
 
-    band = divergence.simultaneous_band(bootstrap_cells) if bootstrap_cells else {}
+    family = dict(bootstrap_cells)
+    for scorer, product_arm, condition in sorted(expected_ladders):
+        for extent in design.WINDOW_EXTENTS:
+            family.setdefault(f"{scorer}|{product_arm}|{condition}|k{extent}", {
+                "point": None, "bootstrap_sd": None, "inferential_available": False,
+            })
+    band = divergence.simultaneous_band(family)
 
     ladders: dict[str, Any] = {}
-    grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[str]] = {key: [] for key in expected_ladders}
     for name, entry in results.items():
         if entry["rung"] == design.FULL_GENERATION:
             continue
@@ -281,14 +317,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for (scorer, product_arm, condition), names in sorted(grouped.items()):
         ordered = sorted(names, key=lambda item: results[item]["nominal_extent"])
         rungs = [results[name]["rung"] for name in ordered]
+        declared_rungs = [f"k{extent}" for extent in design.WINDOW_EXTENTS]
+        missing_rungs = [rung for rung in declared_rungs if rung not in rungs]
         primary = [
             results[name]["correlations"].get(design.PRIMARY_STRUCTURE_READOUT) for name in ordered
         ]
-        if any(item is None for item in primary):
+        contrasts = divergence.adjacent_rung_contrasts(
+            {results[name]["rung"]: bootstrap_cells[name] for name in ordered if name in bootstrap_cells},
+            rungs=declared_rungs,
+        )
+        if missing_rungs or any(item is None for item in primary):
             ladders[f"{scorer}|{product_arm}|{condition}"] = {
                 "status": "incomplete",
                 "rungs_present": rungs,
-                "reason": "a rung carries no primary structural readout",
+                "reason": "missing declared window rung or primary structural readout",
+                "declared_rungs": declared_rungs,
+                "missing_rungs": missing_rungs,
+                "computational_status": "computed",
+                "ladder_complete": False,
+                "inferential_available": False,
+                "adjacent_rung_contrasts": contrasts,
             }
             continue
         ladder = [
@@ -310,25 +358,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ).T if all(name in bootstrap_cells for name in ordered) else None
         entry: dict[str, Any] = {
             "status": "complete",
+            "computational_status": "computed",
+            "ladder_complete": True,
+            "declared_rungs": declared_rungs,
+            "missing_rungs": [],
+            "inferential_available": all(item["raw"].get("inferential_available", False) for item in primary),
+            "adjacent_rung_contrasts": contrasts,
             "ladder": ladder,
             "divergence": divergence.divergence_rung(ladder, simultaneous=simultaneous),
             "simultaneous_intervals": simultaneous,
         }
         if matrix is not None and matrix.shape[1] >= 3:
             entry["continuous_crossing"] = divergence.continuous_crossing(
-                extents, matrix, point_estimates=[item["raw"]["point"] for item in primary]
+                extents, matrix.tolist(), point_estimates=[item["raw"]["point"] for item in primary],
+                primary_inference_available=entry["inferential_available"],
             )
         resolved = [
             index
             for index, item in enumerate(primary)
-            if item["raw"]["interval"][0] * item["raw"]["interval"][1] > 0
+            if divergence._excludes_zero(item["raw"]["interval"]) is True
         ]
         if not resolved:
             bottom = primary[0]["raw"]
-            if np.isfinite(bottom.get("bootstrap_sd", float("nan"))) and bottom["bootstrap_sd"] > 0:
+            if bottom.get("inferential_available") and bottom.get("bootstrap_sd") is not None and bottom["bootstrap_sd"] > 0:
                 entry["required_units_to_resolve_bottom_rung"] = divergence.required_units(
                     bootstrap_sd=bottom["bootstrap_sd"],
-                    n_units=bottom["n_units"],
+                    n_units=bottom["n_informative_units"],
                     target_effect=bottom["point"] if bottom["point"] != 0.0 else 0.2,
                 )
         ladders[f"{scorer}|{product_arm}|{condition}"] = entry
@@ -436,18 +491,29 @@ def render_report(payload: dict[str, Any]) -> str:
         lines.append("")
         divergence_record = ladder["divergence"]
         lines.append(
-            f"Loses significance at: {divergence_record['loses_significance'] or 'no rung'}; "
+            f"Descriptive first-loss/sign heuristics (not evidence of decline or mechanism). "
+            f"Marginal inference available: {divergence_record['inferential_available']}; "
+            f"simultaneous inference available: {divergence_record['simultaneous_available']}. "
+            f"Loses significance at: {divergence_record['loses_significance'] or 'no identified rung'}; "
             f"simultaneously at: {divergence_record.get('loses_significance_simultaneous') or 'no rung'}; "
             f"changes sign at: {divergence_record['changes_sign'] or 'no rung'}; "
             f"bottom rung unresolved: {divergence_record['undetermined_at_bottom']}."
         )
+        lines.append("Paired adjacent-rung raw-primary contrasts (later minus earlier; marginal CIs):")
+        for contrast in ladder["adjacent_rung_contrasts"]:
+            lines.append(
+                f"- {contrast['earlier_rung']} to {contrast['later_rung']}: "
+                f"{_signed(contrast['point'])}, {_interval(contrast['interval'])}; "
+                f"supports decline: {contrast['supports_decline']}; "
+                f"reason: {contrast['reason'] or 'available'}."
+            )
         crossing = ladder.get("continuous_crossing")
         if crossing:
             lines.append(
                 f"Continuous crossing at k = "
                 f"{crossing['crossing_extent'] if crossing['crossing_extent'] is not None else 'outside the measured range'}"
                 + (
-                    f", 95% CI {crossing['interval']}"
+                    f", 95% interval conditional on an inside-range crossing {crossing['interval']}"
                     if crossing.get("interval")
                     else ""
                 )
