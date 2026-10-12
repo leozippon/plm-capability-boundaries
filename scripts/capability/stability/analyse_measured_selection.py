@@ -77,9 +77,48 @@ FROZEN_BACKGROUND_CAP = 256
 COMPLETION_ARTIFACTS = ('panel.json', 'channels.json', 'extraction_audit.json')
 OUTPUT_FILENAME = 'measured_selection.json'
 
+#: The fields of one contrast definition that specify the measurement: the baseline
+#: whose design was fitted, the design, the reading taken and its metric. They are
+#: what makes the retained numbers answer a particular question. Explanatory text --
+#: ``baseline_role``, ``scale``, ``calibration``, ``qualification`` -- may be
+#: corrected without changing what was measured, so it is excluded from replay
+#: equivalence. The frozen panel digest still binds the original definitions byte
+#: for byte; this projection only decides whether the retained numbers still answer
+#: the same question.
+MEASUREMENT_IDENTITY_FIELDS = ('baseline', 'design', 'baseline_blocks', 'reading',
+                               'increment', 'metric')
+
+#: Contrast-definition fields that explain a reading rather than define it. A
+#: frozen panel may carry none, some or all of them, and a later metadata
+#: correction rewrites them without touching the measurement.
+DESCRIPTIVE_CONTRAST_FIELDS = ('baseline_role', 'scale', 'calibration', 'qualification')
+
 
 def _refuse(message: str) -> None:
     raise SystemExit(message)
+
+
+def _measurement_identity(name: str, definition) -> dict:
+    """The measurement-defining projection of one contrast definition.
+
+    A frozen panel binds its original definitions by digest, so the corrected
+    qualification metadata can be newer than the panel without invalidating it.
+    This projection is how a replay decides that the retained numbers answer the
+    same question anyway. It refuses a definition that lacks a measurement field
+    or carries a field that is neither measurement nor declared description, so a
+    new measurement-relevant field cannot slip through as unknown text.
+    """
+
+    if not isinstance(definition, dict):
+        _refuse(f'{name}: the published contrast definition is not an object')
+    unknown = set(definition) - set(MEASUREMENT_IDENTITY_FIELDS) - set(DESCRIPTIVE_CONTRAST_FIELDS)
+    if unknown:
+        _refuse(f'{name}: the published contrast definition carries unrecognized fields '
+                f'{sorted(unknown)}')
+    missing = [field for field in MEASUREMENT_IDENTITY_FIELDS if field not in definition]
+    if missing:
+        _refuse(f'{name}: the published contrast definition is missing {missing}')
+    return {field: definition[field] for field in MEASUREMENT_IDENTITY_FIELDS}
 
 
 def _hash_matches(path: Path, declared, *, label: str) -> dict:
@@ -124,12 +163,24 @@ def load_completion(panel_dir: Path, protocol: dict) -> tuple[dict, dict]:
             label=f'completion artifact {name}')
     _hash_matches(panel_dir / 'panel.json', protocol['panel_sha256'], label='protocol panel')
     published = json.loads((panel_dir / 'panel.json').read_bytes())
+    declared = published.get('contrast_definitions')
     if (published.get('schema') != 'stability_ranking_error_panel_v2'
             or published.get('arms') != list(ROSTER)
-            or published.get('contrast_definitions') != CONTRASTS
-            or set(published.get('families') or {}) != set(CONTRASTS)
+            or not isinstance(declared, dict)
+            or set(declared) != set(CONTRASTS)
             or published.get('blocked_contrasts')):
         _refuse('the panel does not carry the authoritative 33-arm/six-contrast contract')
+    if set(published.get('families') or {}) != set(CONTRASTS):
+        _refuse('the panel does not carry the authoritative 33-arm/six-contrast contract')
+    # The protocol panel digest above already binds the frozen definitions byte for
+    # byte. This replay accepts the corrected qualification metadata describing the
+    # same measurement, and refuses a panel whose retained numbers were produced by
+    # a different design, reading or metric.
+    for name, current in CONTRASTS.items():
+        if _measurement_identity(name, declared[name]) != _measurement_identity(name, current):
+            _refuse(f'{name}: the published contrast measures a different design, reading or '
+                    'metric than the authoritative definition; a frozen panel may predate a '
+                    'metadata correction but it cannot predate a measurement change')
     for name, family in published['families'].items():
         if family.get('status') != 'complete' or family.get('columns') != list(ROSTER):
             _refuse(f'{name}: the final contrast must be complete over the exact 33-arm roster')

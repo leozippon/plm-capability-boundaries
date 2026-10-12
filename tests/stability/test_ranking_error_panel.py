@@ -355,7 +355,7 @@ class SimultaneousInference(unittest.TestCase):
                 'resolved_above_zero': [k for k, v in verdicts.items() if v == 'above_zero'],
                 'resolved_below_zero': [k for k, v in verdicts.items() if v == 'below_zero']}
 
-    def test_ranking_versus_error_reads_the_primary_pair_over_the_profile_baseline(self):
+    def test_ranking_versus_error_reads_the_declared_profile_pair_and_marks_it_historical(self):
         arms = ['a', 'b', 'c']
         families = {
             'profile_calibrated_error': self.family(
@@ -369,8 +369,17 @@ class SimultaneousInference(unittest.TestCase):
         }
         summary = contrast.ranking_versus_error(families, arms)
         self.assertEqual(summary['primary_baseline'], 'profile')
+        self.assertIn('historical', summary['primary_baseline_status'])
+        self.assertIn('sensitivity_only', summary['qualification_scope'])
         primary = summary['paired_metric_comparison']['primary_profile_baseline']
         self.assertEqual(primary['contrasts'], list(contrast.PRIMARY_PAIR))
+        self.assertIn('historical', primary['label_status'])
+        # The profile pair's calibrated error is a sensitivity, not a qualified
+        # quantitative reading; only the rank increment over this baseline is
+        # correlation-qualified.
+        self.assertEqual(primary['qualification'],
+                         {'profile_calibrated_error': 'sensitivity_only',
+                          'profile_ranking': 'correlation_qualified'})
         self.assertEqual(primary['resolved_ranking'], 2)
         self.assertEqual(primary['resolved_calibrated_error'], 1)
         self.assertTrue(primary['ranking_more_widespread'])
@@ -379,9 +388,12 @@ class SimultaneousInference(unittest.TestCase):
                           cross['neither']), (['a'], ['b'], [], ['c']))
         companion = summary['paired_metric_comparison']['companion_matched_baseline']
         self.assertEqual(companion['contrasts'], list(contrast.COMPANION_PAIR))
+        self.assertEqual(companion['qualification'],
+                         {'matched_calibrated_error': 'mse_qualified',
+                          'matched_ranking': 'mse_qualified'})
         self.assertFalse(companion['ranking_more_widespread'])
 
-    def test_what_the_profile_is_worth_names_arms_the_profile_already_explains(self):
+    def test_what_the_profile_is_worth_reports_a_descriptive_resolution_change(self):
         arms = ['a', 'b', 'c']
         families = {
             'profile_ranking': self.family(
@@ -393,6 +405,10 @@ class SimultaneousInference(unittest.TestCase):
         self.assertEqual(worth['ranking']['resolved_with_profile_in_baseline'], 1)
         self.assertEqual(worth['ranking']['resolved_without_profile_in_baseline'], 2)
         self.assertEqual(worth['ranking']['arms_resolving_only_without_profile'], ['b'])
+        reading = worth['ranking']['reading']
+        self.assertIn('descriptive', reading)
+        self.assertIn('composition', reading)
+        self.assertIn('neither a test', reading)
 
     def test_a_blocked_family_is_excluded_from_the_summary_rather_than_counted(self):
         families = {'profile_ranking': {'status': 'blocked_undefined_families'},
@@ -411,13 +427,37 @@ class SimultaneousInference(unittest.TestCase):
             for reading in contrast.READINGS:
                 self.assertIn(f'{baseline}_{reading}', contrast.CONTRASTS)
 
-    def test_the_profile_baseline_is_primary_and_actually_carries_the_profile(self):
+    def test_the_profile_baseline_is_correlation_qualified_and_carries_the_profile(self):
         profile = contrast.BASELINES['profile']
-        self.assertEqual(profile['role'], 'primary')
+        self.assertEqual(profile['role'], 'correlation_qualified')
         self.assertEqual(profile['design'], 'S2')
         self.assertIn('prof2', profile['blocks'])
+        self.assertEqual(contrast.BASELINES['matched']['role'], 'mse_qualified')
         self.assertEqual(contrast.BASELINES['matched']['design'], 'S')
         self.assertNotIn('prof2', contrast.BASELINES['matched']['blocks'])
+        # A squared-error reading over the correlation-qualified baseline is a
+        # sensitivity; only the MSE-qualified matched baseline carries a qualified
+        # squared-error reading. A rank reading is read under its own baseline's
+        # derivation, never re-qualified by the metric it happens to use.
+        expected = {
+            'profile_calibrated_error': 'sensitivity_only',
+            'profile_transfer_error': 'sensitivity_only',
+            'profile_ranking': 'correlation_qualified',
+            'matched_calibrated_error': 'mse_qualified',
+            'matched_transfer_error': 'mse_qualified',
+            'matched_ranking': 'mse_qualified',
+        }
+        for name, qualification in expected.items():
+            self.assertEqual(contrast.CONTRASTS[name]['qualification'], qualification)
+            self.assertIn(qualification, contrast.QUALIFICATION_SCOPE)
+        # The calibration is target-family-supervised and site-crossfitted, so the
+        # reading metadata and every calibrated grid cell say so explicitly.
+        calibration = contrast.READINGS['calibrated_error']['calibration']
+        self.assertIn('target-family-supervised', calibration)
+        self.assertIn('site-crossfitted', calibration)
+        self.assertIn('not a zero-shot', calibration)
+        for name in ('profile_calibrated_error', 'matched_calibrated_error'):
+            self.assertIn('target-family-supervised', contrast.CONTRASTS[name]['calibration'])
         # The headline pair differs in the metric alone, never in the baseline.
         baselines = {contrast.CONTRASTS[name]['baseline'] for name in contrast.PRIMARY_PAIR}
         self.assertEqual(baselines, {'profile'})

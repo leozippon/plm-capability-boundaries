@@ -17,9 +17,15 @@ all. The profile-inclusive baseline ``S2`` adds amino-acid composition and the
 mutation-local independent-site alignment profile. Only the second answers the
 question a reviewer actually asks of a protein language model: does it add
 information *beyond evolutionary statistics*. A gain over ``S`` can be nothing
-more than a rediscovery of the alignment column, which is why the profile
-baseline is primary here and the matched baseline is reported beside it rather
-than instead of it.
+more than a rediscovery of the alignment column, which is why the
+profile-inclusive baseline is the declared comparison here and the matched
+baseline is reported beside it rather than instead of it. That choice headlines a
+comparison; it does not rank the readings. The two control sets were admitted by
+different rules -- the matched set by the prespecified held-out mean-squared-error
+rule, the profile-inclusive set by the correlation rule after its
+mean-squared-error increment was below zero at one prespecified split seed -- so
+each cell of the grid carries its own qualification provenance and the profile
+baseline is not a primary quantitative qualification.
 
 This is a **nested increment**, not a comparison of correlations. Both sides of
 every contrast are fitted ridge predictors on identical rows and identical nested
@@ -43,14 +49,23 @@ not a property of the model.
 
 :func:`family_calibrated` supplies the missing middle. Before the error is taken,
 each held-out prediction is recalibrated inside its own family by an affine map
-fitted on that family's *other* sites, so baseline and augmented receive exactly
-the same per-family scale and offset. The resulting increment asks the
-quantitative question with the scale question already answered, and it is the
-honest counterpart of the rank increment because both then read only
+fitted on that family's *other* sites. It is a target-family-supervised,
+site-crossfitted calibration: fitting it needs the target family's own labels, so
+it is not a zero-shot cross-family calibrated quantitative transfer estimate.
+Baseline and augmented receive the identical treatment under the same two-parameter
+affine family -- each side's map is fitted the same way on the other sites -- so
+neither side is privileged and no site's own measurement enters its own
+calibration. That rules out same-row leakage but does not guarantee a gain. The resulting
+increment asks the quantitative question with the scale question already answered,
+and it is the counterpart of the rank increment because both then read only
 within-family information. It also stabilises a reading that is otherwise
 erratic: the profile block transfers rank well and level badly, so the
 profile-inclusive baseline's uncalibrated error swings between split seeds, and
-per-family recalibration removes precisely that swing.
+per-family recalibration removes precisely that swing. Over the
+correlation-qualified profile-inclusive baseline that calibrated increment is still
+reported as a sensitivity, because the mean-squared-error rule did not admit that
+control set; it is a qualified reading only over the matched baseline the rule did
+admit.
 
 The three readings are therefore:
 
@@ -59,8 +74,10 @@ The three readings are therefore:
     global slope. Over the matched baseline this is the convention the
     2026-09-24 panel published, recomputed so the recovery can be checked.
 ``calibrated_error``
-    The same reduction after the declared per-family affine recalibration. The
-    qualified quantitative reading.
+    The same reduction after the declared target-family-supervised,
+    site-crossfitted affine recalibration. A qualified quantitative reading over
+    the MSE-qualified matched baseline; a sensitivity over the
+    correlation-qualified profile-inclusive baseline.
 ``ranking``
     Within-background Spearman increment, taken through the gate's own
     :func:`~..interactions.pairwise_epistasis.group_spearman` so that the
@@ -108,25 +125,34 @@ PANEL_DRAWS = 10000
 # The contrast grid: two baselines, three readings, every cell published.
 # --------------------------------------------------------------------------- #
 
-#: The two control sets, and which one is primary. ``profile`` is primary for
-#: every reading because it is the only one that asks whether a model adds
-#: information beyond evolutionary statistics; ``matched`` is published beside it
-#: because the difference between the two readings is itself the finding.
+#: The two control sets and the rule that admitted each one. ``role`` is the
+#: qualification provenance, not a rank over the readings: the matched set was
+#: admitted by the prespecified held-out mean-squared-error rule, and the
+#: profile-inclusive set was admitted by the correlation rule after its
+#: mean-squared-error increment was below zero at one prespecified split seed. The
+#: profile-inclusive set is the declared comparison because it is the only one
+#: carrying an evolutionary statistic, and the matched set is published beside it
+#: because the difference between the two is the descriptive resolution change.
 BASELINES: dict[str, dict[str, str]] = {
     'profile': {
         'design': 'S2',
-        'role': 'primary',
+        'role': 'correlation_qualified',
         'blocks': 'ident + geom + comp + chem + prof2 + G',
         'carries': 'mutation-local independent-site alignment profile and composition',
         'question': 'does the likelihood add information beyond evolutionary statistics',
+        'qualification': 'admitted above the matched set by the correlation rule only; its '
+                         'mean-squared-error increment failed at one prespecified split seed, so '
+                         'its squared-error readings are sensitivities',
     },
     'matched': {
         'design': 'S',
-        'role': 'companion',
+        'role': 'mse_qualified',
         'blocks': 'ident + geom + chem + G',
         'carries': 'no evolutionary statistic',
         'question': 'does the likelihood add information beyond substitution identity, '
                     'position geometry and local chemistry',
+        'qualification': 'admitted by the prespecified held-out mean-squared-error rule; its '
+                         'squared-error readings are qualified',
     },
 }
 
@@ -141,6 +167,10 @@ READINGS: dict[str, dict[str, str]] = {
                   'recalibration, squared kcal/mol',
         'scale': 'per-family scale and offset granted to both sides, fitted on the '
                  'family\'s other sites; quantitative information within a family',
+        'calibration': 'target-family-supervised site-crossfitted affine recalibration: the map '
+                       'is fitted on other held-out sites of the target family, so it needs that '
+                       'family\'s own labels and is not a zero-shot cross-family calibrated '
+                       'quantitative transfer estimate',
     },
     'transfer_error': {
         'metric': 'group-equal mean squared error reduction, squared kcal/mol',
@@ -148,6 +178,36 @@ READINGS: dict[str, dict[str, str]] = {
                  'transferred; quantitative information across families',
     },
 }
+
+
+#: What each qualification value licenses. A squared-error reading is qualified
+#: only where the mean-squared-error rule admitted the baseline; over a baseline
+#: admitted by correlation alone it is a sensitivity. A rank reading is read under
+#: the derivation that admitted its own baseline and is never re-qualified by the
+#: metric it happens to use.
+QUALIFICATION_SCOPE: dict[str, str] = {
+    'mse_qualified': 'the matched control set is admitted by the prespecified held-out '
+                     'mean-squared-error rule, so this reading is a qualified result',
+    'correlation_qualified': 'the profile-inclusive control set is admitted by the correlation '
+                             'rule, so this reading is the qualified one for that baseline',
+    'sensitivity_only': 'reported as a sensitivity under the correlation-qualified baseline; '
+                        'the mean-squared-error rule did not admit this baseline and this is not '
+                        'a qualified quantitative reading',
+}
+
+
+def _qualification(baseline_role: str, reading: str) -> str:
+    """The rule under which one grid cell is read, given its baseline's derivation.
+
+    A rank increment is read under the derivation that admitted its baseline and
+    is never re-qualified by the metric it happens to use. A squared-error
+    increment is qualified only where the mean-squared-error rule admitted the
+    baseline; over a baseline admitted by correlation alone it is a sensitivity.
+    """
+
+    if reading == 'ranking':
+        return baseline_role
+    return 'mse_qualified' if baseline_role == 'mse_qualified' else 'sensitivity_only'
 
 
 def _contrasts() -> dict[str, dict[str, str]]:
@@ -163,6 +223,7 @@ def _contrasts() -> dict[str, dict[str, str]]:
                 'baseline_blocks': about['blocks'],
                 'reading': reading,
                 'increment': 'nested: the baseline design plus the likelihood column M',
+                'qualification': _qualification(about['role'], reading),
                 **metric,
             }
     return grid
@@ -171,13 +232,18 @@ def _contrasts() -> dict[str, dict[str, str]]:
 #: Every published per-family contrast, keyed ``<baseline>_<reading>``.
 CONTRASTS: dict[str, dict[str, str]] = _contrasts()
 
-#: The one strictly paired comparison that answers "is ranking more widespread
-#: than quantitative prediction": identical held-out predictions, identical
-#: profile-inclusive baseline, only the metric differs.
+#: The declared metric pair over the correlation-qualified profile-inclusive
+#: baseline: identical held-out predictions, identical baseline, only the metric
+#: differs. Kept under its historical name because the serialized ``primary_pair``
+#: and ``primary_profile_baseline`` keys are already read; it is a declared
+#: comparison of resolution counts and NOT a primary quantitative qualification of
+#: that baseline. Each side is read at its own cell's qualification -- the rank
+#: increment correlation-qualified, the calibrated error a sensitivity.
 PRIMARY_PAIR = ('profile_calibrated_error', 'profile_ranking')
 
-#: The same pair over the matched baseline, published beside it because the gap
-#: between the two pairs is what the alignment profile is worth.
+#: The same pair over the MSE-qualified matched baseline, published beside it
+#: because the gap between the two pairs is a descriptive resolution change between
+#: the two declared baselines and not a tested difference.
 COMPANION_PAIR = ('matched_calibrated_error', 'matched_ranking')
 
 #: Frozen 2026-09-24 panel contrasts that each recomputed cell reproduces. The
@@ -262,13 +328,17 @@ def family_calibrated(prediction, target, groups, sites, *,
     inside a family -- so the calibration optimises the same loss the error is
     later read on.
 
-    This is deliberately *not* a transfer estimate. It uses the held-out
-    family's own labels, at other sites, to fix that family's scale and offset.
-    The question it answers is "does this quantity carry quantitative information
-    about ddG inside a family whose scale is known", which is the error
-    counterpart of the within-family rank correlation and is reported under that
-    name. Baseline and augmented predictions receive the identical treatment, so
-    the paired increment remains a statement about the added column alone.
+    This is a target-family-supervised, site-crossfitted calibration and
+    deliberately *not* a transfer estimate. It uses the held-out family's own
+    labels, at other sites, to fix that family's scale and offset, so it needs the
+    target family's labels and is not zero-shot. The question it answers is "does
+    this quantity carry quantitative information about ddG inside a family whose
+    scale is known", which is the error counterpart of the within-family rank
+    correlation and is reported under that name. Baseline and augmented
+    predictions receive the identical treatment under the same two-parameter affine
+    family -- each side's map is fitted the same way on the other sites -- so no
+    site's own measurement enters its own calibration; the identical treatment rules
+    out same-row leakage and does not guarantee a gain.
     """
 
     prediction = np.asarray(prediction, dtype=float)
@@ -315,8 +385,9 @@ def family_calibrated(prediction, target, groups, sites, *,
         'calibrations': len(slopes),
         'degenerate_slope_calibrations': int(degenerate),
         'slope_range': [float(min(slopes)), float(max(slopes))],
-        'semantics': ('affine recalibration fitted on the other sites of the same family; '
-                      'a within-family reading, not a transfer estimate'),
+        'semantics': ('target-family-supervised site-crossfitted affine recalibration fitted on '
+                      'the other held-out sites of the same family; a within-family reading, '
+                      'not a transfer estimate and not a zero-shot cross-family calibrated one'),
     }
 
 
@@ -501,20 +572,29 @@ def _cross(table: dict, arms: list, error: str, rank: str) -> dict:
 
 
 def ranking_versus_error(families: dict, arms) -> dict:
-    """How widespread each reading is, where the two metrics disagree, and what
-    the alignment profile is worth.
+    """How widespread each reading is, where the two metrics disagree, and how
+    the two declared baselines differ in resolution.
 
     The comparison is a count of resolved arms and a cross tabulation rather than
     a pooled difference: the readings carry different units, so a single pooled
     contrast between a rank correlation and a squared kcal/mol would have no
-    interpretation, and that caveat travels with the counts wherever they go.
+    interpretation, and that caveat travels with the counts wherever they go. The
+    two readouts share predictions and labels but report different units; a
+    disagreement between their resolution counts is not a test of either and is
+    not an equality claim between them.
 
-    The primary answer is read over the profile-inclusive baseline, because that
-    is the baseline under which a resolved increment means the model added
-    something an alignment profile did not already supply. The matched baseline's
-    answer is reported beside it, and the difference between the two is reported
-    as its own quantity: arms that resolve only without the profile are arms
-    whose apparent contribution the profile already contains.
+    The headline count is read over the profile-inclusive baseline because that is
+    the baseline under which a resolved increment means the model added something
+    an alignment profile did not already supply. That is a declared comparison and
+    not a primary quantitative qualification: the profile-inclusive control set is
+    admitted by the correlation rule only, so its rank increment is
+    correlation-qualified while its squared-error increments are sensitivities, and
+    the matched baseline's squared-error reading is the MSE-qualified one. The two
+    baselines also differ by more than the profile -- the profile-inclusive set
+    additionally carries composition -- and each contrast is its own maximum-
+    statistic family, so the difference between the pairs is a descriptive change
+    in how many arms resolve, not a tested difference or a statement that the
+    profile explains the model's information.
     """
 
     arms = list(arms)
@@ -531,9 +611,15 @@ def ranking_versus_error(families: dict, arms) -> dict:
                 'contrasts': [error, rank],
                 'baseline': CONTRASTS[rank]['baseline'],
                 'baseline_blocks': CONTRASTS[rank]['baseline_blocks'],
+                'label_status': 'historical comparison label naming the declared pair; not a '
+                                'primary quantitative qualification of the baseline',
+                'qualification': {error: CONTRASTS[error]['qualification'],
+                                  rank: CONTRASTS[rank]['qualification']},
                 'basis': 'identical held-out predictions and identical baseline; only the '
-                         'metric differs, so a difference in how many arms resolve is a '
-                         'difference between ordering and quantitative information',
+                         'metric differs, so the two counts describe the ordering and '
+                         'quantitative readouts of the same predictions and labels, with no '
+                         'zero-shot-transfer or equality claim and no single band over their '
+                         'difference',
                 'resolved_ranking': counts[rank]['above_zero'],
                 'resolved_calibrated_error': counts[error]['above_zero'],
                 'ranking_more_widespread': bool(
@@ -551,12 +637,19 @@ def ranking_versus_error(families: dict, arms) -> dict:
                     set(counts[matched]['arms_above_zero'])
                     - set(counts[profile]['arms_above_zero'])),
                 'arms_resolving_with_profile': counts[profile]['arms_above_zero'],
-                'reading': 'an arm that resolves only without the profile in the baseline '
-                           'contributed information the alignment profile already carries',
+                'reading': 'a descriptive change in how many arms resolve between the two '
+                           'declared baselines on this reading. The profile-inclusive baseline '
+                           'also adds composition and each contrast is its own maximum-statistic '
+                           'family, so this is neither a test that the profile explains a '
+                           'model increment nor a test that the difference is nonzero',
             }
     return {
         'arms': arms,
         'primary_baseline': 'profile',
+        'primary_baseline_status': 'historical comparison label; the profile-inclusive baseline '
+                                   'is correlation-qualified, not a primary quantitative '
+                                   'qualification',
+        'qualification_scope': QUALIFICATION_SCOPE,
         'per_arm_verdicts': table,
         'resolved_counts': counts,
         'paired_metric_comparison': pairs,
@@ -573,7 +666,7 @@ def ranking_versus_error(families: dict, arms) -> dict:
 __all__ = [
     'BASELINES', 'CALIBRATION_FOLDS', 'CALIBRATION_SEED', 'COMPANION_PAIR', 'CONTRASTS',
     'DEGENERATE_PREDICTION_SCALE', 'FROZEN_EQUIVALENT', 'PANEL_DRAWS', 'PRIMARY_PAIR',
-    'READINGS', 'arm_contrasts', 'calibrated_mse_contrast', 'family_calibrated', 'jsonable',
-    'marginal_interval', 'mse_contrast', 'rank_contrast', 'ranking_versus_error',
-    'simultaneous_family', 'site_folds', 'vector',
+    'QUALIFICATION_SCOPE', 'READINGS', 'arm_contrasts', 'calibrated_mse_contrast',
+    'family_calibrated', 'jsonable', 'marginal_interval', 'mse_contrast', 'rank_contrast',
+    'ranking_versus_error', 'simultaneous_family', 'site_folds', 'vector',
 ]

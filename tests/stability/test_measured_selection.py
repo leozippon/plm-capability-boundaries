@@ -59,6 +59,12 @@ _SPEC.loader.exec_module(stage)
 
 _ALPHABET = 'ACDEFGHIKLMNPQRSTVWY'
 
+#: The frozen E03 measured-selection panel, in the published layout. Absent on a
+#: checkout without the result tree, which is a reason to skip the byte-level legacy
+#: replay rather than to weaken it.
+FROZEN_E03_PANEL = (ROOT / 'results/external_baseline/20261008095614_7e8ae4b18a4d'
+                    / 'stability_ranking_error_grid_cpu/panel.json')
+
 
 # --------------------------------------------------------------------------- #
 # Tiny synthetic libraries and a synthetic frozen panel.
@@ -166,8 +172,12 @@ def _write_roles(root: Path, *, panel_dir=None, cohort_path=None) -> Path:
 
 
 def make_panel(root: Path, cohort: dict, *, arms=ROSTER,
-               informative: bool = True, allowed_names=None) -> dict:
-    """A synthetic completion directory that the real CLI must accept."""
+               informative: bool = True, allowed_names=None, contrasts=None) -> dict:
+    """A synthetic completion directory that the real CLI must accept.
+
+    ``contrasts`` overrides the published contrast definitions, so a test can
+    replay a panel whose explanatory metadata predates the current correction.
+    """
 
     panel_dir = root / 'stability_ranking_error_grid_cpu'
     (panel_dir / 'fits').mkdir(parents=True)
@@ -207,11 +217,12 @@ def make_panel(root: Path, cohort: dict, *, arms=ROSTER,
         oof_by_arm[arm] = sha256_file(oof_path)
         fit_by_arm[arm] = sha256_file(fit_path)
 
+    definitions = CONTRASTS if contrasts is None else contrasts
     write_json(panel_dir / 'panel.json',
                {'schema': 'stability_ranking_error_panel_v2', 'arms': list(arms),
-                'contrast_definitions': CONTRASTS, 'blocked_contrasts': [],
+                'contrast_definitions': definitions, 'blocked_contrasts': [],
                 'families': {name: {'status': 'complete', 'columns': list(arms)}
-                             for name in CONTRASTS},
+                             for name in definitions},
                 'support': {'cohort_sha256': sha256_file(cohort_path),
                             'endpoint_sha256': cohort['endpoint_sha256']}})
     write_json(panel_dir / 'channels.json', {'schema': 'stability_channel_robustness_panel_v2'})
@@ -743,6 +754,93 @@ class EntryPoint(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('fresh directory', result.stderr)
         self.assertEqual(sentinel.read_text(), 'untouched')
+
+
+# --------------------------------------------------------------------------- #
+# Replaying a frozen panel whose explanatory metadata predates the correction.
+# --------------------------------------------------------------------------- #
+
+def legacy_contrast_definitions() -> dict:
+    """The frozen panel's contrast definitions before the metadata correction.
+
+    The frozen E03 artifact carries ``primary``/``companion`` baseline roles and no
+    ``qualification``/``calibration`` fields, but the same six measurement
+    identities the authoritative definitions carry now. This reconstructs that shape
+    from the live definitions so the equivalence is exercised without the frozen
+    result tree.
+    """
+
+    legacy = {}
+    for name, current in CONTRASTS.items():
+        definition = {field: current[field] for field in stage.MEASUREMENT_IDENTITY_FIELDS}
+        definition['baseline_role'] = (
+            'primary' if current['baseline'] == 'profile' else 'companion')
+        definition['scale'] = current['scale']
+        legacy[name] = definition
+    return legacy
+
+
+class ContrastReplayEquivalence(unittest.TestCase):
+    """Corrected qualification metadata must not invalidate a frozen measurement.
+
+    The panel digest still binds the original definitions byte for byte; the replay
+    only refuses a panel whose numbers were produced by another design, reading or
+    metric.
+    """
+
+    def replay(self, definitions):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = make_panel(root, synthetic_cohort(8, 4), contrasts=definitions)
+            protocol = {
+                'completion_sha256': sha256_file(fixture['panel_dir'] / 'completion.json'),
+                'panel_sha256': sha256_file(fixture['panel_dir'] / 'panel.json')}
+            return stage.load_completion(fixture['panel_dir'], protocol)
+
+    def test_definitions_predating_the_metadata_correction_are_accepted(self):
+        legacy = legacy_contrast_definitions()
+        self.assertEqual(set(legacy), set(CONTRASTS))
+        for name, definition in legacy.items():
+            self.assertEqual(stage._measurement_identity(name, definition),
+                             stage._measurement_identity(name, CONTRASTS[name]))
+        completion, bindings = self.replay(legacy)
+        self.assertEqual(completion['status'], 'complete')
+        self.assertEqual(bindings['panel_contract']['arms'], list(ROSTER))
+
+    def test_a_changed_measurement_field_is_refused(self):
+        for field, value in (('design', 'S_wrong'), ('metric', 'a different metric')):
+            legacy = legacy_contrast_definitions()
+            legacy['profile_calibrated_error'][field] = value
+            with self.assertRaises(SystemExit) as caught:
+                self.replay(legacy)
+            self.assertIn('profile_calibrated_error', str(caught.exception))
+            self.assertIn('cannot predate a measurement change', str(caught.exception))
+
+    def test_a_definition_missing_a_measurement_field_is_refused(self):
+        legacy = legacy_contrast_definitions()
+        legacy['profile_ranking'].pop('metric')
+        with self.assertRaises(SystemExit) as caught:
+            self.replay(legacy)
+        self.assertIn('missing', str(caught.exception))
+
+    def test_an_unrecognized_definition_field_is_refused(self):
+        legacy = legacy_contrast_definitions()
+        legacy['matched_ranking']['notes'] = 'descriptive but undeclared'
+        with self.assertRaises(SystemExit) as caught:
+            self.replay(legacy)
+        self.assertIn('unrecognized fields', str(caught.exception))
+
+    @unittest.skipUnless(FROZEN_E03_PANEL.is_file(), 'frozen E03 panel is not staged here')
+    def test_the_actual_frozen_definitions_project_to_the_current_measurement(self):
+        declared = json.loads(FROZEN_E03_PANEL.read_bytes())['contrast_definitions']
+        self.assertEqual(set(declared), set(CONTRASTS))
+        for name, current in CONTRASTS.items():
+            self.assertEqual(stage._measurement_identity(name, declared[name]),
+                             stage._measurement_identity(name, current))
+        # The legacy roles and the missing corrected explanatory fields are exactly
+        # what the old strict equality rejected.
+        self.assertNotEqual(declared, CONTRASTS)
+        self.assertEqual(declared['profile_ranking']['baseline_role'], 'primary')
 
 
 if __name__ == '__main__':
