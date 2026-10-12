@@ -20,12 +20,12 @@ per site pair with cycles weighted equally, exactly as the measured endpoint is.
 
 Two readings are produced and must not be confused. The *contrast* asks whether
 the model's interaction term is larger at contacts. The *agreement* asks whether
-it tracks the measured interaction cycle by cycle, which is the only accuracy
-question this experiment can pose -- and whose interpretation is bounded above by
-the measured side's own precision. Where the measured contrast is unresolved, a
-model contrast that matches it is not a success and a model contrast that differs
-from it is not a failure; both are reported with the precision each design
-carries.
+it tracks the measured interaction cycle by cycle, and it is a descriptive point
+estimate: no group-resampled correlation uncertainty is computed for it, so it
+licenses no prediction-accuracy statement and no absence claim. Where the
+measured contrast is unresolved, a model contrast that matches it is not a
+success and a model contrast that differs from it is not a failure; both are
+reported with the precision each design carries.
 
 The measured numbers are quoted from the published artefact rather than
 recomputed, because the published estimate is the project's single source for
@@ -268,8 +268,9 @@ def analyse_arm(extraction: gm.Extraction, assays: dict, measured: dict, annotat
         ),
         "reading": (
             "a rank agreement between the model's own interaction term and the measured one "
-            "is the only accuracy statement this experiment supports, and its interpretation "
-            "is bounded by the measured side's own precision"
+            "is a descriptive point estimate: no group-resampled correlation uncertainty is "
+            "computed here, and neither prediction accuracy nor the absence of a relation "
+            "may be inferred from the unresolved contact enrichment"
         ),
     }
     return record
@@ -385,16 +386,22 @@ def main() -> None:
         },
         "arms": arms,
         "limitations": [
-            "The measured contact enrichment on this support is unresolved, so the model side "
-            "cannot be scored against it as accuracy; both sides are reported with their own "
-            "precision instead.",
+            "The measured contact enrichment on this support is unresolved, and the model-side "
+            "contact enrichment is a distinct estimand carrying its own precision: the "
+            "unresolved measured enrichment neither scores the model contrast as accuracy nor "
+            "shows the model contrast absent.",
+            "The rank agreement between the model and measured interaction terms is computed "
+            "descriptively without biological-group resampling, so it carries no group-level "
+            "inference and licenses no absence or equivalence claim.",
             "The source study selected these site pairs as coupling tables, so contacts are the "
             "majority arm and the control arm is small; the effective control site-pair count "
             "is reported with every estimate.",
             "The model endpoint is in nats and the measured one in kcal/mol; only ranks and "
             "the sign of a contrast are comparable between them.",
-            "The cycle-level agreement is formed on position pairs carrying exactly one cycle, "
-            "because the frozen cohort indexes a cycle by its position pair alone.",
+            "The cycle-level agreement joins the measured cohort on the background and on the "
+            "double state's own substitution label, which is unique inside a background; a "
+            "site pair carries many cycles and cycles within a background are not independent "
+            "units.",
         ],
         "code_sha256": {
             name: sha256_file(ROOT / name)

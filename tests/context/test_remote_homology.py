@@ -390,6 +390,12 @@ class ThreeOutcomes(unittest.TestCase):
         self.assertIn('not null', rh.OUTCOME_UNRESOLVED)
         self.assertNotIn('no effect', rh.OUTCOME_UNRESOLVED)
 
+    def test_the_unresolved_outcome_blames_the_unfired_close_control(self):
+        # remote-only is unresolved because the close positive control did not fire,
+        # never because the readout resolved on neither stratum.
+        self.assertIn('positive control', rh.OUTCOME_UNRESOLVED)
+        self.assertNotIn('neither stratum', rh.OUTCOME_UNRESOLVED)
+
 
 class DeclaredScopeAndConstants(unittest.TestCase):
     def test_the_endpoint_names_its_scale_its_unit_and_its_sign(self):

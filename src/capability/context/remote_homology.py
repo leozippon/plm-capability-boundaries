@@ -163,8 +163,9 @@ STRATUM_UNIT_FLOOR = 8
 #: remote result without naming one of these is what this gate exists to prevent.
 OUTCOME_SURVIVES = 'resolves on close and on remote groups: survives remote homology'
 OUTCOME_HOMOLOGY_DEPENDENT = 'resolves on close groups only: homology dependence'
-OUTCOME_UNRESOLVED = ('resolves on neither stratum: the endpoint floor is too high on this '
-                      'support and the remote case is unresolved, not null')
+OUTCOME_UNRESOLVED = ('close positive control not established, so the remote generalization '
+                      'is unconfirmed whether or not the remote stratum nominally resolves: '
+                      'unresolved, not null')
 
 __all__ = [
     'ARM_CANDIDATE_BLOCKS', 'BACKGROUND_DRAW', 'BACKGROUND_DRAW_SEED', 'BANDS',
