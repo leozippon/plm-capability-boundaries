@@ -21,6 +21,16 @@ nested so that the bootstrap unit is the family. The within-stratum separation
 imbalance is reported beside it, because a contact contrast that is really a
 sequence-distance contrast is the failure this design exists to exclude.
 
+**The receiver-burial-matched sensitivity.** With ``--receiver-rsa-matched`` the
+same contrasts are recomputed with the receiver's burial band appended to the
+matching key, on the one fixed boundary ``forcing_design.RSA_BOUNDARY`` declares.
+This is a separately declared, retrospective sensitivity, not the frozen primary:
+the primary blocks are computed by the same unchanged code and are numerically
+identical to a run without the flag, and the two families of statements are never
+concatenated. It is reported under ``contact_contrasts_receiver_rsa_matched`` and
+``panel_simultaneous_receiver_rsa_matched`` with its boundary, estimand,
+weighting, and the support each family loses relative to the primary.
+
 Every archive is validated by the project's own reader
 (``responses.RetainedResponses``) before a single number is taken from it: the
 per-state closure, the native mutation closure and the biological exclusions are
@@ -45,10 +55,14 @@ if str(ROOT) not in sys.path:
 
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.extensions.responses import RetainedResponses  # noqa: E402
+from src.capability.forcing.forcing_design import RSA_BOUNDARY  # noqa: E402
 from src.capability.position.contact_response import (  # noqa: E402
     CONTACT_ANGSTROM,
     CONTACT_DEFINITION,
     MIN_SEQUENCE_SEPARATION,
+    RECEIVER_RSA_MATCHING,
+    RSA_MATCHED_WEIGHTING,
+    RSA_SENSITIVITY_DECLARATION,
     SCHEMA,
     ProfileAccumulator,
     admitted_geometry,
@@ -69,9 +83,9 @@ from src.capability.position.position_likelihood import (  # noqa: E402
 )
 
 #: The two outcomes a contact contrast is formed on. Each is its own simultaneous
-#: family: the absolute response and the signed response are different
-#: quantities, and one critical value spanning both would be a multiplicity
-#: correction across units rather than across arms.
+#: family: the absolute response and the signed response are separate declared
+#: endpoints in the same unit, and one critical value spanning both would be a
+#: multiplicity correction across endpoints rather than across arms.
 OUTCOMES = ("absolute_response", "response")
 
 COMPLETION = "position_propagation.json"
@@ -86,6 +100,38 @@ def read_json(path: Path):
     with opener(path, "rt") as handle:
         return json.load(handle)
 
+
+def receiver_rsa_attrition(primary: dict, matched: dict) -> dict:
+    """What the receiver-burial-matched key costs, per arm, direction and outcome.
+
+    Only the family and receiver losses are attrition. Every sensitivity-matched
+    receiver lies inside a primary-matched separation cell, so those two counts
+    can only fall and subtracting them is a real loss. The cell counts cannot be
+    subtracted: a primary matched cell is one separation stratum and a sensitivity
+    matched cell is one separation stratum and one receiver band, so splitting a
+    single primary cell into its bands *raises* the sensitivity's cell count. Both
+    are therefore reported under names that say which key they count, and no
+    cell-loss field exists.
+    """
+
+    record = {
+        "primary_families": len(primary["families"]),
+        "sensitivity_families": len(matched["families"]),
+        "families_lost": len(primary["families"]) - len(matched["families"]),
+        "primary_separation_cells": int(primary["matched_cells"]),
+        "sensitivity_separation_band_cells": int(matched["matched_cells"]),
+        "primary_matched_receivers": int(primary["matched_receivers"]),
+        "sensitivity_matched_receivers": int(matched["matched_receivers"]),
+        "matched_receivers_lost": (
+            int(primary["matched_receivers"]) - int(matched["matched_receivers"])
+        ),
+    }
+    if record["families_lost"] < 0 or record["matched_receivers_lost"] < 0:
+        raise ValueError(
+            "the receiver-burial-matched key cannot gain families or matched receivers "
+            f"over the primary separation key; got {record}"
+        )
+    return record
 
 
 def extraction_status(directory: Path) -> tuple[dict | None, str | None]:
@@ -262,6 +308,15 @@ def main() -> None:
     parser.add_argument("--max-separation", type=int, default=0,
                         help="0 keeps every separation the cohort offers")
     parser.add_argument("--device", default="cpu", help="accepted for queue injection; unused")
+    parser.add_argument("--receiver-rsa-matched", action="store_true",
+                        help="also report the separately declared receiver-burial-matched "
+                             "sensitivity under contact_contrasts_receiver_rsa_matched and "
+                             "panel_simultaneous_receiver_rsa_matched: the matching key "
+                             "gains the receiver's burial band on the fixed "
+                             "forcing_design.RSA_BOUNDARY, so contacts are compared only "
+                             "with non-contacts in the same separation stratum and band. "
+                             "The primary blocks are recomputed unchanged and the two "
+                             "families are never concatenated")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -291,7 +346,10 @@ def main() -> None:
         return cache[assay]
 
     arms, contrasts, absent = [], [], []
+    matched_contrasts: list[dict] = []
     panel_columns: dict[str, list[dict]] = {outcome: [] for outcome in OUTCOMES}
+    matched_columns: dict[str, list[dict]] = {outcome: [] for outcome in OUTCOMES}
+    receiver_boundary = RSA_BOUNDARY if args.receiver_rsa_matched else None
     for directory in args.extraction:
         completion, reason = extraction_status(directory)
         if completion is None:
@@ -321,6 +379,28 @@ def main() -> None:
                         "direction": direction,
                         "family_values": contrast["family_values"],
                     })
+                if receiver_boundary is None:
+                    continue
+                matched = stratified_contact_contrast(
+                    structural, outcome=outcome, direction=direction,
+                    rsa_boundary=receiver_boundary,
+                )
+                matched["arm"] = block["arm"]
+                matched["attrition_relative_to_primary"] = receiver_rsa_attrition(
+                    contrast, matched
+                )
+                matched_contrasts.append(matched)
+                # A scientifically eligible (arm, direction) keeps its declared
+                # slot in the sensitivity panel even when the band match leaves it
+                # no family value: the panel names a thin or empty column under
+                # excluded_columns, which is an unavailable outcome rather than a
+                # silently narrower panel. The primary loop above is unchanged.
+                if simultaneous_admits(block["paradigm"], direction):
+                    matched_columns[outcome].append({
+                        "arm": block["arm"],
+                        "direction": direction,
+                        "family_values": matched["family_values"],
+                    })
         arms.append(block)
         del structural
     if not arms:
@@ -332,8 +412,17 @@ def main() -> None:
         outcome: panel_contact_simultaneous(panel_columns[outcome], outcome=outcome)
         for outcome in OUTCOMES
     }
+    matched_simultaneous = (
+        {
+            outcome: panel_contact_simultaneous(
+                matched_columns[outcome], outcome=outcome, rsa_boundary=receiver_boundary
+            )
+            for outcome in OUTCOMES
+        }
+        if receiver_boundary is not None else {}
+    )
 
-    write_json(args.out / COMPLETION, {
+    payload = {
         "schema": SCHEMA,
         "status": "complete",
         "created_utc": _now(),
@@ -394,7 +483,27 @@ def main() -> None:
             "whose bands hold jointly at 95 percent over every admitted (arm, direction) "
             "column of one outcome"
         ),
-    })
+    }
+    if receiver_boundary is not None:
+        payload["receiver_rsa_matched_declaration"] = {
+            "status": "retrospectively declared receiver-burial-matched sensitivity",
+            "rsa_boundary": float(receiver_boundary),
+            "boundary_source": "src.capability.forcing.forcing_design.RSA_BOUNDARY",
+            "receiver_banding": RECEIVER_RSA_MATCHING,
+            "estimand": RSA_SENSITIVITY_DECLARATION,
+            "weighting": RSA_MATCHED_WEIGHTING,
+            "separation_from_primary": (
+                "the primary blocks contact_contrasts and panel_simultaneous are "
+                "computed by unchanged code on the unchanged matching key, so they are "
+                "numerically identical to a run without --receiver-rsa-matched; the "
+                "matched blocks below are their own families, resampled over their own "
+                "family values on the same draws and seed, and are never concatenated "
+                "with the primary"
+            ),
+        }
+        payload["contact_contrasts_receiver_rsa_matched"] = matched_contrasts
+        payload["panel_simultaneous_receiver_rsa_matched"] = matched_simultaneous
+    write_json(args.out / COMPLETION, payload)
 
 
 if __name__ == "__main__":

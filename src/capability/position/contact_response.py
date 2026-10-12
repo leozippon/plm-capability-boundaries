@@ -44,6 +44,7 @@ and sequence-separation floor.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -559,9 +560,25 @@ def _nested_mean(values: Sequence[tuple[Any, float]]) -> float | None:
     return float(np.mean([float(np.mean(rows)) for rows in grouped.values()]))
 
 
+def _declared_rsa_boundary(rsa_boundary: float | None) -> float | None:
+    """The receiver-burial boundary this sensitivity keys on, or ``None``.
+
+    ``None`` selects the frozen primary path and changes nothing. A supplied
+    boundary is a positive finite accessibility; one that cannot be is a caller
+    error rather than a reason to skip the sensitivity.
+    """
+
+    if rsa_boundary is None:
+        return None
+    boundary = float(rsa_boundary)
+    if not math.isfinite(boundary) or boundary <= 0.0:
+        raise ValueError("a receiver-burial boundary is a positive finite relative accessibility")
+    return boundary
+
+
 def contact_family_table(
     rows: Sequence[Mapping[str, Any]], *, outcome: str = "absolute_response",
-    direction: str | None = None,
+    direction: str | None = None, rsa_boundary: float | None = None,
 ) -> dict[str, Any]:
     """The family-level bootstrap units of one contact contrast, and their support.
 
@@ -573,6 +590,17 @@ def contact_family_table(
     non-contacts contributes nothing, so no comparison is ever made across
     separations.
 
+    When ``rsa_boundary`` is given, the receiver's burial band is appended to the
+    matching key on that fixed boundary, adding the receiver-exposure match the
+    primary key leaves out: contacts and non-contacts are then compared only
+    within one separation stratum *and* one receiver band, and those
+    separation-by-band cells are averaged equally within the mutation. A cell with
+    only contacts or only non-contacts contributes nothing, so no cross-contact
+    control is manufactured, and a receiver without a finite relative
+    accessibility is refused rather than silently keyed as unmatched. The primary
+    path is byte-for-byte the same call as before and returns none of the
+    sensitivity fields.
+
     Separated from the interval that consumes it because the same family values
     are the units of two different statements: a marginal per-arm interval
     (:func:`stratified_contact_contrast`) and a panel-wide simultaneous band
@@ -583,16 +611,30 @@ def contact_family_table(
 
     if outcome not in ("absolute_response", "response"):
         raise ValueError("outcome is absolute_response or response")
+    boundary = _declared_rsa_boundary(rsa_boundary)
     selected = [row for row in rows if direction is None or row["direction"] == direction]
-    cells: dict[tuple[Any, Any, str, str], list[Mapping[str, Any]]] = {}
+    cells: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for row in selected:
-        key = (row["family"], row["assay"], row["mutation"], row["stratum"])
+        key: tuple[Any, ...] = (row["family"], row["assay"], row["mutation"], row["stratum"])
+        if boundary is not None:
+            rsa = row["rsa"]
+            if rsa is None or not math.isfinite(float(rsa)):
+                raise ValueError(
+                    f"{row['assay']} mutation {row['mutation']} receiver {row['j']} has "
+                    f"rsa={rsa!r}; the receiver-burial-matched sensitivity keys on a "
+                    "finite receiver relative accessibility and refuses the cell rather "
+                    "than falling back to the unmatched primary key"
+                )
+            key = (*key, "buried" if float(rsa) < boundary else "exposed")
         cells.setdefault(key, []).append(row)
     per_mutation: dict[tuple[Any, Any, str], list[tuple[str, float]]] = {}
     per_mutation_imbalance: dict[tuple[Any, Any, str], list[tuple[str, float]]] = {}
+    per_mutation_rsa: dict[tuple[Any, Any, str], list[tuple[str, float]]] = {}
     matched_cells = 0
     matched_receivers = 0
-    for (family, assay, mutation, stratum), members in cells.items():
+    for key, members in cells.items():
+        family, assay, mutation, stratum = key[0], key[1], key[2], key[3]
+        label = stratum if boundary is None else f"{stratum}|{key[4]}"
         contacts = [row for row in members if row["contact"]]
         others = [row for row in members if not row["contact"]]
         if not contacts or not others:
@@ -605,10 +647,17 @@ def contact_family_table(
         imbalance = float(np.mean([row["separation"] for row in contacts])) - float(
             np.mean([row["separation"] for row in others])
         )
-        per_mutation.setdefault((family, assay, mutation), []).append((stratum, difference))
+        per_mutation.setdefault((family, assay, mutation), []).append((label, difference))
         per_mutation_imbalance.setdefault((family, assay, mutation), []).append(
-            (stratum, imbalance)
+            (label, imbalance)
         )
+        if boundary is not None:
+            rsa_imbalance = float(np.mean([float(row["rsa"]) for row in contacts])) - float(
+                np.mean([float(row["rsa"]) for row in others])
+            )
+            per_mutation_rsa.setdefault((family, assay, mutation), []).append(
+                (label, rsa_imbalance)
+            )
 
     def _collapse(table: Mapping[tuple[Any, Any, str], list[tuple[str, float]]]) -> dict[Any, float]:
         per_assay: dict[tuple[Any, Any], list[tuple[str, float]]] = {}
@@ -627,7 +676,7 @@ def contact_family_table(
             if (value := _nested_mean(entries)) is not None
         }
 
-    return {
+    record = {
         "outcome": outcome,
         "direction": direction or "both",
         "family_values": _collapse(per_mutation),
@@ -636,6 +685,12 @@ def contact_family_table(
         "matched_receivers": matched_receivers,
         "strata_present": sorted({row["stratum"] for row in selected}),
     }
+    if boundary is not None:
+        record["rsa_boundary"] = float(boundary)
+        record["receiver_banding"] = RECEIVER_RSA_MATCHING
+        record["rsa_imbalance"] = _collapse(per_mutation_rsa)
+        record["receiver_bands_present"] = sorted({key[4] for key in cells})
+    return record
 
 
 WEIGHTING = (
@@ -643,10 +698,49 @@ WEIGHTING = (
     "equal assays within family, equal families; families are the bootstrap units"
 )
 
+#: The matching key of the separately declared receiver-burial sensitivity. The
+#: primary contrast matches family, assay, mutation and sequence-separation
+#: stratum, which leaves how buried the *receiver* is unmatched: contacts sit on
+#: average in more buried positions than the non-contacts they are compared with,
+#: so part of a primary contrast can be a burial-composition difference wearing a
+#: structural label. This key appends the receiver's burial band, on the one fixed
+#: boundary the project declares for that split.
+RECEIVER_RSA_MATCHING = (
+    "receiver burial band appended to the matching key, on the fixed boundary "
+    "forcing_design.RSA_BOUNDARY declares: a receiver is buried when its relative "
+    "accessibility is below the boundary and exposed otherwise, and contacts are "
+    "compared only with non-contacts in the same separation stratum and the same "
+    "receiver band"
+)
+
+#: Weighting of the sensitivity. Only the cell definition changes: the
+#: separation-by-band cells are the equal units inside a mutation, and the
+#: mutation-to-assay-to-family nesting is the primary one.
+RSA_MATCHED_WEIGHTING = (
+    "equal separation-by-receiver-band cells within mutation, equal mutations "
+    "within assay, equal assays within family, equal families; families are the "
+    "bootstrap units"
+)
+
+#: What the receiver-burial-matched block is, stated once so that the library and
+#: the runner cannot describe it differently.
+RSA_SENSITIVITY_DECLARATION = (
+    "retrospectively declared sensitivity, separate from and never concatenated "
+    "with the frozen primary: the primary contrast matches family, assay, mutation "
+    "and separation stratum only and leaves receiver burial unmatched, while this "
+    "arm additionally requires the receiver's relative accessibility to be finite "
+    "and to fall on the same side of the declared boundary, then averages the "
+    "eligible separation-by-band cells equally within mutation. A cell whose band "
+    "holds only contacts or only non-contacts contributes nothing, so a family that "
+    "loses every matched cell is absent here rather than replaced by its primary "
+    "value, and no cross-contact control is manufactured"
+)
+
 
 def stratified_contact_contrast(
     rows: Sequence[Mapping[str, Any]], *, outcome: str = "absolute_response",
     direction: str | None = None, draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED,
+    rsa_boundary: float | None = None,
 ) -> dict[str, Any]:
     """Contact minus non-contact response, matched inside separation strata.
 
@@ -656,9 +750,15 @@ def stratified_contact_contrast(
     sequence distance wearing a structural label, and the reader is given both
     numbers. This interval is marginal and is not a panel-wide statement; see
     :func:`panel_contact_simultaneous` for that.
+
+    With ``rsa_boundary`` the same interval is formed on the receiver-burial-matched key, and the record declares that boundary, its own weighting and the
+    within-cell receiver-burial imbalance beside the separation imbalance. The
+    primary call is unchanged and carries none of those keys.
     """
 
-    table = contact_family_table(rows, outcome=outcome, direction=direction)
+    table = contact_family_table(
+        rows, outcome=outcome, direction=direction, rsa_boundary=rsa_boundary
+    )
     family_values = table["family_values"]
     family_imbalance = table["family_imbalance"]
     estimate = interval(sorted(family_values.values()), draws=draws, seed=seed) if family_values else {
@@ -667,7 +767,7 @@ def stratified_contact_contrast(
         "groups": 0,
         "undefined": "no family carries a matched contact and non-contact receiver",
     }
-    return {
+    record = {
         "outcome": outcome,
         "direction": direction or "both",
         "definition": CONTACT_DEFINITION,
@@ -683,6 +783,16 @@ def stratified_contact_contrast(
         ),
         "strata_present": table["strata_present"],
     }
+    if table.get("rsa_boundary") is not None:
+        rsa_imbalance = table["rsa_imbalance"]
+        record["rsa_boundary"] = table["rsa_boundary"]
+        record["receiver_banding"] = table["receiver_banding"]
+        record["weighting"] = RSA_MATCHED_WEIGHTING
+        record["receiver_bands_present"] = table["receiver_bands_present"]
+        record["receiver_rsa_imbalance"] = (
+            float(np.mean(sorted(rsa_imbalance.values()))) if rsa_imbalance else None
+        )
+    return record
 
 
 # ------------------------------------------------- the panel-wide statement
@@ -796,17 +906,24 @@ def simultaneous_bands(
 def panel_contact_simultaneous(
     columns: Sequence[Mapping[str, Any]], *, outcome: str,
     draws: int = SIMULTANEOUS_DRAWS, seed: int = BOOTSTRAP_SEED,
+    rsa_boundary: float | None = None,
 ) -> dict[str, Any]:
     """One simultaneous family over every arm's contact contrast in this panel.
 
     Each column is one ``(arm, direction)`` contrast carrying its own
     family-to-value mapping; the family universe is the union, and a family a
-    column does not carry is absent rather than zero. Metrics are not pooled: a
-    family is formed per outcome, because the absolute and signed responses are
-    different quantities and a critical value over both would be a multiplicity
-    correction across units.
+    column does not carry is absent rather than zero. Metrics are not pooled: the
+    absolute and signed responses are separate declared endpoints, both in nats,
+    and a critical value spanning both would be a multiplicity correction across
+    endpoints rather than across arms.
+
+    ``rsa_boundary`` only declares which matching key produced these columns: the
+    receiver-burial-matched sensitivity is its own panel, resampled over its own
+    families, and is never merged into the frozen primary's family. The primary
+    call passes nothing and its record is unchanged.
     """
 
+    boundary = _declared_rsa_boundary(rsa_boundary)
     supplied = [
         {"arm": str(column["arm"]), "direction": str(column["direction"]),
          "family_values": {str(key): float(value)
@@ -827,7 +944,7 @@ def panel_contact_simultaneous(
         for column in supplied if len(column["family_values"]) < MIN_FAMILIES
     ]
     if not labelled:
-        return {
+        record = {
             "outcome": outcome,
             "columns": [],
             "excluded_columns": thin,
@@ -836,6 +953,11 @@ def panel_contact_simultaneous(
                 f"{MIN_FAMILIES} families"
             ),
         }
+        if boundary is not None:
+            record["rsa_boundary"] = float(boundary)
+            record["receiver_banding"] = RECEIVER_RSA_MATCHING
+            record["weighting"] = RSA_MATCHED_WEIGHTING
+        return record
     universe = sorted({family for column in labelled for family in column["family_values"]})
     table = np.full((len(universe), len(labelled)), np.nan)
     for index, column in enumerate(labelled):
@@ -855,7 +977,10 @@ def panel_contact_simultaneous(
         "a studentised maximum over a standard error that thin would be set by the "
         "least supported arm in the panel"
     )
-    record["weighting"] = WEIGHTING
+    record["weighting"] = WEIGHTING if boundary is None else RSA_MATCHED_WEIGHTING
+    if boundary is not None:
+        record["rsa_boundary"] = float(boundary)
+        record["receiver_banding"] = RECEIVER_RSA_MATCHING
     record["columns"] = [
         {
             "arm": column["arm"],

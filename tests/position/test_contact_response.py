@@ -9,6 +9,8 @@ test group here.
 """
 
 import hashlib
+import importlib.util
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -42,6 +44,7 @@ from src.capability.position.position_likelihood import CAUSAL, MASKED
 
 WILDTYPE = "MKQLEDKVEELLSKNYHLENEVARLKKLVGER"
 ALPHABET = tuple(sorted(set(WILDTYPE)))
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def line(positions, *, spacing=1.0):
@@ -368,6 +371,194 @@ def test_the_contrast_compares_only_inside_one_anchor_and_one_stratum():
     assert result["matched_cells"] == 6
     assert result["estimate_nats"]["point"] == pytest.approx(0.6)
     assert result["separation_imbalance_residues"] == pytest.approx(0.0)
+
+
+# ------------------------------------------- the receiver-burial sensitivity
+
+
+def _rsa_row(*, contact, rsa, response, j, separation=10, direction="downstream",
+             mutation="A1G"):
+    """One receiver in one mutation and separation stratum, with its own burial."""
+
+    return {
+        "assay": "A", "family": 1, "mutation": mutation, "i": 0, "j": j,
+        "separation": separation, "direction": direction,
+        "response": response, "absolute_response": abs(response),
+        "contact": contact, "structure_distance_angstrom": 5.0 if contact else 15.0,
+        "rsa": rsa, "stratum": "9-16",
+    }
+
+
+def _band_composition_rows():
+    """Three buried contacts and one buried control at 0.3, one exposed contact and
+    three exposed controls at 0.1, all in one mutation and one separation stratum.
+
+    The primary contrast is +0.1 and is entirely a difference in how buried the
+    two classes are, not a contact effect; the single separation cell splits into
+    a buried and an exposed band cell under the sensitivity key.
+    """
+
+    return (
+        [_rsa_row(contact=True, rsa=0.10, response=0.3, j=10) for _ in range(3)]
+        + [_rsa_row(contact=False, rsa=0.10, response=0.3, j=11)]
+        + [_rsa_row(contact=True, rsa=0.60, response=0.1, j=12)]
+        + [_rsa_row(contact=False, rsa=0.60, response=0.1, j=13) for _ in range(3)]
+    )
+
+
+def load_propagation_stage():
+    """The E01 runner, loaded the way the sibling stage tests load theirs."""
+
+    path = ROOT / "scripts/capability/position/analyse_position_propagation.py"
+    spec = importlib.util.spec_from_file_location("_position_propagation_stage", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_receiver_burial_matched_sensitivity_removes_a_band_composition_contrast():
+    rows = _band_composition_rows()
+    primary = stratified_contact_contrast(rows)
+    assert primary["estimate_nats"]["point"] == pytest.approx(0.1)
+    # The primary path carries none of the sensitivity's fields.
+    assert "rsa_boundary" not in contact_family_table(rows)
+    assert "receiver_rsa_imbalance" not in primary
+
+    matched = stratified_contact_contrast(rows, rsa_boundary=0.25)
+    assert matched["estimate_nats"]["point"] == pytest.approx(0.0)
+    assert matched["matched_cells"] == 2
+    assert matched["matched_receivers"] == 8
+    assert matched["families"] == [1]
+    assert matched["rsa_boundary"] == 0.25
+    assert matched["receiver_bands_present"] == ["buried", "exposed"]
+    assert matched["receiver_rsa_imbalance"] == pytest.approx(0.0)
+    assert matched["separation_imbalance_residues"] == pytest.approx(0.0)
+    # Direction is still a filter, and a direction with no contacts is left
+    # undefined rather than answered from the other direction.
+    assert stratified_contact_contrast(
+        rows, direction="upstream", rsa_boundary=0.25
+    )["matched_cells"] == 0
+
+
+def test_the_receiver_burial_matched_sensitivity_preserves_a_within_band_contrast():
+    rows = [
+        _rsa_row(contact=True, rsa=0.10, response=0.5, j=10),
+        _rsa_row(contact=False, rsa=0.10, response=0.2, j=11),
+    ]
+    primary = stratified_contact_contrast(rows)
+    matched = stratified_contact_contrast(rows, rsa_boundary=0.25)
+    assert primary["estimate_nats"]["point"] == pytest.approx(0.3)
+    assert matched["estimate_nats"]["point"] == pytest.approx(0.3)
+    assert matched["matched_cells"] == 1
+    assert matched["matched_receivers"] == 2
+
+    # The sensitivity panel declares its own boundary and weighting, and the
+    # primary panel record is unchanged by the option existing.
+    columns = [{
+        "arm": "arm", "direction": "downstream",
+        "family_values": contact_family_table(
+            _family_rows({family: 0.1 for family in range(1, 7)}), rsa_boundary=0.25
+        )["family_values"],
+    }]
+    plain = panel_contact_simultaneous(columns, outcome="absolute_response", draws=200)
+    declared = panel_contact_simultaneous(
+        columns, outcome="absolute_response", draws=200, rsa_boundary=0.25
+    )
+    assert "rsa_boundary" not in plain
+    assert declared["rsa_boundary"] == 0.25
+    assert declared["weighting"] != plain["weighting"]
+    assert "band" in declared["weighting"]
+
+
+def test_disjoint_receiver_bands_leave_the_sensitivity_undefined_not_falling_back():
+    rows = (
+        [_rsa_row(contact=True, rsa=0.60, response=0.5, j=j) for j in (10, 11, 12)]
+        + [_rsa_row(contact=False, rsa=0.10, response=0.1, j=j) for j in (13, 14, 15)]
+    )
+    primary = stratified_contact_contrast(rows)
+    assert primary["estimate_nats"]["point"] == pytest.approx(0.4)
+
+    matched = stratified_contact_contrast(rows, rsa_boundary=0.25)
+    assert matched["matched_cells"] == 0
+    assert matched["family_values"] == {}
+    assert matched["families"] == []
+    assert matched["estimate_nats"]["point"] is None
+    assert matched["estimate_nats"]["undefined"]
+    # No cross-contact control is manufactured: the sensitivity stays undefined
+    # instead of being answered with the primary number.
+    assert matched["estimate_nats"]["point"] != primary["estimate_nats"]["point"]
+
+
+def test_the_receiver_burial_sensitivity_refuses_an_absent_or_nonfinite_rsa():
+    rows = [
+        _rsa_row(contact=True, rsa=0.10, response=0.4, j=10),
+        _rsa_row(contact=False, rsa=0.10, response=0.2, j=11),
+    ]
+    # The primary key does not read burial at all, so an absent RSA is admissible.
+    missing = [dict(row) for row in rows]
+    missing[1]["rsa"] = None
+    assert contact_family_table(missing)["matched_cells"] == 1
+    with pytest.raises(ValueError, match="finite receiver relative accessibility"):
+        contact_family_table(missing, rsa_boundary=0.25)
+    for bad in (float("nan"), float("inf")):
+        broken = [dict(row) for row in rows]
+        broken[0]["rsa"] = bad
+        with pytest.raises(ValueError, match="finite receiver relative accessibility"):
+            stratified_contact_contrast(broken, rsa_boundary=0.25)
+    for bad_boundary in (0.0, -0.1, float("nan")):
+        with pytest.raises(ValueError, match="positive finite relative accessibility"):
+            contact_family_table(rows, rsa_boundary=bad_boundary)
+
+
+def test_the_attrition_record_never_subtracts_cells_of_two_definitions():
+    # The first sensitivity fixture is primary-one-cell / sensitivity-two-cell: the
+    # one "9-16" separation cell splits into a buried and an exposed band cell, so
+    # a cell-count difference would be a negative "loss" between two different
+    # quantities.
+    rows = _band_composition_rows()
+    primary = stratified_contact_contrast(rows)
+    matched = stratified_contact_contrast(rows, rsa_boundary=0.25)
+    assert primary["matched_cells"] == 1
+    assert matched["matched_cells"] == 2
+    record = load_propagation_stage().receiver_rsa_attrition(primary, matched)
+    assert "matched_cells_lost" not in record
+    assert record["primary_separation_cells"] == 1
+    assert record["sensitivity_separation_band_cells"] == 2
+    # Family and receiver counts are comparable and can only fall.
+    assert record["families_lost"] == 0
+    assert record["matched_receivers_lost"] == 0
+
+
+def test_an_empty_sensitivity_column_stays_a_declared_slot_not_a_silent_drop():
+    # An arm whose bands never match still gets a declared panel slot, so the
+    # panel names it under excluded_columns instead of quietly emitting a narrower
+    # sensitivity than was declared. The empty column is never answered with the
+    # primary's families.
+    empty = {"arm": "disjoint", "direction": "downstream", "family_values": {}}
+    supported = {
+        "arm": "supported", "direction": "downstream",
+        "family_values": contact_family_table(
+            _family_rows({family: 0.1 * family for family in range(1, 7)}), rsa_boundary=0.25
+        )["family_values"],
+    }
+    record = panel_contact_simultaneous(
+        [empty, supported], outcome="absolute_response", draws=200, rsa_boundary=0.25
+    )
+    assert [column["arm"] for column in record["columns"]] == ["supported"]
+    assert [item["arm"] for item in record["excluded_columns"]] == ["disjoint"]
+    assert record["excluded_columns"][0]["families"] == 0
+    assert "0 families" in record["excluded_columns"][0]["reason"]
+
+    # With no labelled arm at all the panel is undefined, but the declared slot is
+    # still named and the sensitivity boundary still recorded.
+    undefined = panel_contact_simultaneous(
+        [empty], outcome="absolute_response", draws=200, rsa_boundary=0.25
+    )
+    assert undefined["columns"] == []
+    assert [item["arm"] for item in undefined["excluded_columns"]] == ["disjoint"]
+    assert undefined["undefined"]
+    assert undefined["rsa_boundary"] == 0.25
 
 
 # ------------------------------------------- the panel-wide simultaneous family
