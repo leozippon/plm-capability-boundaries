@@ -664,6 +664,39 @@ def test_run_stops_when_prepare_refuses(tmp_path):
     assert not (tmp_path / "run" / "qualification" / rq.EVALUATION_COMPLETION).exists()
 
 
+# ------------------------------------------------------------ command line
+
+
+def test_queue_ordered_argv_parses_before_the_sub_command(tmp_path):
+    # The campaign queue injects --device and --out ahead of the sub-command.
+    out = tmp_path / "run"
+    args = rq.parse_args(
+        ["--device", "cpu", "--out", str(out), "run", "--protocol", "p.json", "--root", "r"]
+    )
+    assert args.command == "run"
+    assert args.handler is rq.run_all
+    assert (args.device, args.out) == ("cpu", out)
+    assert args.protocol == Path("p.json") and args.root == Path("r")
+
+
+def test_sub_command_form_still_parses_and_defaults_device_to_cpu(tmp_path):
+    out = tmp_path / "run"
+    args = rq.parse_args(["prepare", "--protocol", "p.json", "--root", "r", "--out", str(out)])
+    assert args.command == "prepare"
+    assert (args.device, args.out) == ("cpu", out)
+
+
+def test_conflicting_out_before_and_after_the_sub_command_refuses(tmp_path):
+    # --device accepts only cpu, so a device conflict cannot be constructed.
+    with pytest.raises(SystemExit):
+        rq.parse_args(["--out", str(tmp_path / "a"), "run", "--protocol", "p", "--root", "r",
+                       "--out", str(tmp_path / "b")])
+    # Identical duplicates are not a conflict.
+    args = rq.parse_args(["--out", str(tmp_path / "a"), "run", "--protocol", "p", "--root", "r",
+                          "--out", str(tmp_path / "a")])
+    assert args.out == tmp_path / "a"
+
+
 # ------------------------------------------------------------- real inputs
 
 

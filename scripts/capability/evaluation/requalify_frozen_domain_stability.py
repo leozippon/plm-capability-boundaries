@@ -1003,14 +1003,20 @@ def run_all(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # The campaign queue injects --device and --out before the sub-command. They are
+    # accepted in both positions; parse_args() reconciles the two.
+    parser.add_argument("--device", choices=("cpu",), default=None, dest="top_device",
+                        help="resource contract, accepted before the sub-command")
+    parser.add_argument("--out", type=Path, default=None, dest="top_out",
+                        help="a fresh output directory, accepted before the sub-command")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare_parser = sub.add_parser("prepare", help="freeze the eligible allowlist without reading outcomes")
     prepare_parser.add_argument("--protocol", type=Path, required=True)
     prepare_parser.add_argument("--root", type=Path, required=True, help="repository root holding the inputs")
-    prepare_parser.add_argument("--device", choices=("cpu",), default="cpu",
+    prepare_parser.add_argument("--device", choices=("cpu",), default=None,
                                 help="explicit resource contract; the queue injects --device cpu")
-    prepare_parser.add_argument("--out", type=Path, required=True, help="a fresh output directory")
+    prepare_parser.add_argument("--out", type=Path, default=None, help="a fresh output directory")
     prepare_parser.set_defaults(handler=run_prepare)
 
     evaluate_parser = sub.add_parser("evaluate", help="qualify the gate on the frozen allowlist")
@@ -1018,23 +1024,45 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--root", type=Path, required=True)
     evaluate_parser.add_argument("--prepared", type=Path, required=True, help="the prepare output directory")
     evaluate_parser.add_argument("--prepared-sha256", required=True, help="exact sha256 of preparation.json")
-    evaluate_parser.add_argument("--device", choices=("cpu",), default="cpu",
+    evaluate_parser.add_argument("--device", choices=("cpu",), default=None,
                                  help="accepted because the campaign queue injects it")
-    evaluate_parser.add_argument("--out", type=Path, required=True, help="a fresh output directory")
+    evaluate_parser.add_argument("--out", type=Path, default=None, help="a fresh output directory")
     evaluate_parser.set_defaults(handler=run_evaluate)
 
     run_parser = sub.add_parser("run", help="one CPU cell: prepare then evaluate with the sealed digest")
     run_parser.add_argument("--protocol", type=Path, required=True)
     run_parser.add_argument("--root", type=Path, required=True)
-    run_parser.add_argument("--device", choices=("cpu",), default="cpu",
+    run_parser.add_argument("--device", choices=("cpu",), default=None,
                             help="explicit resource contract; the queue injects this")
-    run_parser.add_argument("--out", type=Path, required=True, help="a fresh output directory")
+    run_parser.add_argument("--out", type=Path, default=None, help="a fresh output directory")
     run_parser.set_defaults(handler=run_all)
     return parser
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse argv; --device and --out may appear before or after the sub-command.
+
+    A value given in both positions must agree, otherwise the parse fails. Device
+    defaults to cpu, the only permitted resource contract; --out is required.
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    for name in ("device", "out"):
+        before = getattr(args, f"top_{name}")
+        after = getattr(args, name)
+        if before is not None and after is not None and before != after:
+            parser.error(f"conflicting --{name}: {before!r} before the sub-command, {after!r} after it")
+        value = after if after is not None else before
+        if value is None:
+            if name == "out":
+                parser.error("--out is required, before or after the sub-command")
+            value = "cpu"
+        setattr(args, name, value)
+    return args
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_args()
     try:
         record = args.handler(args)
     except Refusal as error:
