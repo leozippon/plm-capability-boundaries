@@ -95,6 +95,17 @@ def test_guidance_refuses_a_complete_or_noncanonical_prefix(exported):
         guidance_biases(model, "AX")
 
 
+def test_loader_refuses_unqualified_unless_explicitly_allowed(tmp_path):
+    rng = np.random.default_rng(3)
+    save_family_model(tmp_path, "BAD", wildtype="ACDEF", h=rng.normal(size=(5, 20)), pairs=rng.normal(size=(10, 20, 20)),
+                      profile_freq=rng.dirichlet(np.ones(20), size=5), profile_column_weight=np.full(5, 10.0),
+                      qualified=False, qualification_failures=["gain <= 0"], extra={})
+    with pytest.raises(ValueError, match="not qualified"):
+        load_family_model("BAD", tmp_path)
+    model = load_family_model("BAD", tmp_path, allow_unqualified=True)
+    assert not model.qualified and model.qualification_failures == ("gain <= 0",)
+
+
 def test_loader_refuses_missing_artifact(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_family_model("SYN", tmp_path)
@@ -138,7 +149,7 @@ needs_artifacts = pytest.mark.skipif(not EXPORTED, reason="exported family refer
 @needs_artifacts
 @pytest.mark.parametrize("domain", EXPORTED)
 def test_exported_columns_are_the_wildtype_residues(domain):
-    model = load_family_model(domain)
+    model = load_family_model(domain, allow_unqualified=True)
     query = {}
     name = None
     for line in (REPO_ROOT / "data/pairwise_assets/same12_provenance_20260924/query_12.faa").read_text().splitlines():
@@ -155,7 +166,7 @@ def test_exported_columns_are_the_wildtype_residues(domain):
 @needs_artifacts
 @pytest.mark.parametrize("domain", EXPORTED)
 def test_wildtype_outscores_composition_matched_shuffles(domain):
-    model = load_family_model(domain)
+    model = load_family_model(domain, allow_unqualified=True)
     rng = np.random.default_rng(1)
     wt = potts_score(model, model.wildtype)
     shuffles = [potts_score(model, "".join(rng.permutation(list(model.wildtype)))) for _ in range(100)]

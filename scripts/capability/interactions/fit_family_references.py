@@ -34,7 +34,9 @@ from src.capability.core.amino_acids import AA20
 from src.capability.stability.pairwise_stability import read_plmc
 
 LAMBDA_E_GRID = (0.0064, 0.032, 0.16, 0.8, 4.0, 16.0, 80.0, 400.0, 2000.0)
-LAMBDA_H = 0.01
+#: Field L2 grids. The first run fixed lambda_h at 0.01 (the archived value); the joint run tunes it.
+LAMBDA_H_FIXED = (0.01,)
+LAMBDA_H_JOINT = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
 #: Identity at which rows are clustered, held out whole, and purged from training. A 50% purge
 #: leaves 8-206 training rows in ten of twelve domains (see split_feasibility in the report),
 #: so the strictest threshold that keeps every training fold usable is declared instead.
@@ -145,8 +147,8 @@ def write_alignment(path: Path, sequences: list[str], index: np.ndarray, weights
     wpath.write_text("".join(f"{w:.8f}\n" for w in weights))
 
 
-def run_plmc(alignment: Path, weights: Path, out: Path, log: Path, lambda_e: float, max_iter: int, threads: int) -> dict:
-    done = subprocess.run([str(PLMC), "-o", str(out), "-f", "focus", "-le", str(lambda_e), "-lh", str(LAMBDA_H),
+def run_plmc(alignment: Path, weights: Path, out: Path, log: Path, lambda_e: float, lambda_h: float, max_iter: int, threads: int) -> dict:
+    done = subprocess.run([str(PLMC), "-o", str(out), "-f", "focus", "-le", str(lambda_e), "-lh", str(lambda_h),
                            "-m", str(max_iter), "-g", "-n", str(threads), "-w", str(weights), str(alignment)],
                           capture_output=True, text=True)
     log.write_text(done.stdout + done.stderr)
@@ -165,7 +167,7 @@ def run_plmc(alignment: Path, weights: Path, out: Path, log: Path, lambda_e: flo
 def sweep_job(job: dict) -> dict:
     """One held-out fit at one lambda_E; result cached by configuration."""
     work = Path(job["work"])
-    cache = work / f"sweep_le{job['lambda_e']}.json"
+    cache = work / f"sweep_le{job['lambda_e']}_lh{job['lambda_h']}.json"
     if cache.exists() and json.loads(cache.read_text())["config"] == job["config"]:
         return json.loads(cache.read_text())
     split = np.load(work / "split.npz")
@@ -174,14 +176,14 @@ def sweep_job(job: dict) -> dict:
     weights = sequence_weights(rows[keep], identity=REWEIGHT_IDENTITY_FLOOR)
     if keep[0] != 0:  # plmc needs the focus first; a purged focus stays as its column anchor at weight zero
         keep, weights = np.concatenate([[0], keep]), np.concatenate([[0.0], weights])
-    tag = f"train_le{job['lambda_e']}"
+    tag = f"train_le{job['lambda_e']}_lh{job['lambda_h']}"
     write_alignment(work / f"{tag}.fa", sequences, keep, weights, work / f"{tag}.w")
     fit = run_plmc(work / f"{tag}.fa", work / f"{tag}.w", work / f"{tag}.params", work / f"{tag}.log",
-                   job["lambda_e"], job["max_iter"], job["threads"])
+                   job["lambda_e"], job["lambda_h"], job["max_iter"], job["threads"])
     params = read_plmc(work / f"{tag}.params")
     test = rows[np.flatnonzero(split["held"])]
     fit["held_out_conditional"] = plmc_conditional(params.fields, params.couplings, test, scored_support(test))
-    fit["lambda_e"], fit["config"] = job["lambda_e"], job["config"]
+    fit["lambda_e"], fit["lambda_h"], fit["config"] = job["lambda_e"], job["lambda_h"], job["config"]
     for suffix in (".params", ".fa", ".w"):
         (work / f"{tag}{suffix}").unlink()
     cache.write_text(json.dumps(fit, indent=1))
@@ -206,10 +208,10 @@ def final_job(job: dict) -> dict:
     weights = sequence_weights(rows, identity=REWEIGHT_IDENTITY_FLOOR)
     write_alignment(work / "full.fa", sequences, np.arange(len(rows)), weights, work / "full.w")
     fit = run_plmc(work / "full.fa", work / "full.w", work / "full.params", work / "full.log",
-                   job["lambda_e"], job["max_iter"], job["threads"])
+                   job["lambda_e"], job["lambda_h"], job["max_iter"], job["threads"])
     params = read_plmc(work / "full.params")
     columns = params.fields.shape[0]
-    verdict = qualify(job["stats"], job["sweep"], fit, length, columns)
+    verdict = qualify(job["stats"], job["sweep"], fit, length, columns, tuple(job["e_grid"]), tuple(job["h_grid"]))
     if params.target != wildtype or not np.array_equal(params.positions, np.arange(1, columns + 1)):
         raise ValueError(f"{domain}: plmc focus columns are not the wild-type residues one-to-one")
     prof = np.load(job["profile_npz"])
@@ -225,7 +227,7 @@ def final_job(job: dict) -> dict:
     directory = Path(job["export"])
     save_family_model(directory, domain, wildtype=wildtype, h=params.fields, pairs=params.couplings, profile_freq=freq,
                       profile_column_weight=cw, qualified=verdict["qualified"], qualification_failures=verdict["failures"],
-                      extra={"lambda_e": job["lambda_e"], "lambda_h": LAMBDA_H, "fit": fit, "sign_check": sign,
+                      extra={"lambda_e": job["lambda_e"], "lambda_h": job["lambda_h"], "fit": fit, "sign_check": sign,
                              "plmc_params_sha256": sha256_file(work / "full.params"),
                              "msa_sha256": sha256_file(MSA_DIR / f"{domain}.pdb.fasta"), "qualification": verdict})
     loaded = load_family_model(domain, directory)
@@ -269,21 +271,26 @@ def prepare(domain: str, wildtype: str, work: Path) -> dict:
     return {"sequences": sequences, "rows": rows, "stats": stats}
 
 
-def qualify(stats: dict, sweep: list[dict], final: dict, length: int, columns: int) -> dict:
+def qualify(stats: dict, sweep: list[dict], final: dict, length: int, columns: int, e_grid: tuple, h_grid: tuple) -> dict:
     scores = [e["held_out_conditional"] for e in sweep]
     best = int(np.argmax(scores))
+    le, lh = sweep[best]["lambda_e"], sweep[best]["lambda_h"]
     gain = scores[best] - stats["independent_site_held_out_conditional"]
-    interior = 0 < best < len(sweep) - 1
+    interior_e = 0 < e_grid.index(le) < len(e_grid) - 1
+    interior_h = len(h_grid) == 1 or 0 < h_grid.index(lh) < len(h_grid) - 1
     failures = []
     if not final["converged"]:
         failures.append(f"final fit not converged: {final['status']} after {final['iterations']} of {final['max_iter']} iterations")
-    if not interior:
-        failures.append(f"selected lambda_E={sweep[best]['lambda_e']} is at the grid edge")
+    if not interior_e:
+        failures.append(f"selected lambda_E={le} is at the grid edge")
+    if not interior_h:
+        failures.append(f"selected lambda_H={lh} is at the grid edge")
     if not gain > 0:
         failures.append(f"held-out gain over independent-site is {gain:.6f}")
     if columns != length:
         failures.append(f"column count {columns} != WT length {length}")
-    return {"selected_lambda_e": sweep[best]["lambda_e"], "interior": interior, "held_out_gain_over_independent_site": gain,
+    return {"selected_lambda_e": le, "selected_lambda_h": lh, "interior": interior_e, "interior_lambda_e": interior_e,
+            "interior_lambda_h": interior_h, "held_out_gain_over_independent_site": gain,
             "selected_held_out_conditional": scores[best], "selected_cv_fit_converged": sweep[best]["converged"],
             "sweep_fits_converged": sum(e["converged"] for e in sweep), "qualified": not failures, "failures": failures}
 
@@ -296,6 +303,8 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--final-threads", type=int, default=16)
     parser.add_argument("--domains", nargs="*")
+    parser.add_argument("--tune-lambda-h", action="store_true", help="grid lambda_h jointly with lambda_E")
+    parser.add_argument("--compare-dir", type=Path, help="earlier qualification to report side by side")
     args = parser.parse_args()
     if sha256_file(PROFILE_NPZ) != sha256_file(PROFILE_NPZ_CACHED):
         raise ValueError("rebuilt and cached frozen profiles differ")
@@ -303,7 +312,9 @@ def main() -> None:
     domains = args.domains or sorted(queries)
     code_sha = sha256_file(Path(__file__))
     prior = {b["name"].removesuffix(".pdb"): b for b in json.loads(PRIOR.read_text())["prior_fit"]["backgrounds"]}
-    config = {"max_iter": args.max_iter, "grid": LAMBDA_E_GRID, "seed": SPLIT_SEED, "identity": CLUSTER_IDENTITY, "code": code_sha}
+    h_grid = LAMBDA_H_JOINT if args.tune_lambda_h else LAMBDA_H_FIXED
+    points = [(e, h) for e in LAMBDA_E_GRID for h in h_grid]
+    config = {"max_iter": args.max_iter, "grid": LAMBDA_E_GRID, "h_grid": h_grid, "seed": SPLIT_SEED, "identity": CLUSTER_IDENTITY, "code": code_sha}
     state = {}
     for domain in domains:
         state[domain] = prepare(domain, queries[domain], args.out_dir / "fits" / domain)
@@ -313,35 +324,35 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         pending = {}
         for domain in domains:
-            for le in LAMBDA_E_GRID:
-                job = {"work": str(args.out_dir / "fits" / domain), "lambda_e": le, "max_iter": args.max_iter, "threads": args.threads,
+            for le, lh in points:
+                job = {"work": str(args.out_dir / "fits" / domain), "lambda_e": le, "lambda_h": lh, "max_iter": args.max_iter, "threads": args.threads,
                        "sequences": state[domain]["sequences"], "rows": state[domain]["rows"], "config": config}
-                pending[pool.submit(sweep_job, job)] = (domain, le)
+                pending[pool.submit(sweep_job, job)] = (domain, (le, lh))
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 domain, le = pending.pop(future)
                 result = future.result()
-                if le is None:
+                if le is None:  # final refit
                     results[domain] = result
                     print(domain, "final", result["qualification"]["qualified"], flush=True)
                     continue
                 sweeps[domain][le] = result
-                print(domain, "sweep", le, round(result["held_out_conditional"], 5), result["status"], result["iterations"], flush=True)
-                if len(sweeps[domain]) == len(LAMBDA_E_GRID):
-                    sweep = [sweeps[domain][g] for g in LAMBDA_E_GRID]
-                    best = LAMBDA_E_GRID[int(np.argmax([e["held_out_conditional"] for e in sweep]))]
+                print(domain, "sweep", *le, round(result["held_out_conditional"], 5), result["status"], result["iterations"], flush=True)
+                if len(sweeps[domain]) == len(points):
+                    sweep = [sweeps[domain][g] for g in points]
+                    best, best_h = points[int(np.argmax([e["held_out_conditional"] for e in sweep]))]
                     job = {"work": str(args.out_dir / "fits" / domain), "domain": domain, "wildtype": queries[domain],
-                           "lambda_e": best, "max_iter": args.max_iter, "threads": args.final_threads,
+                           "lambda_e": best, "lambda_h": best_h, "e_grid": LAMBDA_E_GRID, "h_grid": h_grid, "max_iter": args.max_iter, "threads": args.final_threads,
                            "sequences": state[domain]["sequences"], "rows": state[domain]["rows"], "profile_npz": str(PROFILE_NPZ),
                            "export": str(args.out_dir), "stats": state[domain]["stats"], "sweep": sweep}
                     pending[pool.submit(final_job, job)] = (domain, None)
     table = {}
     for domain in domains:
         table[domain + ".pdb"] = {
-            "wildtype_length": len(queries[domain]), **state[domain]["stats"], "lambda_e_grid": list(LAMBDA_E_GRID),
-            "lambda_e_held_out_scores": {str(g): sweeps[domain][g]["held_out_conditional"] for g in LAMBDA_E_GRID},
-            "sweep_fits": [{k: sweeps[domain][g][k] for k in ("lambda_e", "status", "converged", "iterations", "cap_hit")} for g in LAMBDA_E_GRID],
+            "wildtype_length": len(queries[domain]), **state[domain]["stats"], "lambda_e_grid": list(LAMBDA_E_GRID), "lambda_h_grid": list(h_grid),
+            "held_out_scores_lambda_e_lambda_h": {f"{g[0]}|{g[1]}": sweeps[domain][g]["held_out_conditional"] for g in points},
+            "sweep_fits": [{k: sweeps[domain][g][k] for k in ("lambda_e", "lambda_h", "status", "converged", "iterations", "cap_hit")} for g in points],
             "prior_archived": {k: prior[domain].get(k) for k in ("selected_lambda_e", "selected_at_grid_edge", "retained_rows",
                                                                   "neff_at_30_percent_identity", "retrieval_ceiling_reached")},
             **results[domain]}
@@ -353,12 +364,21 @@ def main() -> None:
                         "held_out_choice": "clusters in sha256(seed:domain:leader) order until >= 20% of hit rows; the focus cluster is never held out",
                         "purge": "training rows linked to any held-out row are dropped; a purged focus stays at weight zero as plmc's column anchor",
                         "criterion": "mean gap-ignoring per-site conditional log-likelihood on held-out rows; baseline is the train-fold independent-site profile, pseudocount 0.5",
-                        "reads_phenotype": False},
-              "plmc": {"lambda_h": LAMBDA_H, "max_iter": args.max_iter, "gap_ignoring": True, "weights": "80% identity reweighting",
+                        "reads_phenotype": False,
+                        "note": "selection reads held-out homolog sequence likelihood only; no phenotype, mutation panel or model output"},
+              "plmc": {"lambda_h_grid": list(h_grid), "max_iter": args.max_iter, "gap_ignoring": True, "weights": "80% identity reweighting",
                        "binary_sha256": sha256_file(PLMC),
                        "convergence": "plmc L-BFGS epsilon 1e-3 on ||g||/max(1,||x||); only the success status counts as converged"},
               "fit_script_sha256": code_sha, "msa_dir": str(MSA_DIR), "profile_npz_sha256": sha256_file(PROFILE_NPZ),
               "qualified_count": sum(t["qualification"]["qualified"] for t in table.values()), "domains": table}
+    if args.compare_dir:
+        earlier = json.loads((args.compare_dir / "qualification.json").read_text())
+        report["side_by_side"] = {"compared_with": str(args.compare_dir), "qualified_count_earlier": earlier["qualified_count"],
+                                  "domains": {d: {"earlier": {k: earlier["domains"][d]["qualification"].get(k) for k in
+                                                              ("selected_lambda_e", "held_out_gain_over_independent_site", "qualified")},
+                                                  "tuned": {k: table[d]["qualification"][k] for k in
+                                                            ("selected_lambda_e", "selected_lambda_h", "held_out_gain_over_independent_site", "qualified")}}
+                                              for d in table}}
     (args.out_dir / "qualification.json").write_text(json.dumps(report, indent=1) + "\n")
     manifest = {p.name: sha256_file(p) for p in sorted(args.out_dir.glob("*")) if p.is_file() and p.name != "manifest.json"}
     (args.out_dir / "manifest.json").write_text(json.dumps({"sha256": manifest}, indent=1) + "\n")

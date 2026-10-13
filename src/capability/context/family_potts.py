@@ -162,8 +162,11 @@ def save_family_model(directory: Path, domain: str, *, wildtype: str, h: np.ndar
     return {"npz": npz, "json": side}
 
 
-def load_family_model(domain: str, directory: Path = DEFAULT_DIRECTORY) -> FamilyModel:
-    """Load and validate one exported reference; any inconsistency raises ``ValueError``/``FileNotFoundError``."""
+def load_family_model(domain: str, directory: Path = DEFAULT_DIRECTORY, *, allow_unqualified: bool = False) -> FamilyModel:
+    """Load and validate one exported reference; any inconsistency raises ``ValueError``/``FileNotFoundError``.
+
+    An unqualified reference is refused unless the caller opts in with ``allow_unqualified=True``.
+    """
     directory = Path(directory)
     npz, side = directory / f"{domain}.npz", directory / f"{domain}.json"
     for path in (npz, side):
@@ -196,6 +199,9 @@ def load_family_model(domain: str, directory: Path = DEFAULT_DIRECTORY) -> Famil
     if not np.array_equal(J, J.transpose(1, 0, 3, 2)) or any(J[i, i].any() for i in range(length)):
         raise ValueError(f"{domain}: couplings are not symmetric with zero diagonal blocks")
     encode(wildtype)
+    if not sidecar["qualified"] and not allow_unqualified:
+        raise ValueError(f"{domain}: reference is not qualified ({'; '.join(sidecar['qualification_failures'])}); "
+                         "pass allow_unqualified=True to load it anyway")
     return FamilyModel(domain, wildtype, alphabet, h, J, freq, weight, log_profile(freq, weight),
                        np.arange(length), bool(sidecar["qualified"]),
                        tuple(sidecar["qualification_failures"]), sidecar)
