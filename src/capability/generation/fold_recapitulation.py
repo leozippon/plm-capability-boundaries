@@ -30,7 +30,14 @@ key, a wrong type or an inconsistent record is refused, never skipped.
 ``mean_step_entropy`` finite number >= 0: mean per-step entropy; null only for P, H.
 ``attempt_budget``  integer >= 1; identical for every record of a (model, domain, arm).
 
-``lambda`` must also be constant within a (model, domain, arm) cell.
+Optional strength pair ``lambda_fields`` / ``lambda_coupling`` (both or neither): the two
+doses of a guided setting, finite and >= 0. ``lambda`` is then their nominal single number
+(the coupling dose if the arm carries couplings, else the fields dose, else 0) and the pair
+must be consistent with the arm. The development sweep runs one arm at several strengths,
+so a **cell** is ``(model, domain, arm, lambda_fields, lambda_coupling)``; ``lambda`` and
+``attempt_budget`` must be constant within it. Without a pair the key carries ``None``s.
+The evaluation phase has one frozen strength per (model, arm): ``require_frozen_strength``
+refuses more than one, because reading sealed domains at several strengths is selection.
 
 Measured quantities are three distinct endpoints and are never combined:
 ``tm_score`` (primary), ``plddt_mean`` and ``ptm`` (secondary).
@@ -88,8 +95,42 @@ DEFAULT_PROTOCOL = Path("data/r6_constraint_response_20261013/diagnostic_protoco
 REFERENCE_SCHEMA = "e20_wild_type_references_v1"
 
 
+OPTIONAL_FIELDS = ("lambda_fields", "lambda_coupling")
+#: (fields dose positive?, coupling dose positive?) each arm must carry.
+STRENGTH_SHAPE = {
+    "N": (False, False), "P": (False, False), "H": (False, False),
+    "M": (True, False), "Pr": (True, False),
+    "C": (False, True), "Cx": (False, True), "Cd": (False, True),
+    "F": (True, True),
+}
+
+
 class ContractError(ValueError):
     """An input record violates the declared contract."""
+
+
+def strength_pair(row: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    return (row.get("lambda_fields"), row.get("lambda_coupling"))
+
+
+def cell_key(row: Mapping[str, Any]) -> tuple:
+    """(model, domain, arm, lambda_fields, lambda_coupling): the grouping unit everywhere."""
+
+    return (row["model"], row["domain"], row["arm"], *strength_pair(row))
+
+
+def require_frozen_strength(rows: Iterable[Mapping[str, Any]]) -> None:
+    """Evaluation guard: one strength pair per (model, arm), else the strength was not frozen."""
+
+    pairs: dict[tuple, set] = defaultdict(set)
+    for row in rows:
+        pairs[(row["model"], row["arm"])].add(strength_pair(row))
+    many = {k: sorted(v, key=str) for k, v in pairs.items() if len(v) > 1}
+    if many:
+        raise ContractError(
+            f"the strength was not frozen: {len(many)} (model, arm) carry more than one strength "
+            f"pair, e.g. {next(iter(many.items()))}; evaluation domains must not be read at several strengths"
+        )
 
 
 def domain_id(name: str) -> str:
@@ -147,7 +188,7 @@ def validate_records(rows: Sequence[Mapping[str, Any]], wild_types: Mapping[str,
         if not isinstance(raw, Mapping):
             raise ContractError(f"{where}: not an object")
         missing = [k for k in FIELDS if k not in raw]
-        extra = [k for k in raw if k not in FIELDS]
+        extra = [k for k in raw if k not in FIELDS and k not in OPTIONAL_FIELDS]
         if missing or extra:
             raise ContractError(f"{where}: missing fields {missing}, unknown fields {extra}")
         if raw["schema_version"] != SCHEMA_VERSION:
@@ -188,7 +229,18 @@ def validate_records(rows: Sequence[Mapping[str, Any]], wild_types: Mapping[str,
                 f"{where}: length {len(sequence)} != wild-type length {expected} for "
                 f"{row['domain']}; fixed-length generation is refused, not skipped"
             )
-        cell = (row["model"], row["domain"], arm)
+        pair = [row.get(k) for k in OPTIONAL_FIELDS]
+        if (pair[0] is None) != (pair[1] is None):
+            raise ContractError(f"{where}: lambda_fields and lambda_coupling come together or not at all")
+        if pair[0] is not None:
+            if not all(_finite(v) and v >= 0 for v in pair):
+                raise ContractError(f"{where}: strength pair must be finite and >= 0")
+            if (pair[0] > 0, pair[1] > 0) != STRENGTH_SHAPE[arm]:
+                raise ContractError(f"{where}: strength pair {tuple(pair)} inconsistent with arm {arm}")
+            nominal = pair[1] if pair[1] > 0 else pair[0]
+            if row["lambda"] != nominal:
+                raise ContractError(f"{where}: lambda {row['lambda']} is not the nominal dose {nominal} of the pair")
+        cell = cell_key(row)
         signature = (row["lambda"], row["attempt_budget"])
         if cells.setdefault(cell, signature) != signature:
             raise ContractError(f"{where}: lambda/attempt_budget differ within cell {cell}")
@@ -346,6 +398,7 @@ def measure_records(
         fold = load_structure(tree, rec["sequence"])
         mobile = fold_geometry.parse_ca_trace(Path(fold["pdb"]).read_text())
         row = {k: rec[k] for k in FIELDS if k not in ("schema_version", "sequence")}
+        row.update(zip(OPTIONAL_FIELDS, strength_pair(rec)))
         row.update(
             sequence=rec["sequence"], length=len(rec["sequence"]),
             tm_score=fold_geometry.tm_score(mobile, traces[d])["tm_score"],
@@ -365,11 +418,12 @@ def cell_controls(measured: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
 
     cells: dict[tuple, list] = defaultdict(list)
     for row in measured:
-        cells[(row["model"], row["domain"], row["arm"])].append(row)
+        cells[cell_key(row)].append(row)
     out = []
-    for (model, domain, arm), rows in sorted(cells.items()):
+    for (model, domain, arm, lambda_fields, lambda_coupling), rows in sorted(cells.items(), key=str):
         out.append({
             "model": model, "domain": domain, "arm": arm, "n": len(rows),
+            "lambda_fields": lambda_fields, "lambda_coupling": lambda_coupling,
             "attempt_budget": rows[0]["attempt_budget"], "lambda": rows[0]["lambda"],
             **(diversity([r["sequence"] for r in rows]) if len(rows) > 1 else {}),
             "n_above_novelty_ceiling": sum(r["max_msa_identity"] > NOVELTY_CEILING for r in rows),

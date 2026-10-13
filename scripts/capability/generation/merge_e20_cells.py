@@ -5,8 +5,9 @@ The guided-decoding runner writes one directory per (model, domain, arm, strengt
 ``run_structure_evidence.py`` one tree per fold shard, while ``build_e20_fold_cohort.py`` and
 ``measure_fold_recapitulation.py`` each take one records file and one structure tree. Two modes:
 
-``--cells DIR...``
-    Concatenate the cells' ``sequences.jsonl`` into ``records.jsonl``. Every cell must carry a
+``--cells PATH...``
+    Each PATH is a cell directory or a parent directory whose children are cells; a cell is a
+    directory carrying ``guided_decoding_pool.json`` (other children are ignored). Concatenate the cells' ``sequences.jsonl`` into ``records.jsonl``. Every cell must carry a
     complete ``guided_decoding_pool.json`` whose sequence digest matches, all cells must share one
     protocol digest and distinct stream seeds, and the joined records must satisfy the
     ``e20_generated_sequence_v1`` contract. With ``--protocol`` and ``--role`` a domain outside the
@@ -35,12 +36,31 @@ from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.generation import fold_recapitulation as fr  # noqa: E402
 from src.capability.generation import structure_evidence as se  # noqa: E402
 
+SCALE = "component_scale.json"
 RECORDS_COMPLETION = "e20_merged_records.json"
 TREE_COMPLETION = "e20_merged_structures.json"
 
 
+def discover_cells(paths: list[Path]) -> list[Path]:
+    """Expand parent directories into the cell directories beneath them (sorted, unique)."""
+
+    cells: list[Path] = []
+    for path in paths:
+        if (path / "guided_decoding_pool.json").is_file():
+            cells.append(path)
+        elif path.is_dir():
+            cells.extend(sorted(c for c in path.iterdir() if (c / "guided_decoding_pool.json").is_file()))
+        else:
+            raise FileNotFoundError(f"--cells path {path} is not a directory")
+    if not cells:
+        raise ValueError(f"no cell (directory with guided_decoding_pool.json) under {[str(p) for p in paths]}")
+    return list(dict.fromkeys(cells))
+
+
 def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], roles: dict[str, str] | None, role: str | None) -> dict:
+    cells = discover_cells(cells)
     lines: list[str] = []
+    scale: list[dict] = []
     protocols, seeds, tally = set(), [], Counter()
     for cell in cells:
         completion = json.loads((cell / "guided_decoding_pool.json").read_text())
@@ -55,7 +75,12 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         tally[(info["model_arm"], info["domain"], info["arm_code"], info["lambda_fields"], info["lambda_coupling"])] += 1
         if roles is not None and roles[fr.domain_id(info["domain"])] != role:
             raise ValueError(f"{cell}: domain {info['domain']} is not a {role} domain")
-        lines.extend(line + "\n" for line in sequences.read_text().splitlines() if line.strip())
+        pair = {"lambda_fields": info["lambda_fields"], "lambda_coupling": info["lambda_coupling"]}
+        scale.append({"model": info["model_arm"], "domain": fr.domain_id(info["domain"]), "arm": info["arm_code"],
+                      **pair, "component_scale": completion["component_scale"]})
+        for line in sequences.read_text().splitlines():
+            if line.strip():
+                lines.append(json.dumps({**json.loads(line), **pair}) + "\n")
     if len(protocols) != 1:
         raise ValueError(f"cells carry {len(protocols)} different protocol digests")
     if len(set(seeds)) != len(seeds):
@@ -68,6 +93,9 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
     records = out / "records.jsonl"
     records.write_text("".join(lines))
     validated = fr.load_records(records, wild_types)
+    if role == "evaluation":
+        fr.require_frozen_strength(validated)
+    write_json(out / SCALE, scale)
     write_json(out / RECORDS_COMPLETION, {
         "schema_version": "e20_merged_records_v1", "protocol_sha256": protocols.pop(),
         "cells": len(cells), "records": len(validated), "records_sha256": sha256_file(records),
@@ -105,7 +133,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cpu", help="accepted and unused; CPU-only")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--cells", type=Path, nargs="+")
+    mode.add_argument("--cells", type=Path, nargs="+", help="cell directories or a parent directory of cells")
     mode.add_argument("--shards", type=Path, nargs="+")
     parser.add_argument("--wild-type-fasta", type=Path, help="query_12.faa; required with --cells")
     parser.add_argument("--protocol", type=Path, help="diagnostic_protocol.json; with --role")

@@ -38,7 +38,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor, paired_group_bootstrap
-from .fold_recapitulation import NOVELTY_CEILING
+from .fold_recapitulation import NOVELTY_CEILING, cell_key, require_frozen_strength
 
 ENDPOINTS = ("tm_score", "plddt_mean", "ptm")  # first is primary
 FACTORIAL_ARMS = ("N", "M", "C", "F")
@@ -130,11 +130,13 @@ def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role
     on any refusal when role is evaluation).
     """
 
-    if role not in ("development", "evaluation"):
-        raise ValueError(f"role must be development or evaluation, not {role!r}")
+    if role != "evaluation":
+        raise ValueError("arm contrasts are evaluation-role only; the development role selects a strength "
+                         "with analyse_development and reports no contrast or cross-domain interval")
     rows = [r for r in rows if roles[r["domain"]] == role]
     if not rows:
         raise ValueError(f"no records in role {role}")
+    require_frozen_strength(rows)
     domains = sorted({r["domain"] for r in rows})
     models = sorted({r["model"] for r in rows})
     result: dict[str, Any] = {
@@ -169,3 +171,59 @@ def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role
         if c.get("interval_refused") and (c["n_domains"] > 0 or c["contrast"] in FACTORIAL)
     ]
     return result
+
+
+def analyse_development(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str],
+                        component_scale: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per-setting endpoint means and the strength each (model, arm) selects.
+
+    A setting is (model, arm, lambda_fields, lambda_coupling). Its pooled value is
+    the mean of its per-domain cell means (domain-weighted, sequences never pooled
+    across domains). Selection is the setting maximising the pooled primary
+    endpoint, over settings covering every development domain present, per
+    stratum. Four domains are below the independence floor, so no contrast and no
+    interval is produced here: development selects a strength and nothing else.
+    """
+
+    rows = [r for r in rows if roles[r["domain"]] == "development"]
+    if not rows:
+        raise ValueError("no records in role development")
+    domains = sorted({r["domain"] for r in rows})
+    out: dict[str, Any] = {
+        "role": "development", "domains": domains, "primary_endpoint": ENDPOINTS[0],
+        "novelty_ceiling_percent": NOVELTY_CEILING, "settings": [], "selection": {},
+        "component_scale": list(component_scale),
+        "note": "selection only; no arm contrast and no cross-domain interval at four domains",
+    }
+    for stratum, restrict in (("unstratified", False), ("novelty_restricted", True)):
+        cells: dict[tuple, dict[str, dict]] = defaultdict(lambda: defaultdict(dict))
+        for endpoint in ENDPOINTS:
+            groups: dict[tuple, list[float]] = defaultdict(list)
+            for r in rows:
+                if restrict and r["max_msa_identity"] > NOVELTY_CEILING:
+                    continue
+                groups[cell_key(r)].append(float(r[endpoint]))
+            for (model, domain, arm, lf, lc), v in groups.items():
+                cells[(model, arm, lf, lc)][endpoint][domain] = (float(np.mean(v)), len(v))
+        for setting, per_endpoint in sorted(cells.items(), key=str):
+            model, arm, lf, lc = setting
+            entry = {"model": model, "arm": arm, "lambda_fields": lf, "lambda_coupling": lc,
+                     "stratum": stratum, "n_domains": len(per_endpoint[ENDPOINTS[0]]),
+                     "complete": set(per_endpoint[ENDPOINTS[0]]) == set(domains), "endpoints": {}}
+            for endpoint, per_domain in per_endpoint.items():
+                entry["endpoints"][endpoint] = {
+                    "per_domain_mean": {d: m for d, (m, _) in sorted(per_domain.items())},
+                    "per_domain_n": {d: n for d, (_, n) in sorted(per_domain.items())},
+                    "pooled_over_domains": float(np.mean([m for m, _ in per_domain.values()])),
+                }
+            out["settings"].append(entry)
+        best: dict[tuple, dict] = {}
+        for e in out["settings"]:
+            if e["stratum"] != stratum or not e["complete"]:
+                continue
+            key = (e["model"], e["arm"])
+            value = e["endpoints"][ENDPOINTS[0]]["pooled_over_domains"]
+            if key not in best or value > best[key]["value"]:
+                best[key] = {"lambda_fields": e["lambda_fields"], "lambda_coupling": e["lambda_coupling"], "value": value}
+        out["selection"][stratum] = {f"{m}|{a}": v for (m, a), v in sorted(best.items())}
+    return out

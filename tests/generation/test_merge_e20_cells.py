@@ -25,7 +25,7 @@ def _cell(root, name, seed, rows, arm_code="N", fields=0.0, domain="D0", protoco
     body = "".join(json.dumps(r) + "\n" for r in rows)
     (cell / "sequences.jsonl").write_text(body)
     (cell / "guided_decoding_pool.json").write_text(json.dumps({
-        "status": "complete", "protocol": {"sha256": protocol},
+        "status": "complete", "component_scale": {"pool": {"h": 1.0}}, "protocol": {"sha256": protocol},
         "artifacts": {"sequences": {"file": "sequences.jsonl", "sha256": sha256(body.encode()).hexdigest()}},
         "cell": {"model_arm": "x", "domain": domain, "arm_code": arm_code, "lambda_fields": fields,
                  "lambda_coupling": 0.0, "stream_seed": seed}}))
@@ -67,3 +67,25 @@ def test_shards_join_and_refuse_overlap(tmp_path):
     assert se.tree_signature(tmp_path / "t") == se.contract_signature({"k": 1})
     with pytest.raises(ValueError, match="two shards"):
         m.merge_shards([s0, _shard(tmp_path, "s2", 1, ["aa"])], tmp_path / "t2")
+
+
+def test_parent_directory_discovery_and_strength_pair(tmp_path):
+    parent = tmp_path / "run"
+    _cell(parent, "a", 1, [_row("a1")])
+    _cell(parent, "b", 2, [_row("b1", arm="M", lam=0.5)], arm_code="M", fields=0.5)
+    _cell(parent, "c", 3, [_row("c1", arm="M", lam=0.25)], arm_code="M", fields=0.25)
+    (parent / "e20dev_cohort_cpu").mkdir()      # not cells: no completion record
+    (parent / "e20dev_fold_shard0_gpu0" / "objects").mkdir(parents=True)
+    (parent / "e20_merged_records.json").write_text("{}")
+    assert [c.name for c in m.discover_cells([parent])] == ["a", "b", "c"]
+    summary = m.merge_records([parent], tmp_path / "out", WILD, None, None)
+    assert summary == {"cells": 3, "records": 3}   # two strengths of arm M validate together
+    rows = [json.loads(x) for x in (tmp_path / "out" / "records.jsonl").read_text().splitlines()]
+    assert {(r["arm"], r["lambda_fields"], r["lambda_coupling"]) for r in rows} == {("N", 0.0, 0.0), ("M", 0.5, 0.0), ("M", 0.25, 0.0)}
+    assert len(json.loads((tmp_path / "out" / "component_scale.json").read_text())) == 3
+    # the explicit-list form still works, and evaluation refuses several strengths of one arm
+    assert m.merge_records([parent / "a", parent / "b"], tmp_path / "o2", WILD, None, None)["cells"] == 2
+    with pytest.raises(ValueError, match="not frozen"):
+        m.merge_records([parent], tmp_path / "o3", WILD, {"D0": "evaluation"}, "evaluation")
+    with pytest.raises(ValueError, match="no cell"):
+        m.discover_cells([tmp_path / "out"])

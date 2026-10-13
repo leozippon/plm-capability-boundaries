@@ -224,3 +224,59 @@ def test_new_arms_accepted_and_c_minus_pr_emitted():
     pw = fri.analyse(_rows(v), roles=ROLES, role="evaluation")["results"]["m|tm_score|unstratified"]["pairwise"]
     assert pw["C-Pr"]["mean_over_domains"] == pytest.approx(0.1)
     assert pw["Pr-N"]["mean_over_domains"] == pytest.approx(0.2)
+
+
+def _pair(i, arm, lf, lc, lam):
+    return _rec(i, arm=arm, **{"lambda": lam, "lambda_fields": lf, "lambda_coupling": lc})
+
+
+def test_two_strengths_of_one_arm_validate_and_cells_are_keyed_by_pair():
+    recs = [_pair(1, "M", 0.25, 0.0, 0.25), _pair(2, "M", 0.5, 0.0, 0.5), _pair(3, "F", 0.25, 0.5, 0.5),
+            _pair(4, "F", 0.5, 0.5, 0.5)]  # F: equal nominal lambda, distinct pairs
+    out = fr.validate_records(recs, WT)
+    assert len({fr.cell_key(r) for r in out}) == 4
+    # without a pair the old rule stands: one lambda per cell
+    with pytest.raises(fr.ContractError, match="within cell"):
+        fr.validate_records([_rec(1, arm="M"), _rec(2, arm="M", **{"lambda": 2.0})], WT)
+    with pytest.raises(fr.ContractError, match="inconsistent with arm"):
+        fr.validate_records([_pair(1, "C", 0.5, 0.5, 0.5)], WT)
+    with pytest.raises(fr.ContractError, match="together"):
+        fr.validate_records([_rec(1, arm="M", lambda_fields=0.5)], WT)
+    with pytest.raises(fr.ContractError, match="nominal"):
+        fr.validate_records([_pair(1, "M", 0.5, 0.0, 0.25)], WT)
+    # attempt budgets still must agree inside one pair-keyed cell
+    with pytest.raises(fr.ContractError, match="within cell"):
+        fr.validate_records([_pair(1, "M", 0.5, 0.0, 0.5), _pair(2, "M", 0.5, 0.0, 0.5) | {"attempt_budget": 9}], WT)
+
+
+def test_evaluation_refuses_several_strengths_of_an_arm():
+    recs = fr.validate_records([_pair(1, "M", 0.25, 0.0, 0.25), _pair(2, "M", 0.5, 0.0, 0.5)], WT)
+    with pytest.raises(fr.ContractError, match="not frozen"):
+        fr.require_frozen_strength(recs)
+    fr.require_frozen_strength(recs[:1] + [_pair(3, "C", 0.0, 0.5, 0.5)])
+    rows = _rows({"N": [0.2] * 8, "C": [0.4] * 8, "M": [0.3] * 8, "F": [0.7] * 8})
+    for r in rows:
+        r["lambda_fields"], r["lambda_coupling"] = (0.25, 0.0)
+    rows.append(dict(rows[0], arm="M", lambda_fields=0.5, lambda_coupling=0.0))
+    with pytest.raises(fr.ContractError, match="not frozen"):
+        fri.analyse(rows, roles=ROLES, role="evaluation")
+
+
+def test_development_selects_a_strength_without_contrasts():
+    roles = {f"d{k}": "development" for k in range(4)}
+    rows = []
+    for k in range(4):
+        for lf, v in ((0.25, 0.3), (0.5, 0.6), (1.0, 0.4)):
+            rows.append({"model": "m", "domain": f"d{k}", "arm": "M", "lambda_fields": lf, "lambda_coupling": 0.0,
+                         "tm_score": v + 0.01 * k, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0})
+        rows.append({"model": "m", "domain": f"d{k}", "arm": "N", "lambda_fields": 0.0, "lambda_coupling": 0.0,
+                     "tm_score": 0.2, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0})
+    out = fri.analyse_development(rows, roles=roles, component_scale=[{"model": "m"}])
+    sel = out["selection"]["unstratified"]
+    assert sel["m|M"]["lambda_fields"] == 0.5 and sel["m|N"]["lambda_fields"] == 0.0
+    best = [e for e in out["settings"] if e["stratum"] == "unstratified" and e["arm"] == "M" and e["lambda_fields"] == 0.5][0]
+    assert best["endpoints"]["tm_score"]["pooled_over_domains"] == pytest.approx(0.6 + 0.015)
+    assert set(best["endpoints"]) == {"tm_score", "plddt_mean", "ptm"} and out["component_scale"] == [{"model": "m"}]
+    assert "factorial" not in json.dumps(out) and "interval" not in json.dumps(out).replace("cross-domain interval", "")
+    with pytest.raises(ValueError, match="evaluation-role only"):
+        fri.analyse(rows, roles=roles, role="development")
