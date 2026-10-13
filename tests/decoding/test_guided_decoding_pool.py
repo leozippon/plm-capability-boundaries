@@ -148,7 +148,7 @@ def test_the_parser_is_flat_and_accepts_the_queue_argument_order():
         ({"strength_grid": []}, "strength_grid"),
         ({"strength_grid": [{"lambda_fields": 0.0}]}, "lambda_fields and"),
         ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": -1.0}]}, "non-negative"),
-        ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": 2.0}]}, "strength axis"),
+        ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": 3.0}]}, "strength axes"),
         ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": 1.0},
                             {"lambda_fields": 0.0, "lambda_coupling": 1.0}]}, "repeats"),
         ({"seed_streams": [1000, 1003]}, "disjoint"),
@@ -291,10 +291,13 @@ def test_a_contract_that_misclassifies_an_arm_is_refused(monkeypatch):
 
 
 def test_the_declared_strength_axis_and_development_grid():
-    assert stage.STRENGTH_AXIS == (0.0, 0.25, 0.5, 1.0)
-    assert len(stage.DEVELOPMENT_STRENGTH_GRID) == 16
+    assert stage.FIELDS_AXIS == (0.0, 0.25, 0.5, 1.0, 2.0)
+    assert stage.COUPLING_AXIS == (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+    assert len(stage.DEVELOPMENT_STRENGTH_GRID) == 40
     assert {"lambda_fields": 0.0, "lambda_coupling": 0.0} in stage.DEVELOPMENT_STRENGTH_GRID
     assert {"lambda_fields": 1.0, "lambda_coupling": 1.0} in stage.DEVELOPMENT_STRENGTH_GRID
+    assert {"lambda_fields": 2.0, "lambda_coupling": 16.0} in stage.DEVELOPMENT_STRENGTH_GRID
+    assert {"lambda_fields": 4.0, "lambda_coupling": 1.0} not in stage.DEVELOPMENT_STRENGTH_GRID
 
 
 # ------------------------------------------------------------- the pool summary

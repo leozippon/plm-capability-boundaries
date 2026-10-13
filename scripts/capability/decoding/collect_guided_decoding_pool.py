@@ -38,7 +38,7 @@ Protocol schema (``coupling_guided_generation_v1``)
     function of the recorded protocol and not of which cell happened to run.
 ``strength_grid``
     The declared dose grid over the pair ``{lambda_fields, lambda_coupling}``,
-    distinct and drawn from :data:`STRENGTH_AXIS`; the full development sweep is
+    distinct and drawn from :data:`FIELDS_AXIS` and :data:`COUPLING_AXIS`; the full admissible set is
     :data:`DEVELOPMENT_STRENGTH_GRID`. ``--strength-index`` selects one grid point
     by position; a free-floating value cannot be passed. An arm is refused a
     non-zero strength on a component it does not carry, so the manifest pairs each
@@ -144,16 +144,18 @@ DIAGNOSTICS_FILENAME = "sequence_diagnostics.jsonl"
 ALLOWED_MODEL_ARMS = ("protgpt2", "progen2-medium")
 SETTLED_NATIVE_CONTRACT: dict[str, Any] = {"batch_size": 1, "budget": 1024, "dtype": "float32"}
 
-#: The declared strength axis. Both scalars are swept over it on the development
-#: domains, so ``native`` sits at ``(0, 0)`` and the exact Potts prefix conditional
-#: at ``(1, 1)``; an evaluation protocol declares the single frozen point chosen
-#: there. A protocol value off this axis is refused rather than silently swept, so
-#: a typo cannot become a dose.
-STRENGTH_AXIS: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0)
-#: The full development grid, as the sweep schedules it.
+#: The declared strength axes, one per component. The coupling term is an order of magnitude
+#: weaker per unit than the fields term on the qualified (heavily shrunk) fits, so its axis
+#: reaches 16 while the fields axis stops at 2. ``native`` sits at ``(0, 0)`` and the exact Potts
+#: prefix conditional at ``(1, 1)``; an evaluation protocol declares the single frozen point
+#: chosen on the development domains. A protocol value off its axis is refused rather than
+#: silently swept, so a typo cannot become a dose.
+FIELDS_AXIS: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0, 2.0)
+COUPLING_AXIS: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+#: Every pair the axes admit; a protocol declares the subset it schedules.
 DEVELOPMENT_STRENGTH_GRID: tuple[dict[str, float], ...] = tuple(
     {"lambda_fields": fields, "lambda_coupling": coupling}
-    for fields in STRENGTH_AXIS for coupling in STRENGTH_AXIS
+    for fields in FIELDS_AXIS for coupling in COUPLING_AXIS
 )
 
 
@@ -375,12 +377,12 @@ def validate_protocol(
                 "lambda_coupling"
             )
         strength = GuidanceStrength(entry["lambda_fields"], entry["lambda_coupling"])
-        off_axis = [value for value in (strength.fields, strength.coupling)
-                    if value not in STRENGTH_AXIS]
+        off_axis = [value for value, axis in ((strength.fields, FIELDS_AXIS), (strength.coupling, COUPLING_AXIS))
+                    if value not in axis]
         if off_axis:
             raise ValueError(
                 f"protocol.strength_grid holds {off_axis}, which is off the declared strength "
-                f"axis {list(STRENGTH_AXIS)}"
+                f"axes fields {list(FIELDS_AXIS)} and coupling {list(COUPLING_AXIS)}"
             )
         strengths.append(strength)
     if len(set(strengths)) != len(strengths):

@@ -19,16 +19,16 @@ def _row(i, domain="D0", arm="N", lam=0.0):
             "guidance_score": None if arm == "N" else 0.5, "mean_step_entropy": 1.0, "attempt_budget": 1}
 
 
-def _cell(root, name, seed, rows, arm_code="N", fields=0.0, domain="D0", protocol="p"):
+def _cell(root, name, seed, rows, arm_code="N", fields=0.0, domain="D0", protocol="p", batch=2):
     cell = root / name
     cell.mkdir(parents=True)
     body = "".join(json.dumps(r) + "\n" for r in rows)
     (cell / "sequences.jsonl").write_text(body)
     (cell / "guided_decoding_pool.json").write_text(json.dumps({
-        "status": "complete", "component_scale": {"pool": {"h": 1.0}}, "protocol": {"sha256": protocol},
+        "status": "complete", "sampling": {"batch_size": batch}, "native_contract": {"budget": 1024}, "component_scale": {"pool": {"h": 1.0}}, "protocol": {"sha256": protocol},
         "artifacts": {"sequences": {"file": "sequences.jsonl", "sha256": sha256(body.encode()).hexdigest()}},
         "cell": {"model_arm": "x", "domain": domain, "arm_code": arm_code, "lambda_fields": fields,
-                 "lambda_coupling": 0.0, "stream_seed": seed}}))
+                 "lambda_coupling": 0.0, "stream_seed": seed, "sequences_per_cell": 1, "attempt_budget": 1}}))
     return cell
 
 
@@ -39,8 +39,14 @@ def test_records_join_and_refusals(tmp_path):
     assert summary == {"cells": 2, "records": 2}
     with pytest.raises(ValueError, match="stream seed"):
         m.merge_records([a, _cell(tmp_path, "c", 1, [_row("c1")], arm_code="M", fields=0.5)], tmp_path / "o2", WILD, None, None)
-    with pytest.raises(ValueError, match="protocol digests"):
-        m.merge_records([a, _cell(tmp_path, "d", 3, [_row("d1")], protocol="q", fields=0.25)], tmp_path / "o3", WILD, None, None)
+    # a second protocol (an extension run) is accepted and both digests are recorded; a different recipe is not
+    e = _cell(tmp_path, "e", 4, [_row("e1", arm="M", lam=0.25)], arm_code="M", fields=0.25, protocol="q")
+    m.merge_records([a, e], tmp_path / "o3", WILD, None, None)
+    assert json.loads((tmp_path / "o3" / m.RECORDS_COMPLETION).read_text())["protocol_sha256"] == ["p", "q"]
+    with pytest.raises(ValueError, match="different sampling recipes"):
+        m.merge_records([a, _cell(tmp_path, "d", 3, [_row("d1")], fields=0.25, batch=9)], tmp_path / "o6", WILD, None, None)
+    with pytest.raises(ValueError, match="expected 3"):
+        m.merge_records([tmp_path], tmp_path / "o7", WILD, None, None, expect_cells=3)
     with pytest.raises(ValueError, match="not a evaluation domain"):
         m.merge_records([a], tmp_path / "o4", WILD, {"D0": "development"}, "evaluation")
     (a / "sequences.jsonl").write_text("tampered\n")

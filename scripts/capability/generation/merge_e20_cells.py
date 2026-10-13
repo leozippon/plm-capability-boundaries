@@ -8,8 +8,9 @@ The guided-decoding runner writes one directory per (model, domain, arm, strengt
 ``--cells PATH...``
     Each PATH is a cell directory or a parent directory whose children are cells; a cell is a
     directory carrying ``guided_decoding_pool.json`` (other children are ignored). Concatenate the cells' ``sequences.jsonl`` into ``records.jsonl``. Every cell must carry a
-    complete ``guided_decoding_pool.json`` whose sequence digest matches, all cells must share one
-    protocol digest and distinct stream seeds, and the joined records must satisfy the
+    complete ``guided_decoding_pool.json`` whose sequence digest matches, all cells must share
+    one sampling recipe, pool size and native contract (they may come from several protocols, whose
+    digests are recorded) and carry distinct stream seeds, and the joined records must satisfy the
     ``e20_generated_sequence_v1`` contract. With ``--protocol`` and ``--role`` a domain outside the
     named role is refused.
 ``--shards DIR...``
@@ -57,11 +58,14 @@ def discover_cells(paths: list[Path]) -> list[Path]:
     return list(dict.fromkeys(cells))
 
 
-def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], roles: dict[str, str] | None, role: str | None) -> dict:
+def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], roles: dict[str, str] | None, role: str | None,
+                  expect_cells: int | None = None) -> dict:
     cells = discover_cells(cells)
+    if expect_cells is not None and len(cells) != expect_cells:
+        raise ValueError(f"found {len(cells)} complete cells, expected {expect_cells}; a failed cell is not discovered")
     lines: list[str] = []
     scale: list[dict] = []
-    protocols, seeds, tally = set(), [], Counter()
+    protocols, recipes, seeds, tally = set(), set(), [], Counter()
     for cell in cells:
         completion = json.loads((cell / "guided_decoding_pool.json").read_text())
         if completion.get("status") != "complete":
@@ -70,6 +74,9 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         if sha256_file(sequences) != completion["artifacts"]["sequences"]["sha256"]:
             raise ValueError(f"{cell}: sequences.jsonl differs from its completion record")
         protocols.add(completion["protocol"]["sha256"])
+        recipes.add(json.dumps([completion["sampling"], completion["native_contract"],
+                                completion["cell"]["sequences_per_cell"], completion["cell"]["attempt_budget"]],
+                               sort_keys=True))
         info = completion["cell"]
         seeds.append(info["stream_seed"])
         tally[(info["model_arm"], info["domain"], info["arm_code"], info["lambda_fields"], info["lambda_coupling"])] += 1
@@ -81,8 +88,8 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         for line in sequences.read_text().splitlines():
             if line.strip():
                 lines.append(json.dumps({**json.loads(line), **pair}) + "\n")
-    if len(protocols) != 1:
-        raise ValueError(f"cells carry {len(protocols)} different protocol digests")
+    if len(recipes) != 1:
+        raise ValueError(f"cells carry {len(recipes)} different sampling recipes, pool sizes or native contracts")
     if len(set(seeds)) != len(seeds):
         raise ValueError("two cells share a stream seed")
     duplicated = [key for key, count in tally.items() if count > 1]
@@ -97,7 +104,7 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         fr.require_frozen_strength(validated)
     write_json(out / SCALE, scale)
     write_json(out / RECORDS_COMPLETION, {
-        "schema_version": "e20_merged_records_v1", "protocol_sha256": protocols.pop(),
+        "schema_version": "e20_merged_records_v1", "protocol_sha256": sorted(protocols),
         "cells": len(cells), "records": len(validated), "records_sha256": sha256_file(records),
         "settings_per_model_domain": {f"{m}|{d}": n for (m, d), n in sorted(per_group.items())},
     })
@@ -135,6 +142,7 @@ def main(argv: list[str] | None = None) -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--cells", type=Path, nargs="+", help="cell directories or a parent directory of cells")
     mode.add_argument("--shards", type=Path, nargs="+")
+    parser.add_argument("--expect-cells", type=int, help="with --cells: refuse unless exactly this many cells are found")
     parser.add_argument("--wild-type-fasta", type=Path, help="query_12.faa; required with --cells")
     parser.add_argument("--protocol", type=Path, help="diagnostic_protocol.json; with --role")
     parser.add_argument("--role", choices=("development", "evaluation"))
@@ -143,7 +151,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.wild_type_fasta is None or bool(args.protocol) != bool(args.role):
             parser.error("--cells needs --wild-type-fasta, and --protocol together with --role")
         roles = fr.load_roles(args.protocol) if args.protocol else None
-        summary = merge_records(args.cells, args.out, fr.load_wild_types(args.wild_type_fasta), roles, args.role)
+        summary = merge_records(args.cells, args.out, fr.load_wild_types(args.wild_type_fasta), roles, args.role, args.expect_cells)
     else:
         summary = merge_shards(args.shards, args.out)
     print(json.dumps(summary))
