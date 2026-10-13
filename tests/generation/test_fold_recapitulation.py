@@ -213,3 +213,14 @@ def test_asset_resolution_does_not_depend_on_module_location(tmp_path):
         fr.load_msa(tmp_path / "nomsa", "D1", 10)
     with pytest.raises(FileNotFoundError, match="--protocol"):
         fr.load_roles(tmp_path / "nope.json")
+
+
+def test_new_arms_accepted_and_c_minus_pr_emitted():
+    recs = [_rec(i, arm=a) for i, a in enumerate(["Pr", "Cd", "Cx"], 1)]
+    assert len(fr.validate_records(recs, WT)) == 3
+    with pytest.raises(fr.ContractError, match="lambda"):
+        fr.validate_records([_rec(1, arm="Pr", **{"lambda": 0.0})], WT)
+    v = {"N": [0.2] * 8, "C": [0.5] * 8, "M": [0.3] * 8, "F": [0.7] * 8, "Pr": [0.4] * 8}
+    pw = fri.analyse(_rows(v), roles=ROLES, role="evaluation")["results"]["m|tm_score|unstratified"]["pairwise"]
+    assert pw["C-Pr"]["mean_over_domains"] == pytest.approx(0.1)
+    assert pw["Pr-N"]["mean_over_domains"] == pytest.approx(0.2)

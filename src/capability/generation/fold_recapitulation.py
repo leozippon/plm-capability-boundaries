@@ -17,8 +17,12 @@ key, a wrong type or an inconsistent record is refused, never skipped.
 ``id``              unique non-empty string.
 ``domain``          one of the twelve domains (``1E0L`` or ``1E0L.pdb``).
 ``model``           non-empty string (the PLM; ``none`` for arms P and H).
-``arm``             one of ``N M C F Cx P H`` (Cx is the wrong-coupling control).
-``lambda``          finite number; exactly 0 for N, P, H and > 0 for M, C, F, Cx.
+``arm``             one of ``N M C F Pr Cx Cd P H``. Factorial: N native, M Potts
+                    fields only, C couplings only, F fields and couplings. Outside it:
+                    Pr independent-site profile guidance, Cx permuted-column couplings
+                    (primary incorrect-constraint control), Cd cross-domain couplings
+                    (secondary), P Potts-only sampling, H held-out natural rows.
+``lambda``          finite number; exactly 0 for N, P, H and > 0 for M, C, F, Pr, Cx, Cd.
 ``seed``            integer.
 ``sequence``        canonical 20-letter residues, length equal to the wild type.
 ``native_loglik``   finite number: full-sequence native log-likelihood; null only for P, H.
@@ -53,8 +57,8 @@ SCHEMA_VERSION = "e20_generated_sequence_v1"
 #: Potts; tests assert both, and no vector built here may be mixed with those.
 AA = se.AA_ORDER
 assert AA == "ARNDCQEGHILKMFPSTWYV"
-ARMS = ("N", "M", "C", "F", "Cx", "P", "H")
-GUIDED_ARMS = ("M", "C", "F", "Cx")
+ARMS = ("N", "M", "C", "F", "Pr", "Cx", "Cd", "P", "H")
+GUIDED_ARMS = ("M", "C", "F", "Pr", "Cx", "Cd")
 FIELDS = (
     "schema_version", "id", "domain", "model", "arm", "lambda", "seed", "sequence",
     "native_loglik", "guidance_score", "mean_step_entropy", "attempt_budget",

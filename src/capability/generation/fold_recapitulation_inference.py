@@ -13,12 +13,14 @@ The four main guidance arms are a 2x2 factorial in guidance content::
     no fields        N              C
     fields           M              F
 
-so the claim sits on the increments, not on the arms: simple effects C-N, M-N,
+(M is the Potts fields h alone, so every cell comes from one model's own
+decomposition) so the claim sits on the increments, not on the arms: simple effects C-N, M-N,
 F-M, F-C; main effect of couplings ((C-N)+(F-M))/2; main effect of fields
 ((M-N)+(F-C))/2; interaction (F-M)-(C-N). N is the (0,0) floor reference: a large
 C-N or M-N alone is "guidance beats unconditional generation", not the finding.
-No composite score and no ranking of arms is produced. Cx is compared against C
-(specificity); P and H are external references, contrasted against N only.
+No composite score and no ranking of arms is produced. Outside the factorial,
+pairwise only: Pr (profile guidance), Cx (permuted-column couplings) and Cd
+(cross-domain couplings) each against N and against C; P and H against N.
 
 Every contrast, for every endpoint (tm_score primary; plddt_mean and ptm
 secondary, never combined), is emitted twice: unstratified, and restricted to
@@ -55,8 +57,12 @@ FACTORIAL = {
     "interaction": {"F": 1, "M": -1, "C": -1, "N": 1},
 }
 PAIRWISE = {
+    "Pr-N": {"Pr": 1, "N": -1},
+    "C-Pr": {"C": 1, "Pr": -1},  # against established practice (profile guidance)
     "Cx-N": {"Cx": 1, "N": -1},
     "C-Cx": {"C": 1, "Cx": -1},
+    "Cd-N": {"Cd": 1, "N": -1},
+    "C-Cd": {"C": 1, "Cd": -1},
     "P-N": {"P": 1, "N": -1},
     "H-N": {"H": 1, "N": -1},
 }
