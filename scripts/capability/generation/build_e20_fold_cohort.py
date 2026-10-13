@@ -32,16 +32,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cpu", help="accepted and unused; CPU-only")
+    parser.add_argument("--wild-type-fasta", type=Path, default=REPO_ROOT / fr.DEFAULT_WT_FASTA,
+                        help="query_12.faa; data/ is not in the pod snapshot, pass the staged path there")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--wild-type", action="store_true")
     source.add_argument("--records", type=Path)
     args = parser.parse_args()
-    wild = fr.load_wild_types(REPO_ROOT)
+    wild = fr.load_wild_types(args.wild_type_fasta)
     if args.wild_type:
         sequences = {f"{d}_wild_type": s for d, s in sorted(wild.items())}
-        inputs = {"wild_type_fasta": sha256_file(REPO_ROOT / fr.WT_FASTA)}
+        inputs = {"wild_type_fasta": sha256_file(args.wild_type_fasta)}
     else:
-        records = fr.load_records(args.records, wild)
+        records = fr.load_records(fr.require_asset(args.records, "--records"), wild)
         unique = sorted({r["sequence"] for r in records})
         sequences = {se.sequence_digest(s)[:16]: s for s in unique}
         inputs = {"records": sha256_file(args.records)}

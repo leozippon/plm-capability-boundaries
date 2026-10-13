@@ -186,3 +186,30 @@ def test_measure_records_end_to_end_on_synthetic_trees(tmp_path):
     (tmp_path / "refs" / "D1.pdb").write_text(_pdb(_helix(10, 1.0)))
     with pytest.raises(ValueError, match="hash"):
         fr.load_reference_manifest(tmp_path / "refs" / "m.json")
+
+
+def test_asset_resolution_does_not_depend_on_module_location(tmp_path):
+    """The pod failure: data/ is not beside the code. Assets come from the options only."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    fasta = tmp_path / "staged" / "wt.faa"
+    fasta.parent.mkdir()
+    names = ["1E0L", "1F0M", "1IFY", "1K1V", "1UFM", "1V1C", "2K1B", "2KWH", "2LGW", "2LVN", "3DKM", "3L1X"]
+    fasta.write_text("".join(f">{n}.pdb\n{'ACDEFGHIKL'}\n" for n in names))
+    stage = root / "scripts/capability/generation/build_e20_fold_cohort.py"
+    out = tmp_path / "out"
+    run = subprocess.run([sys.executable, str(stage), "--device", "cpu", "--out", str(out), "--wild-type",
+                          "--wild-type-fasta", str(fasta)], capture_output=True, text=True, cwd=tmp_path)
+    assert run.returncode == 0, run.stderr
+    assert len((out / "fold_cohort.jsonl").read_text().splitlines()) == 12
+    # a missing asset fails at once and names the option that supplies it
+    bad = subprocess.run([sys.executable, str(stage), "--device", "cpu", "--out", str(tmp_path / "o2"), "--wild-type",
+                          "--wild-type-fasta", str(tmp_path / "absent.faa")], capture_output=True, text=True, cwd=tmp_path)
+    assert bad.returncode != 0 and "--wild-type-fasta" in bad.stderr
+    with pytest.raises(FileNotFoundError, match="--msa-dir"):
+        fr.load_msa(tmp_path / "nomsa", "D1", 10)
+    with pytest.raises(FileNotFoundError, match="--protocol"):
+        fr.load_roles(tmp_path / "nope.json")

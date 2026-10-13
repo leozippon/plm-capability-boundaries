@@ -75,9 +75,12 @@ NOVELTY_CEILING = 70.0
 #: Two sequences of one cell are near-duplicates at or above this identity.
 NEAR_DUPLICATE_IDENTITY = 90.0
 
-WT_FASTA = Path("data/pairwise_assets/same12_provenance_20260924/query_12.faa")
-MSA_DIR = Path("data/pairwise_assets/same12_provenance_20260924/msa")
-PROTOCOL = Path("data/r6_constraint_response_20261013/diagnostic_protocol.json")
+#: Repo-relative defaults for local runs only. data/ is not in the H200 code
+#: snapshot, so the pod must pass these explicitly; library functions never
+#: resolve a repo root themselves.
+DEFAULT_WT_FASTA = Path("data/pairwise_assets/same12_provenance_20260924/query_12.faa")
+DEFAULT_MSA_DIR = Path("data/pairwise_assets/same12_provenance_20260924/msa")
+DEFAULT_PROTOCOL = Path("data/r6_constraint_response_20261013/diagnostic_protocol.json")
 REFERENCE_SCHEMA = "e20_wild_type_references_v1"
 
 
@@ -99,15 +102,26 @@ def read_fasta(path: Path) -> list[tuple[str, str]]:
     return [(name, "".join(parts)) for name, parts in entries]
 
 
-def load_wild_types(root: Path) -> dict[str, str]:
-    wild = {domain_id(name): seq for name, seq in read_fasta(Path(root) / WT_FASTA)}
+def require_asset(path: Path, option: str, *, directory: bool = False) -> Path:
+    """Fail early, naming the option that supplies a missing asset."""
+
+    path = Path(path)
+    if not (path.is_dir() if directory else path.is_file()):
+        raise FileNotFoundError(
+            f"missing {'directory' if directory else 'file'} {path}; stage it and pass it with {option}"
+        )
+    return path
+
+
+def load_wild_types(fasta: Path, option: str = "--wild-type-fasta") -> dict[str, str]:
+    wild = {domain_id(name): seq for name, seq in read_fasta(require_asset(fasta, option))}
     if len(wild) != 12:
         raise ValueError(f"expected twelve wild-type domains, found {len(wild)}")
     return wild
 
 
-def load_roles(root: Path) -> dict[str, str]:
-    roles = json.loads((Path(root) / PROTOCOL).read_text())["roles"]
+def load_roles(protocol: Path, option: str = "--protocol") -> dict[str, str]:
+    roles = json.loads(require_asset(protocol, option).read_text())["roles"]
     return {domain_id(d): role for role in ("development", "evaluation") for d in roles[role]}
 
 
@@ -218,9 +232,10 @@ def composition_distance(p: np.ndarray, q: np.ndarray) -> float:
     return float(0.5 * np.abs(np.asarray(p) - np.asarray(q)).sum())
 
 
-def load_msa(path: Path, length: int) -> list[str]:
-    """Gapped MSA rows, validated to the domain's column count."""
+def load_msa(msa_dir: Path, domain: str, length: int, option: str = "--msa-dir") -> list[str]:
+    """Gapped MSA rows of one domain, validated to the domain's column count."""
 
+    path = require_asset(Path(msa_dir) / f"{domain}.pdb.fasta", option)
     rows = [seq for _, seq in read_fasta(path)]
     bad = [i for i, row in enumerate(rows) if len(row) != length]
     if bad:

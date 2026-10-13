@@ -36,16 +36,26 @@ def main() -> None:
     parser.add_argument("--records", type=Path, required=True)
     parser.add_argument("--structure", type=Path, required=True)
     parser.add_argument("--references", type=Path, required=True, help="wild_type_references.json")
+    parser.add_argument("--wild-type-fasta", type=Path, default=REPO_ROOT / fr.DEFAULT_WT_FASTA,
+                        help="query_12.faa; data/ is not in the pod snapshot, pass the staged path there")
+    parser.add_argument("--msa-dir", type=Path, default=REPO_ROOT / fr.DEFAULT_MSA_DIR,
+                        help="directory of <DOMAIN>.pdb.fasta MSAs (novelty and family composition)")
+    parser.add_argument("--protocol", type=Path, default=REPO_ROOT / fr.DEFAULT_PROTOCOL,
+                        help="diagnostic_protocol.json holding the development/evaluation roles")
     parser.add_argument("--role", choices=("development", "evaluation"), required=True)
     parser.add_argument("--seed", type=int, default=20261013)
     args = parser.parse_args()
 
-    wild = fr.load_wild_types(REPO_ROOT)
-    roles = fr.load_roles(REPO_ROOT)
+    for path, option in ((args.records, "--records"), (args.references, "--references")):
+        fr.require_asset(path, option)
+    fr.require_asset(args.structure, "--structure", directory=True)
+    fr.require_asset(args.msa_dir, "--msa-dir", directory=True)
+    wild = fr.load_wild_types(args.wild_type_fasta)
+    roles = fr.load_roles(args.protocol)
     records = [r for r in fr.load_records(args.records, wild) if roles[r["domain"]] == args.role]
     if not records:
         raise SystemExit(f"no records in role {args.role}")
-    msas = {d: fr.load_msa(REPO_ROOT / fr.MSA_DIR / f"{d}.pdb.fasta", len(wild[d])) for d in {r["domain"] for r in records}}
+    msas = {d: fr.load_msa(args.msa_dir, d, len(wild[d])) for d in {r["domain"] for r in records}}
     measured = fr.measure_records(records, wild_types=wild, msas=msas, tree=args.structure,
                                   reference_manifest=args.references)
     report = fri.analyse(measured, roles=roles, role=args.role, seed=args.seed)

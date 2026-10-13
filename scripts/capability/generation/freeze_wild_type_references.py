@@ -36,8 +36,10 @@ def main() -> None:
     parser.add_argument("--device", default="cpu", help="accepted and unused; CPU-only")
     parser.add_argument("--structure", type=Path, required=True, help="evidence tree of the wild-type cohort")
     parser.add_argument("--cohort", type=Path, required=True, help="the fold_cohort.jsonl that tree was folded from")
+    parser.add_argument("--wild-type-fasta", type=Path, default=REPO_ROOT / fr.DEFAULT_WT_FASTA,
+                        help="query_12.faa; data/ is not in the pod snapshot, pass the staged path there")
     args = parser.parse_args()
-    wild = fr.load_wild_types(REPO_ROOT)
+    wild = fr.load_wild_types(args.wild_type_fasta)
     summary = se.verify_evidence(se.load_cohort(args.cohort), args.structure, shard_index=0, num_shards=1)
     signature = se.tree_signature(args.structure)
     receipts = sorted(args.structure.glob("worker-*.json"))
