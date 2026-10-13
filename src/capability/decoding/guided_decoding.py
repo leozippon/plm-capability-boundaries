@@ -27,24 +27,43 @@ An arm is a named choice of where ``u`` and ``C`` come from, and a dose is a
 arm (code)                   ``u``                 ``C``
 ===========================  ====================  =======================
 ``native`` (N)               absent                absent
-``marginal`` (M)             ``log_profile``       absent
+``potts_fields`` (M)         ``h``                 absent
 ``coupling`` (C)             absent                ``J``
 ``full`` (F)                 ``h``                 ``J``
+``profile`` (Pr)             ``log_profile``       absent
 ``permuted_coupling`` (Cx)   absent                ``J`` column-permuted
 ``cross_domain_coupling``    absent                donor ``J[:L, :L]``
 (Cd)
 ===========================  ====================  =======================
 
-**Why two strengths and not one.** ``log f_t(a)`` is order one to three nats,
-while the coupling sum runs over up to ``L - 1`` prefix positions and is far
-larger. Under one shared scalar the fields-on and couplings-on cells would be
-interventions of very different effective strength, so a difference between them
-would partly measure scale rather than information content, and the factorial
-claim would be confounded. The two components therefore carry independent
-scalars, and the six arms are corners and edges of one two-dimensional dose grid.
-A strength whose component an arm does not carry is refused rather than ignored:
-two grid points that differ only in an inert scalar would otherwise produce
-byte-identical pools under different labels.
+**The factorial lives entirely inside one model's own decomposition.** ``N``,
+``M``, ``C`` and ``F`` are the four corners of the Potts model's own
+fields-by-couplings factorial: ``M`` carries Potts ``h`` and *not* the profile, so
+``F - M`` and ``C - N`` are both pure coupling effects and ``F - C`` and ``M - N``
+are both pure field effects. An ``M`` that carried ``log f`` would have made
+``F - M`` the effect of adding couplings *and* swapping profile fields for Potts
+fields -- two changes at once, and no isolated coupling effect. ``F`` at unit
+strengths is exactly the Potts prefix conditional.
+
+``Pr`` is the conventional profile-guidance baseline, ``lambda_fields * log
+f_t(a)`` from the frozen pseudocount-0.5 profile with no couplings. It sits
+**outside** the factorial and is read as a pairwise comparison, because "does this
+beat established practice" is a different question from "which information
+component is the model missing". ``P`` (Potts ancestral sampling) and ``H``
+(held-out natural rows) involve no language model and are produced elsewhere.
+
+**Why two strengths and not one.** The fields terms are order one to three nats,
+while the coupling sum runs over up to ``L - 1`` prefix positions and is roughly
+an order of magnitude larger. Under one shared scalar the fields-on and
+couplings-on cells would be interventions of very different effective strength,
+so a difference between them would partly measure scale rather than information
+content. The two components therefore carry independent scalars, and the arms are
+corners and edges of one two-dimensional dose grid.
+:func:`component_scale` measures that dynamic-range asymmetry directly, so it is
+visible in the artefact rather than inferred from the tuned strengths. A strength
+whose component an arm does not carry is refused rather than ignored: two grid
+points that differ only in an inert scalar would otherwise produce byte-identical
+pools under different labels.
 
 **Why the coupling sum is not normalised by prefix length.** The raw sum is
 exactly the Potts prefix conditional, which is what makes ``full`` the
@@ -55,7 +74,8 @@ a genuine property of left-to-right Potts conditioning, applies identically to
 ``coupling`` and ``full``, and does not disturb the factorial. Do not "fix" it.
 
 Three facts the experiment rests on are structural rather than asserted: ``full``
-equals Potts fields plus the ``coupling`` bias because the two share one ``C``;
+equals the ``potts_fields`` bias plus the ``coupling`` bias, because the three arms
+share one ``u`` and one ``C``;
 ``coupling`` at ``t = 0`` is exactly zero because the sum is empty; and with both
 strengths at zero every arm adds a literal ``0.0`` to the same logits, so all six
 draw the identical sequence from one seed. An arm that lacks a component
@@ -195,6 +215,7 @@ __all__ = [
     "bias_vector",
     "build_arm_bias",
     "component_bias_vectors",
+    "component_scale",
     "generate_cell",
     "native_layout",
     "nominal_lambda",
@@ -207,37 +228,44 @@ __all__ = [
 
 SEQUENCE_SCHEMA = "coupling_guided_sequence_v1"
 
-#: The six arms, in report order. ``coupling`` is the method under test;
-#: ``permuted_coupling`` is its matched incorrect-constraint control and
-#: ``cross_domain_coupling`` the secondary wrong-biology variant.
+#: The seven language-model arms, in report order. ``native``, ``potts_fields``,
+#: ``coupling`` and ``full`` are the four corners of the Potts model's own
+#: factorial and ``coupling`` is the method under test; ``profile`` is the
+#: conventional practice baseline outside it; ``permuted_coupling`` is the primary
+#: matched incorrect-constraint control and ``cross_domain_coupling`` the
+#: secondary wrong-biology variant.
 GUIDANCE_ARMS: tuple[str, ...] = (
     "native",
-    "marginal",
+    "potts_fields",
     "coupling",
     "full",
+    "profile",
     "permuted_coupling",
     "cross_domain_coupling",
 )
 
+#: The four corners of the factorial, in the order the contrasts read them. The
+#: two coupling main effects are ``full - potts_fields`` and ``coupling - native``,
+#: the two field main effects ``full - coupling`` and ``potts_fields - native``.
+FACTORIAL_ARMS: tuple[str, ...] = ("native", "potts_fields", "coupling", "full")
+
 #: The short arm code every E20 record carries, bound to the measurement side's
 #: ``e20_generated_sequence_v1`` contract.
 #:
-#: **A declared conflict, resolved here once.** The E20 design document's table
-#: writes ``Cx`` for the *cross-domain* wrong-coupling arm, while the measurement
-#: contract this programme joins on writes ``Cx`` for the *permuted-column*
-#: control. Two different arms cannot share one code, so the contract wins --
-#: ``Cx`` is ``permuted_coupling``, which is also the primary magnitude-matched
-#: control -- and the secondary cross-domain variant takes ``Cd``, a code the
-#: contract does not use. ``P`` (Potts-only ancestral sampling) and ``H``
-#: (held-out natural rows) are reference arms outside this module's factorial and
-#: are produced elsewhere; they are in the contract and deliberately not emitted
-#: here. Every record also carries the unabbreviated ``guidance_arm``, so a reader
-#: never has to trust the abbreviation.
+#: The two wrong-coupling controls keep distinct codes: ``Cx`` is the
+#: permuted-column control, which is magnitude-matched by construction and is the
+#: primary one, and ``Cd`` is the secondary cross-domain variant. The E20 design
+#: document's table once wrote ``Cx`` for the cross-domain arm; one code cannot
+#: mean two interventions, so they are two codes rather than one arm dropped.
+#: ``P`` and ``H`` need no language-model generation and are produced elsewhere.
+#: Every record also carries the unabbreviated ``guidance_arm``, so a reader never
+#: has to trust the abbreviation.
 ARM_CODES: dict[str, str] = {
     "native": "N",
-    "marginal": "M",
+    "potts_fields": "M",
     "coupling": "C",
     "full": "F",
+    "profile": "Pr",
     "permuted_coupling": "Cx",
     "cross_domain_coupling": "Cd",
 }
@@ -252,9 +280,10 @@ ATTEMPTS_PER_SEQUENCE = 1
 #: is one of ``none``, ``target``, ``permuted_columns``, ``donor_domain``.
 ARM_COMPONENTS: dict[str, dict[str, str]] = {
     "native": {"fields": "none", "coupling": "none"},
-    "marginal": {"fields": "log_profile", "coupling": "none"},
+    "potts_fields": {"fields": "potts_fields", "coupling": "none"},
     "coupling": {"fields": "none", "coupling": "target"},
     "full": {"fields": "potts_fields", "coupling": "target"},
+    "profile": {"fields": "log_profile", "coupling": "none"},
     "permuted_coupling": {"fields": "none", "coupling": "permuted_columns"},
     "cross_domain_coupling": {"fields": "none", "coupling": "donor_domain"},
 }
@@ -262,16 +291,20 @@ ARM_COMPONENTS: dict[str, dict[str, str]] = {
 #: What each arm supplies, as the artefacts record it.
 ARM_DECLARATIONS: dict[str, str] = {
     "native": "no bias; the model's own next-token distribution under the shared layout rule",
-    "marginal": (
-        "lambda_fields * log f_t(a) from the frozen pseudocount-0.5 profile; site frequencies only"
+    "potts_fields": (
+        "lambda_fields * h[t,a]; the Potts model's own fields only, which is what makes the "
+        "fields-by-couplings factorial internally consistent"
     ),
     "coupling": (
         "lambda_coupling * sum_{s<t} J[t,s,a,a_s]; couplings only, no fields (the method under test)"
     ),
     "full": (
         "lambda_fields * h[t,a] + lambda_coupling * sum_{s<t} J[t,s,a,a_s]; the conventional "
-        "DCA-guidance baseline, whose fields term is the Potts h declared by the family reference "
-        "and not the profile"
+        "DCA-guidance baseline, and at unit strengths exactly the Potts prefix conditional"
+    ),
+    "profile": (
+        "lambda_fields * log f_t(a) from the frozen pseudocount-0.5 profile; conventional "
+        "profile guidance, read as a pairwise comparison outside the factorial"
     ),
     "permuted_coupling": (
         "lambda_coupling * coupling bias of the target's own J under a seeded column permutation; "
@@ -456,6 +489,88 @@ def sequence_bias_sum(bias: ArmBias, sequence: str) -> float:
     return fields + coupling
 
 
+#: What :func:`component_scale` measures, as the artefact records it.
+COMPONENT_SCALE_DECLARATION = (
+    "Standard deviation across the twenty canonical residues of one bias component's "
+    "per-position vector, summarised over positions and sequences. It is the component's "
+    "dynamic range in natural-log units at the scale a logit bias competes with, so the "
+    "fields/coupling asymmetry is readable from the artefact rather than inferred from the "
+    "tuned strengths, and a selected strength that cannot move a draw is visible as such. "
+    "potts_fields and profile do not depend on the prefix, so their numbers are a property of "
+    "the family reference alone and are identical on any sequence basis; coupling does, and it "
+    "grows along the sequence because the prefix sum is deliberately not length-normalised."
+)
+
+#: The components :func:`component_scale` reports, and whether each depends on the prefix.
+COMPONENT_SCALE_PREFIX_DEPENDENT: dict[str, bool] = {
+    "potts_fields": False, "profile": False, "coupling": True,
+}
+
+
+def _coupling_bias_rows(couplings: np.ndarray, codes: np.ndarray) -> np.ndarray:
+    """``(L, 20)`` of ``sum_{s<t} C[t, s, a, a_s]`` for one full-length sequence."""
+
+    length = int(codes.size)
+    index = np.arange(length)
+    blocks = couplings[index[:, None], index[None, :], :, codes[None, :]]  # (L, L, 20)
+    below = np.tril(np.ones((length, length), dtype=np.float64), -1)[:, :, None]
+    return (blocks * below).sum(axis=1)
+
+
+def _spread(values: np.ndarray) -> dict[str, Any]:
+    spread = values.std(axis=1, ddof=0)
+    return {
+        "steps": int(spread.size),
+        "mean": float(spread.mean()),
+        "median": float(np.median(spread)),
+        "p90": float(np.percentile(spread, 90)),
+        "max": float(spread.max()),
+        "zero_steps": int((spread == 0.0).sum()),
+    }
+
+
+def component_scale(model: FamilyModel, sequences: Sequence[str]) -> dict[str, Any]:
+    """The per-step dynamic range of each bias component on one set of sequences.
+
+    Reported for the target reference's own ``h``, ``J`` and ``log f`` -- not for a
+    substituted or permuted coupling tensor -- so the numbers describe the family
+    reference and the sequence basis, and are comparable across arms of one
+    domain. ``per_position_mean`` is the same statistic resolved by column, which
+    is where the coupling term's growth along the sequence shows.
+    """
+
+    if not sequences:
+        raise ValueError("a component-scale summary needs at least one sequence")
+    stacked: dict[str, list[np.ndarray]] = {name: [] for name in COMPONENT_SCALE_PREFIX_DEPENDENT}
+    for sequence in sequences:
+        codes = encode(sequence)
+        if codes.size != model.length:
+            raise ValueError(
+                f"{model.domain}: a component-scale sequence has {codes.size} residues, not "
+                f"{model.length}"
+            )
+        stacked["potts_fields"].append(model.h.astype(np.float64))
+        stacked["profile"].append(model.log_profile.astype(np.float64))
+        stacked["coupling"].append(_coupling_bias_rows(model.J.astype(np.float64), codes))
+    components = {}
+    for name, rows in stacked.items():
+        matrix = np.concatenate(rows, axis=0)
+        by_position = np.stack([row.std(axis=1, ddof=0) for row in rows], axis=0).mean(axis=0)
+        components[name] = {
+            "prefix_dependent": COMPONENT_SCALE_PREFIX_DEPENDENT[name],
+            **_spread(matrix),
+            "per_position_mean": [float(value) for value in by_position],
+        }
+    return {
+        "declaration": COMPONENT_SCALE_DECLARATION,
+        "domain": model.domain,
+        "alphabet": AA20,
+        "units": "natural log",
+        "sequences": len(sequences),
+        "components": components,
+    }
+
+
 def permutation_for(domain: str, length: int, seed: int) -> np.ndarray:
     """The declared column permutation of ``permuted_coupling``.
 
@@ -564,9 +679,9 @@ def build_arm_bias(
 
     fields: np.ndarray | None = None
     couplings: np.ndarray | None = None
-    if arm == "marginal":
+    if arm == "profile":
         fields = model.log_profile.astype(np.float64)
-    elif arm == "full":
+    elif arm in ("potts_fields", "full"):
         fields = model.h.astype(np.float64)
     if arm in ("coupling", "full"):
         couplings = model.J.astype(np.float64)
@@ -605,34 +720,41 @@ def build_arm_bias(
     return bias
 
 
-#: Which family-module component each target-model arm must reproduce exactly.
-_REFERENCE_COMPONENT = {"marginal": "marginal", "coupling": "coupling", "full": "full"}
+#: How each target-model arm's unit-strength bias is expressed in the family
+#: module's own three declared vectors. ``potts_fields`` has no vector of its own
+#: there, and ``full`` minus ``coupling`` is exactly ``h`` -- which is also the
+#: statement that makes the factorial exact, so it is checked rather than assumed.
+_REFERENCE_EXPRESSION: dict[str, Any] = {
+    "potts_fields": lambda b: b["full"] - b["coupling"],
+    "coupling": lambda b: b["coupling"],
+    "full": lambda b: b["full"],
+    "profile": lambda b: b["marginal"],
+}
 
 
 def _check_reference_agreement(bias: ArmBias, model: FamilyModel) -> None:
-    """Bind the three target-model arms to the family module's own bias declaration.
+    """Bind the four target-model arms to the family module's own bias declaration.
 
     Checked on the wild-type prefix at the first, a middle and the last position.
     The permuted and cross-domain arms have no reference by construction, and
     ``native`` is checked to carry no component at all.
     """
 
-    positions = sorted({0, bias.length // 2, bias.length - 1})
     if bias.arm == "native":
         if bias.has_fields or bias.has_coupling:
             raise RuntimeError("the native arm must carry neither component")
         return
-    component = _REFERENCE_COMPONENT.get(bias.arm)
-    if component is None:
+    expression = _REFERENCE_EXPRESSION.get(bias.arm)
+    if expression is None:
         return
-    for position in positions:
+    for position in sorted({0, bias.length // 2, bias.length - 1}):
         prefix = model.wildtype[:position]
-        reference = guidance_biases(model, prefix)[component]
+        reference = expression(guidance_biases(model, prefix))
         value = bias_vector(bias, position, encode(prefix))
         if not np.allclose(value, reference, rtol=0.0, atol=1e-9):
             raise RuntimeError(
-                f"{bias.arm}: unit-strength bias at position {position} differs from "
-                f"family_potts.guidance_biases[{component!r}] by "
+                f"{bias.arm}: unit-strength bias at position {position} differs from its "
+                f"family_potts.guidance_biases expression by "
                 f"{float(np.abs(value - reference).max()):.3e}"
             )
 

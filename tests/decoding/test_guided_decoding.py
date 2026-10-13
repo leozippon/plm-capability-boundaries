@@ -38,10 +38,10 @@ from src.capability.context.family_potts import (  # noqa: E402
 from src.capability.core.amino_acids import AA20  # noqa: E402
 from src.capability.core.arms import Arm, arm_spec  # noqa: E402
 from src.capability.decoding.guided_decoding import (  # noqa: E402
-    ARM_CODES, GUIDANCE_ARMS, ArmBias, CellIdentity, EmptyCandidateSet, GuidanceStrength,
-    GuidedDecoder, bias_vector, build_arm_bias, component_bias_vectors, generate_cell,
-    native_layout, nominal_lambda, permutation_for, select_cross_domain_donor, sequence_bias_sum,
-    sequence_component_sums, token_span_table)
+    ARM_CODES, FACTORIAL_ARMS, GUIDANCE_ARMS, ArmBias, CellIdentity, EmptyCandidateSet,
+    GuidanceStrength, GuidedDecoder, bias_vector, build_arm_bias, component_bias_vectors,
+    component_scale, generate_cell, native_layout, nominal_lambda, permutation_for,
+    select_cross_domain_donor, sequence_bias_sum, sequence_component_sums, token_span_table)
 
 PERMUTATION_SEED = 20261013
 SHORT = 7
@@ -159,7 +159,8 @@ def wrapped_model(tmp_path):
 def _strength(arm_name: str, dose: float) -> GuidanceStrength:
     """The dose on whichever components the arm carries; zero on the ones it does not."""
 
-    components = {"native": (0.0, 0.0), "marginal": (dose, 0.0), "full": (dose, dose)}
+    components = {"native": (0.0, 0.0), "potts_fields": (dose, 0.0), "profile": (dose, 0.0),
+                  "full": (dose, dose)}
     return GuidanceStrength(*components.get(arm_name, (0.0, dose)))
 
 
@@ -186,21 +187,35 @@ def _score_fn(sequence: str) -> float:
 # ------------------------------------------------------- the decomposition itself
 
 
-def test_full_bias_is_fields_plus_coupling_bias(short_model):
-    """In the same gauge and units: the fields half is Potts h, the other half is the C arm."""
+def test_the_factorial_is_exact_inside_one_models_decomposition(short_model):
+    """F - M and C - N are the same pure coupling effect; F - C and M - N the same field one."""
 
-    full = build_arm_bias("full", short_model)
-    coupling = build_arm_bias("coupling", short_model)
+    native, fields, coupling, full = (build_arm_bias(arm, short_model) for arm in FACTORIAL_ARMS)
+    assert FACTORIAL_ARMS == ("native", "potts_fields", "coupling", "full")
     for position in range(short_model.length):
         prefix = encode(short_model.wildtype[:position])
-        fields_part, coupling_part = component_bias_vectors(full, position, prefix)
-        np.testing.assert_allclose(fields_part, short_model.h[position], rtol=0.0, atol=0.0)
+        n = bias_vector(native, position, prefix)
+        m = bias_vector(fields, position, prefix)
+        c = bias_vector(coupling, position, prefix)
+        f = bias_vector(full, position, prefix)
+        np.testing.assert_allclose(m, short_model.h[position], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(f, m + c, rtol=0.0, atol=1e-12)
+        np.testing.assert_allclose(f - m, c - n, rtol=0.0, atol=1e-12)
+        np.testing.assert_allclose(f - c, m - n, rtol=0.0, atol=1e-12)
+        parts = component_bias_vectors(full, position, prefix)
+        np.testing.assert_allclose(parts[0], m, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(parts[1], c, rtol=0.0, atol=0.0)
+
+
+def test_the_profile_arm_is_the_frozen_log_profile_and_sits_outside_the_factorial(short_model):
+    profile = build_arm_bias("profile", short_model)
+    assert "profile" not in FACTORIAL_ARMS
+    for position in range(short_model.length):
+        prefix = encode(short_model.wildtype[:position])
         np.testing.assert_allclose(
-            coupling_part, bias_vector(coupling, position, prefix), rtol=0.0, atol=0.0)
-        np.testing.assert_allclose(
-            bias_vector(full, position, prefix),
-            short_model.h[position] + bias_vector(coupling, position, prefix),
-            rtol=0.0, atol=1e-12)
+            bias_vector(profile, position, prefix), short_model.log_profile[position],
+            rtol=0.0, atol=0.0)
+    assert np.isclose(np.exp(short_model.log_profile[0]).sum(), 1.0)
 
 
 def test_coupling_bias_at_the_empty_prefix_is_exactly_zero(short_model):
@@ -210,15 +225,11 @@ def test_coupling_bias_at_the_empty_prefix_is_exactly_zero(short_model):
         assert np.array_equal(bias_vector(bias, 0, []), np.zeros(20))
 
 
-def test_native_bias_is_zero_and_marginal_is_the_frozen_profile(short_model):
+def test_native_bias_is_zero_at_every_position(short_model):
     native = build_arm_bias("native", short_model)
-    marginal = build_arm_bias("marginal", short_model)
     for position in range(short_model.length):
         prefix = encode(short_model.wildtype[:position])
         assert np.array_equal(bias_vector(native, position, prefix), np.zeros(20))
-        np.testing.assert_allclose(
-            bias_vector(marginal, position, prefix), short_model.log_profile[position],
-            rtol=0.0, atol=0.0)
 
 
 def test_full_arm_guidance_score_is_the_potts_score(short_model):
@@ -245,9 +256,9 @@ def _hand_token_bias(model: FamilyModel, component: str, prefix: str, residues: 
     total = 0.0
     for offset, code in enumerate(span):
         position = start + offset
-        if component in ("full", "fields_only"):
+        if component in ("full", "potts_fields"):
             total += float(model.h[position, code])
-        elif component == "marginal":
+        elif component == "profile":
             total += float(model.log_profile[position, code])
         for earlier, other in enumerate(prefix_codes):
             if component in ("coupling", "full"):
@@ -258,7 +269,7 @@ def _hand_token_bias(model: FamilyModel, component: str, prefix: str, residues: 
     return total
 
 
-@pytest.mark.parametrize("component", ["marginal", "coupling", "full"])
+@pytest.mark.parametrize("component", ["profile", "coupling", "full"])
 def test_multi_residue_token_bias_is_the_sum_of_its_residue_biases(short_model, component):
     arm = _multi_residue_arm()
     decoder = _decoder(arm, short_model, component, 1.0)
@@ -508,7 +519,7 @@ def test_the_two_strengths_act_only_on_their_own_component(short_model):
                          strength=GuidanceStrength(3.0, 3.0))
     row = int(np.flatnonzero(np.asarray(table.texts) == "DEF")[0])
 
-    expected_fields = _hand_token_bias(short_model, "fields_only", "AC", "DEF")
+    expected_fields = _hand_token_bias(short_model, "potts_fields", "AC", "DEF")
     expected_coupling = _hand_token_bias(short_model, "coupling", "AC", "DEF")
     assert fields_only.token_bias(2, prefix)[row] == pytest.approx(3.0 * expected_fields, abs=1e-9)
     assert coupling_only.token_bias(2, prefix)[row] == pytest.approx(3.0 * expected_coupling, abs=1e-9)
@@ -517,11 +528,11 @@ def test_the_two_strengths_act_only_on_their_own_component(short_model):
     # the inert component is exactly zero, not merely small
     assert np.array_equal(coupling_only.fields_terms(2) * 0.0,
                           np.zeros(table.size))
-    marginal = build_arm_bias("marginal", short_model)
-    assert np.array_equal(
-        GuidedDecoder(bias=marginal, layout=layout, table=table,
-                      strength=GuidanceStrength(3.0, 0.0)).coupling_terms(2, prefix),
-        np.zeros(table.size))
+    for arm_name in ("potts_fields", "profile"):
+        unguided_coupling = GuidedDecoder(
+            bias=build_arm_bias(arm_name, short_model), layout=layout, table=table,
+            strength=GuidanceStrength(3.0, 0.0)).coupling_terms(2, prefix)
+        assert np.array_equal(unguided_coupling, np.zeros(table.size))
     native = build_arm_bias("native", short_model)
     zero = GuidedDecoder(bias=native, layout=layout, table=table,
                          strength=GuidanceStrength(0.0, 0.0))
@@ -535,9 +546,10 @@ def test_a_dose_on_a_component_the_arm_lacks_is_refused(short_model):
     with pytest.raises(ValueError, match="carries no fields component"):
         GuidedDecoder(bias=build_arm_bias("coupling", short_model), layout=layout, table=table,
                       strength=GuidanceStrength(1.0, 1.0))
-    with pytest.raises(ValueError, match="carries no coupling component"):
-        GuidedDecoder(bias=build_arm_bias("marginal", short_model), layout=layout, table=table,
-                      strength=GuidanceStrength(1.0, 1.0))
+    for arm_name in ("potts_fields", "profile"):
+        with pytest.raises(ValueError, match="carries no coupling component"):
+            GuidedDecoder(bias=build_arm_bias(arm_name, short_model), layout=layout, table=table,
+                          strength=GuidanceStrength(1.0, 1.0))
     with pytest.raises(ValueError, match="carries no"):
         GuidedDecoder(bias=build_arm_bias("native", short_model), layout=layout, table=table,
                       strength=GuidanceStrength(0.0, 1.0))
@@ -553,8 +565,9 @@ def test_a_negative_or_non_finite_strength_is_refused():
 def test_the_nominal_lambda_rule(short_model):
     strength = GuidanceStrength(2.0, 5.0)
     assert nominal_lambda(build_arm_bias("full", short_model), strength) == 5.0
-    assert nominal_lambda(build_arm_bias("marginal", short_model),
-                          GuidanceStrength(2.0, 0.0)) == 2.0
+    for arm_name in ("potts_fields", "profile"):
+        assert nominal_lambda(build_arm_bias(arm_name, short_model),
+                              GuidanceStrength(2.0, 0.0)) == 2.0
     assert nominal_lambda(build_arm_bias("coupling", short_model),
                           GuidanceStrength(0.0, 5.0)) == 5.0
     assert nominal_lambda(build_arm_bias("native", short_model),
@@ -599,19 +612,81 @@ def test_the_native_arm_has_no_guidance_quantity(short_model):
         assert record["arm_code"] == "N" and record["lambda_nominal"] == 0.0
 
 
-def test_the_marginal_arm_reports_no_coupling_score(short_model):
+def test_a_fields_only_arm_reports_no_coupling_score(short_model):
     arm = _single_residue_arm()
-    decoder = _decoder(arm, short_model, "marginal", 1.0)
+    decoder = _decoder(arm, short_model, "profile", 1.0)
     record = generate_cell(
         arm=arm, decoder=decoder,
-        identity=_identity("progen2-medium", "SYN", "marginal", 1.0, 2, 0, 17000),
+        identity=_identity("progen2-medium", "SYN", "profile", 1.0, 2, 0, 17000),
         count=1, batch_size=1, score_fn=_score_fn)[0]
     assert record["coupling_score"] is None
     assert record["fields_score"] == pytest.approx(record["guidance_score"], abs=0.0)
 
 
-def test_the_arm_codes_are_the_measurement_contract_codes():
-    assert ARM_CODES == {"native": "N", "marginal": "M", "coupling": "C", "full": "F",
-                         "permuted_coupling": "Cx", "cross_domain_coupling": "Cd"}
+def test_the_arm_codes_are_the_declared_set_with_the_two_controls_distinct():
+    assert ARM_CODES == {"native": "N", "potts_fields": "M", "coupling": "C", "full": "F",
+                         "profile": "Pr", "permuted_coupling": "Cx",
+                         "cross_domain_coupling": "Cd"}
     assert sorted(ARM_CODES) == sorted(GUIDANCE_ARMS)
     assert len(set(ARM_CODES.values())) == len(ARM_CODES)
+    assert set(FACTORIAL_ARMS) < set(GUIDANCE_ARMS)
+
+
+# ------------------------------------------------- the component-scale diagnostic
+
+
+def test_component_scale_separates_the_three_components(short_model):
+    """The asymmetry the two strengths exist for has to be readable from the artefact."""
+
+    summary = component_scale(short_model, [short_model.wildtype])
+    assert summary["domain"] == "SYN" and summary["alphabet"] == AA20
+    components = summary["components"]
+    assert sorted(components) == ["coupling", "potts_fields", "profile"]
+    for name, block in components.items():
+        assert block["steps"] == SHORT
+        assert len(block["per_position_mean"]) == SHORT
+        assert block["mean"] >= 0.0 and block["max"] >= block["median"]
+        assert block["prefix_dependent"] == (name == "coupling")
+    # the coupling vector is identically zero at position 0, so its spread is too
+    assert components["coupling"]["per_position_mean"][0] == 0.0
+    assert components["coupling"]["zero_steps"] >= 1
+    assert components["potts_fields"]["zero_steps"] == 0
+
+
+def test_component_scale_is_prefix_independent_for_the_two_fields_components(short_model):
+    other = "".join(AA20[(index + 3) % 20] for index in range(SHORT))
+    first = component_scale(short_model, [short_model.wildtype])
+    second = component_scale(short_model, [other])
+    for name in ("potts_fields", "profile"):
+        assert first["components"][name]["mean"] == second["components"][name]["mean"]
+        assert (first["components"][name]["per_position_mean"]
+                == second["components"][name]["per_position_mean"])
+    assert first["components"]["coupling"]["mean"] != second["components"]["coupling"]["mean"]
+
+
+def test_component_scale_matches_a_hand_computed_spread(short_model):
+    summary = component_scale(short_model, [short_model.wildtype])
+    codes = encode(short_model.wildtype)
+    expected = []
+    for position in range(SHORT):
+        vector = np.asarray([
+            sum(float(short_model.J[position, earlier, residue, codes[earlier]])
+                for earlier in range(position))
+            for residue in range(20)])
+        expected.append(float(vector.std()))
+    np.testing.assert_allclose(
+        summary["components"]["coupling"]["per_position_mean"], expected, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(
+        summary["components"]["potts_fields"]["per_position_mean"],
+        short_model.h.std(axis=1), rtol=0.0, atol=1e-12)
+
+
+def test_component_scale_pools_several_sequences_and_refuses_a_wrong_length(short_model):
+    pool = [short_model.wildtype, "".join(AA20[(i + 5) % 20] for i in range(SHORT))]
+    summary = component_scale(short_model, pool)
+    assert summary["sequences"] == 2
+    assert summary["components"]["coupling"]["steps"] == 2 * SHORT
+    with pytest.raises(ValueError, match="not"):
+        component_scale(short_model, [short_model.wildtype[:-1]])
+    with pytest.raises(ValueError, match="at least one sequence"):
+        component_scale(short_model, [])

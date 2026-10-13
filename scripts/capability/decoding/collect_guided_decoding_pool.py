@@ -25,7 +25,10 @@ Protocol schema (``coupling_guided_generation_v1``)
     analogy.
 ``guidance_arms``
     A non-empty subset of
-    :data:`~src.capability.decoding.guided_decoding.GUIDANCE_ARMS`.
+    :data:`~src.capability.decoding.guided_decoding.GUIDANCE_ARMS`. The four
+    factorial arms ``N``, ``M``, ``C`` and ``F`` live inside the Potts model's own
+    decomposition, so ``M`` is Potts fields and not the profile; ``Pr`` is the
+    conventional profile baseline, read pairwise outside the factorial.
 ``domains``
     Mapping ``domain -> {L, wt_sha256}``. Every declared domain is loaded from
     ``--family-reference-dir``, must be qualified -- the loader refuses an
@@ -35,13 +38,15 @@ Protocol schema (``coupling_guided_generation_v1``)
     function of the recorded protocol and not of which cell happened to run.
 ``strength_grid``
     The declared dose grid over the pair ``{lambda_fields, lambda_coupling}``,
-    distinct, finite and non-negative. ``--strength-index`` selects one grid point
+    distinct and drawn from :data:`STRENGTH_AXIS`; the full development sweep is
+    :data:`DEVELOPMENT_STRENGTH_GRID`. ``--strength-index`` selects one grid point
     by position; a free-floating value cannot be passed. An arm is refused a
     non-zero strength on a component it does not carry, so the manifest pairs each
     arm with the grid points that act on it -- ``native`` only with ``(0, 0)``,
-    ``marginal`` only with ``lambda_coupling = 0``, the coupling arms only with
-    ``lambda_fields = 0``. Two grid points differing only in an inert scalar would
-    otherwise produce byte-identical pools under different labels.
+    ``potts_fields`` and ``profile`` only with ``lambda_coupling = 0``, the three
+    coupling arms only with ``lambda_fields = 0``, and ``full`` with both positive.
+    Two grid points differing only in an inert scalar would otherwise produce
+    byte-identical pools under different labels.
 ``sequences_per_cell``
     Pool size. One attempt per sequence: the protocol emits exactly ``L``
     residues by construction, so there is no attempt budget to match across arms.
@@ -68,18 +73,20 @@ key. ``sequence_diagnostics.jsonl`` carries this stage's own richer record for t
 same sequences -- both strengths, both component scores, the token ids, the
 per-step entropies -- so nothing is lost and nothing has to be smuggled into the
 contract. The contract is imported rather than restated, so the projection cannot
-drift from it, and two consequences of importing it are enforced before any
+drift from it, and three consequences of importing it are enforced before any
 weight is loaded:
 
 * an arm whose code the contract does not list is refused, naming the one-line
-  change that would admit it. ``cross_domain_coupling`` is in that position today:
-  the design document writes ``Cx`` for it while the contract writes ``Cx`` for the
-  permuted-column control, and a code cannot mean two arms. Emitting both as
-  ``Cx`` would merge two different interventions into one measured cell, so this
-  cell refuses instead;
+  change that would admit it. The two wrong-coupling controls keep distinct codes
+  -- ``Cx`` permuted columns, ``Cd`` cross-domain -- because emitting both as one
+  code would merge two different interventions into one measured cell;
+* whether an arm is guided is read off its own declared components, and the
+  contract is then required to classify it the same way, so a contract that lists
+  an arm without classifying it refuses here instead of silently adopting the
+  wrong dose rule;
 * a guided arm at zero strength is refused, because the contract requires a
-  positive ``lambda`` for ``M``, ``C``, ``F`` and ``Cx`` -- and because an arm at
-  zero strength *is* the native arm, which ``N`` already samples. The
+  positive ``lambda`` for every guided code -- and because an arm at zero strength
+  *is* the native arm, which ``N`` already samples. The
   lambda-zero-reproduces-native invariant is a property of the decoding module and
   is verified there, against both real tokenisers, rather than by writing a
   duplicate campaign cell.
@@ -117,9 +124,10 @@ from src.capability.core.amino_acids import AA20  # noqa: E402
 from src.capability.core.arms import output_logit_width  # noqa: E402
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.decoding.guided_decoding import (  # noqa: E402
-    ARM_CODES, ATTEMPTS_PER_SEQUENCE, GUIDANCE_ARMS, SAMPLING_RECIPE, CellIdentity,
-    GuidanceStrength, GuidedDecoder, build_arm_bias, generate_cell, native_layout, nominal_lambda,
-    select_cross_domain_donor, token_span_table)
+    ARM_CODES, ARM_COMPONENTS, ATTEMPTS_PER_SEQUENCE, FACTORIAL_ARMS, GUIDANCE_ARMS,
+    SAMPLING_RECIPE, CellIdentity, GuidanceStrength, GuidedDecoder, build_arm_bias,
+    component_scale, generate_cell, native_layout, nominal_lambda, select_cross_domain_donor,
+    token_span_table)
 from src.capability.generation import fold_recapitulation as fr  # noqa: E402
 from src.capability.readouts.readout_extraction import load_readout_arm  # noqa: E402
 
@@ -136,9 +144,27 @@ DIAGNOSTICS_FILENAME = "sequence_diagnostics.jsonl"
 ALLOWED_MODEL_ARMS = ("protgpt2", "progen2-medium")
 SETTLED_NATIVE_CONTRACT: dict[str, Any] = {"batch_size": 1, "budget": 1024, "dtype": "float32"}
 
+#: The declared strength axis. Both scalars are swept over it on the development
+#: domains, so ``native`` sits at ``(0, 0)`` and the exact Potts prefix conditional
+#: at ``(1, 1)``; an evaluation protocol declares the single frozen point chosen
+#: there. A protocol value off this axis is refused rather than silently swept, so
+#: a typo cannot become a dose.
+STRENGTH_AXIS: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0)
+#: The full development grid, as the sweep schedules it.
+DEVELOPMENT_STRENGTH_GRID: tuple[dict[str, float], ...] = tuple(
+    {"lambda_fields": fields, "lambda_coupling": coupling}
+    for fields in STRENGTH_AXIS for coupling in STRENGTH_AXIS
+)
+
 
 def require_contract_cell(guidance_arm: str, strength: GuidanceStrength) -> str:
-    """The contract code of one arm, refusing a cell the contract cannot represent."""
+    """The contract code of one arm, refusing a cell the contract cannot represent.
+
+    Whether an arm is guided is read off its own declared components, not off the
+    contract's ``GUIDED_ARMS``; the two are then required to agree, so a contract
+    that lists an arm without classifying it refuses here instead of silently
+    adopting the wrong dose rule.
+    """
 
     code = ARM_CODES[guidance_arm]
     if code not in fr.ARMS:
@@ -146,10 +172,17 @@ def require_contract_cell(guidance_arm: str, strength: GuidanceStrength) -> str:
             f"{guidance_arm} carries arm code {code!r}, which {fr.SCHEMA_VERSION} does not list "
             f"({list(fr.ARMS)}); the measurement stage would refuse every record of this cell. "
             f"Add {code!r} to src/capability/generation/fold_recapitulation.ARMS (and to its "
-            "GUIDED_ARMS) before scheduling this arm, or drop the arm; this cell will not write "
-            "records under another arm's code"
+            "GUIDED_ARMS) before scheduling this arm; this cell will not write records under "
+            "another arm's code"
         )
-    guided = code in fr.GUIDED_ARMS
+    guided = any(source != "none" for source in ARM_COMPONENTS[guidance_arm].values())
+    if guided != (code in fr.GUIDED_ARMS):
+        raise ValueError(
+            f"{guidance_arm} ({code}) {'carries' if guided else 'carries no'} bias component, but "
+            f"{fr.SCHEMA_VERSION} classifies it as "
+            f"{'guided' if code in fr.GUIDED_ARMS else 'unguided'}; reconcile "
+            "src/capability/generation/fold_recapitulation.GUIDED_ARMS before scheduling it"
+        )
     if guided and strength.is_zero:
         raise ValueError(
             f"{guidance_arm} is a guided arm, so {fr.SCHEMA_VERSION} requires a positive lambda; "
@@ -341,7 +374,15 @@ def validate_protocol(
                 "every protocol.strength_grid entry must hold exactly lambda_fields and "
                 "lambda_coupling"
             )
-        strengths.append(GuidanceStrength(entry["lambda_fields"], entry["lambda_coupling"]))
+        strength = GuidanceStrength(entry["lambda_fields"], entry["lambda_coupling"])
+        off_axis = [value for value in (strength.fields, strength.coupling)
+                    if value not in STRENGTH_AXIS]
+        if off_axis:
+            raise ValueError(
+                f"protocol.strength_grid holds {off_axis}, which is off the declared strength "
+                f"axis {list(STRENGTH_AXIS)}"
+            )
+        strengths.append(strength)
     if len(set(strengths)) != len(strengths):
         raise ValueError("protocol.strength_grid repeats a grid point")
     if not 0 <= strength_index < len(strengths):
@@ -619,6 +660,25 @@ def run_job(args: argparse.Namespace) -> dict[str, Any]:
             "exact_length": lengths == {target.length},
         },
         "summaries": pool_summaries(records),
+        "component_scale": {
+            "wildtype": component_scale(target, [target.wildtype]),
+            "pool": component_scale(target, [record["sequence"] for record in records]),
+            "basis": (
+                "wildtype is the domain's own wild type; pool is this cell's sampled sequences, "
+                "which for the native cell are the native-arm samples. Both are measured on the "
+                "target reference's own h, J and log f, never on a permuted or donor tensor, so "
+                "every arm of one domain reports the same quantity"
+            ),
+        },
+        "factorial": {
+            "arms": list(FACTORIAL_ARMS),
+            "reading": (
+                "coupling main effects are full - potts_fields and coupling - native; field main "
+                "effects are full - coupling and potts_fields - native. Both fields arms of the "
+                "factorial carry the Potts h, so neither contrast mixes a fields swap into a "
+                "coupling effect. The profile arm (Pr) is a pairwise practice baseline outside it"
+            ),
+        },
         "artifacts": {
             "sequences": {"file": SEQUENCES_FILENAME, "sha256": digest, "records": len(records),
                           "sidecar": f"{SEQUENCES_FILENAME}.sha256",

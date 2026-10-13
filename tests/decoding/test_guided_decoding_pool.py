@@ -49,6 +49,7 @@ def _protocol(**overrides):
             {"lambda_fields": 0.0, "lambda_coupling": 0.0},
             {"lambda_fields": 0.0, "lambda_coupling": 1.0},
             {"lambda_fields": 1.0, "lambda_coupling": 0.0},
+            {"lambda_fields": 0.5, "lambda_coupling": 0.25},
         ],
         "sequences_per_cell": 4,
         "seed_streams": [1000, 3000],
@@ -147,6 +148,7 @@ def test_the_parser_is_flat_and_accepts_the_queue_argument_order():
         ({"strength_grid": []}, "strength_grid"),
         ({"strength_grid": [{"lambda_fields": 0.0}]}, "lambda_fields and"),
         ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": -1.0}]}, "non-negative"),
+        ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": 2.0}]}, "strength axis"),
         ({"strength_grid": [{"lambda_fields": 0.0, "lambda_coupling": 1.0},
                             {"lambda_fields": 0.0, "lambda_coupling": 1.0}]}, "repeats"),
         ({"seed_streams": [1000, 1003]}, "disjoint"),
@@ -250,18 +252,12 @@ def test_the_contract_projection_is_the_siblings_twelve_keys():
     assert set(row) == set(fr.FIELDS)
 
 
-def test_a_cell_the_contract_cannot_represent_is_refused_before_any_weight_loads():
+def test_the_dose_rule_follows_the_arms_own_components():
     from src.capability.decoding.guided_decoding import GuidanceStrength
-    from src.capability.generation import fold_recapitulation as fr
 
     assert stage.require_contract_cell("coupling", GuidanceStrength(0.0, 1.0)) == "C"
     assert stage.require_contract_cell("permuted_coupling", GuidanceStrength(0.0, 1.0)) == "Cx"
     assert stage.require_contract_cell("native", GuidanceStrength(0.0, 0.0)) == "N"
-    # the cross-domain variant has no code in the contract; the design document's Cx is the
-    # contract's permuted-column control, and one code cannot mean two arms
-    assert "Cd" not in fr.ARMS
-    with pytest.raises(ValueError, match="fold_recapitulation.ARMS"):
-        stage.require_contract_cell("cross_domain_coupling", GuidanceStrength(0.0, 1.0))
     # a guided arm at zero strength is the native arm; the contract requires lambda > 0
     with pytest.raises(ValueError, match="positive lambda"):
         stage.require_contract_cell("coupling", GuidanceStrength(0.0, 0.0))
@@ -269,13 +265,36 @@ def test_a_cell_the_contract_cannot_represent_is_refused_before_any_weight_loads
         stage.require_contract_cell("native", GuidanceStrength(0.0, 1.0))
 
 
-def test_every_contract_code_this_stage_emits_is_one_the_contract_lists():
-    from src.capability.decoding.guided_decoding import ARM_CODES
-    from src.capability.generation import fold_recapitulation as fr
+def test_a_code_the_contract_does_not_list_is_refused_naming_the_fix(monkeypatch):
+    """Independent of which codes the measurement side has adopted so far."""
 
-    emitted = {code for arm, code in ARM_CODES.items() if arm != "cross_domain_coupling"}
-    assert emitted <= set(fr.ARMS)
-    assert {"M", "C", "F", "Cx"} <= set(fr.GUIDED_ARMS)
+    from src.capability.decoding.guided_decoding import GuidanceStrength
+
+    monkeypatch.setattr(stage.fr, "ARMS", ("N", "C"))
+    monkeypatch.setattr(stage.fr, "GUIDED_ARMS", ("C",))
+    assert stage.require_contract_cell("coupling", GuidanceStrength(0.0, 1.0)) == "C"
+    with pytest.raises(ValueError, match="fold_recapitulation.ARMS"):
+        stage.require_contract_cell("cross_domain_coupling", GuidanceStrength(0.0, 1.0))
+    with pytest.raises(ValueError, match="fold_recapitulation.ARMS"):
+        stage.require_contract_cell("profile", GuidanceStrength(1.0, 0.0))
+
+
+def test_a_contract_that_misclassifies_an_arm_is_refused(monkeypatch):
+    from src.capability.decoding.guided_decoding import GuidanceStrength
+
+    monkeypatch.setattr(stage.fr, "ARMS", ("N", "M", "C", "F", "Pr", "Cx", "Cd"))
+    monkeypatch.setattr(stage.fr, "GUIDED_ARMS", ("M", "C", "F", "Cx"))
+    with pytest.raises(ValueError, match="GUIDED_ARMS"):
+        stage.require_contract_cell("cross_domain_coupling", GuidanceStrength(0.0, 1.0))
+    with pytest.raises(ValueError, match="GUIDED_ARMS"):
+        stage.require_contract_cell("profile", GuidanceStrength(1.0, 0.0))
+
+
+def test_the_declared_strength_axis_and_development_grid():
+    assert stage.STRENGTH_AXIS == (0.0, 0.25, 0.5, 1.0)
+    assert len(stage.DEVELOPMENT_STRENGTH_GRID) == 16
+    assert {"lambda_fields": 0.0, "lambda_coupling": 0.0} in stage.DEVELOPMENT_STRENGTH_GRID
+    assert {"lambda_fields": 1.0, "lambda_coupling": 1.0} in stage.DEVELOPMENT_STRENGTH_GRID
 
 
 # ------------------------------------------------------------- the pool summary
