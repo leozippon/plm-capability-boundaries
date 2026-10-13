@@ -187,6 +187,54 @@ def validate_plan_background(row: dict) -> None:
                              f"single substitution at position {variant['position']}")
 
 
+def validate_likelihood_token_support(data, states: int, *, budget: int = 1024) -> None:
+    """Ragged token layout and packed/scored/pooled count bounds of one archive.
+
+    The likelihood-only extractor writes one flattened ``token_ids`` array with
+    cumulative ``token_offsets`` and one packed, scored and pooled count per state.
+    A reader that slices the flattened array by the offsets reads a different
+    state's tokens the moment any of those disagree, so the raggedness facts are
+    re-derived here instead of trusted: the offsets must start at zero, close over
+    ``token_ids`` and stay monotone within the frozen budget; the packed counts
+    must be exactly the offset widths; and the scored and pooled counts must be
+    positive and non-increasing (``pooled <= scored <= packed``).
+
+    This proves the ragged layout and those count bounds only. The actual scored
+    span boundaries and the native FULLSUM reduction are not independently
+    re-derived from these count arrays -- they are bound by the archive identity
+    and the producer protocol, whose packing API defines the scored span against
+    the model's own native boundaries. ``data`` is any mapping exposing those five
+    arrays, an ``NpzFile`` included.
+    """
+
+    offsets = np.asarray(data['token_offsets'])
+    identifiers = np.asarray(data['token_ids'])
+    packed = np.asarray(data['packed_token_counts'])
+    scored = np.asarray(data['scored_token_counts'])
+    pooled = np.asarray(data['pooled_token_counts'])
+    if offsets.ndim != 1 or offsets.dtype.kind not in 'iu' or offsets.shape != (states + 1,):
+        raise ValueError('token_offsets must be an integer vector of length states + 1')
+    if identifiers.ndim != 1 or identifiers.dtype.kind not in 'iu':
+        raise ValueError('token_ids must be a one-dimensional integer vector')
+    widths = np.diff(offsets)
+    if offsets[0] != 0 or offsets[-1] != len(identifiers):
+        raise ValueError('token_offsets must start at zero and close over token_ids')
+    if np.any(widths <= 0) or np.any(widths > budget):
+        raise ValueError(f'every packed state must hold one to {budget} tokens')
+    for name, counts in (('packed_token_counts', packed), ('scored_token_counts', scored),
+                         ('pooled_token_counts', pooled)):
+        if counts.ndim != 1 or counts.dtype.kind not in 'iu' or counts.shape != (states,):
+            raise ValueError(f'{name} must be an integer vector of one value per state')
+    if not np.array_equal(packed, widths):
+        raise ValueError('packed_token_counts disagree with the token_offsets widths')
+    if np.any(scored <= 0) or np.any(scored > packed):
+        raise ValueError('scored_token_counts must be positive and no larger than '
+                         'packed_token_counts')
+    if np.any(pooled <= 0) or np.any(pooled > scored):
+        raise ValueError('pooled_token_counts must be positive and no larger than '
+                         'scored_token_counts')
+
+
 def draw_order(background: str, sequences, *, seed: int = DRAW_SEED) -> list[str]:
     """Stable-hash ordering of a background's mutant sequences.
 
@@ -933,5 +981,5 @@ __all__ = [
     'nuisance_response', 'paired_increment', 'profile_block',
     'projection_matrices', 'qualify', 'single_substitution', 'spearman_increment',
     'state_features', 'substitution_rows', 'tokenisation_block',
-    'validate_plan_background',
+    'validate_likelihood_token_support', 'validate_plan_background',
 ]
