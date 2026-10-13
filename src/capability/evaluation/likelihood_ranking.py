@@ -80,6 +80,42 @@ requested draws the interval is withheld with that reason, and a pool with fewer
 than :data:`~src.capability.core.statistics.MINIMUM_BOOTSTRAP_UNITS` units is
 unavailable rather than pseudoreplicated. Adjusted and unadjusted estimates are
 formed on the *same* resampled rows, so their difference is a paired quantity.
+
+Rank policy and the labelled column-span reanalysis
+===================================================
+
+Two admission rules are declared for the adjusted association, and every record
+states which one produced it.
+
+``full_column_rank``
+    The frozen E17 contract and the default of every function here. Each
+declared column must contribute independent information, so a design with
+``rank < n_columns`` is reported unavailable with ``rank_deficient``.
+``column_span``
+    A separately labelled post-hoc reanalysis. A rank-deficient design is
+admitted, because the quantity the estimator forms is the residual of the
+mid-ranks on the design's *column span*, and the least-squares projection onto a
+span is unique whether or not the columns that span it are independent.
+Redundant coefficients are a coding fact, not an undefined residual association.
+The span rule still refuses a design that leaves too few residual degrees of
+freedom for the residuals to vary and a residual or score that is constant.
+
+The deficiency the span rule admits is real and is counted, never hidden. A
+categorical block fixed on the whole support has each indicator equal to one on
+the rows carrying its level, so a resample that omits a level carries an
+identically zero column there; a resample that omits the reference level makes
+the intercept redundant with the indicators that remain. Every design therefore
+reports its effective rank, its identically zero columns, and how many draws were
+rank-deficient, beside the draws that were actually discarded.
+
+Rank and projection share one tolerance. :func:`numpy.linalg.matrix_rank`, which
+reports the effective rank, uses NumPy's default cutoff
+``largest_singular_value * max(n_rows, n_columns) * eps``, and
+:func:`numpy.linalg.lstsq` called with ``rcond=None`` -- an SVD solve, never a
+normal-equation inverse -- keeps exactly the singular values above that same
+cutoff. The rank the diagnostics report is therefore the rank the projection
+keeps, so a residual degree of freedom can never be credited to a direction the
+solve discarded.
 """
 
 from __future__ import annotations
@@ -134,6 +170,43 @@ SELECTION_FRACTIONS: tuple[float, ...] = gp.SELECTION_FRACTIONS
 #: is saturated: the residuals are identically zero or lie on a line, and the
 #: correlation they produce is a property of the arithmetic rather than the pool.
 MINIMUM_RESIDUAL_DF = 2
+
+#: The rank-admission policy of the adjusted association; see "Rank policy and the
+#: labelled column-span reanalysis" in the module docstring.
+RANK_POLICY_FULL_COLUMN_RANK = "full_column_rank"
+RANK_POLICY_COLUMN_SPAN = "column_span"
+RANK_POLICIES: tuple[str, ...] = (RANK_POLICY_FULL_COLUMN_RANK, RANK_POLICY_COLUMN_SPAN)
+
+#: What each policy admits, recorded verbatim beside the numbers it produced.
+RANK_POLICY_STATEMENTS: dict[str, str] = {
+    RANK_POLICY_FULL_COLUMN_RANK: (
+        "the frozen E17 contract: every declared column must contribute independent "
+        "information, so a design whose rank is below its column count is unavailable, "
+        "whatever its residual projection would be"
+    ),
+    RANK_POLICY_COLUMN_SPAN: (
+        "the labelled post-hoc column-span reanalysis: a rank-deficient design is "
+        "admitted, because the residual of the mid-ranks on the design's column span is "
+        "unique and redundant coefficients do not make it undefined. Saturation, a "
+        "constant residual, a constant score and the unit floors still refuse"
+    ),
+}
+
+#: The label the column-span reanalysis writes into its artefact, so a reader cannot
+#: mistake it for the frozen full-column-rank result.
+POSTHOC_COLUMN_SPAN_LABEL = "posthoc_column_span_reanalysis"
+
+#: What the column-span rule cannot establish. Added to :data:`LIMITATIONS` only in
+#: the reanalysis it labels; the frozen list is left exactly as it was reported.
+COLUMN_SPAN_LIMITATIONS: tuple[str, ...] = (
+    "this is a labelled post-hoc column-span reanalysis, not the frozen E17 control "
+    "result; the frozen full-column-rank estimates and its refusals are unchanged and "
+    "are reported separately",
+    "admitting rank-deficient draws widens the admissible support of the full rung. "
+    "Where a categorical level is missing the coefficients are not identified, so the "
+    "residual association is a property of the column span and not of any one coding of "
+    "the missing level",
+)
 
 
 @dataclass(frozen=True)
@@ -450,6 +523,12 @@ def design_diagnostics(design: Sequence[Sequence[float]] | np.ndarray) -> dict[s
     residual degrees of freedom are ``n - rank``. A caller reads these before any
     inversion, which is the point: the rank is a property of the support and the
     declared columns, and a deficient one is reported rather than repaired.
+
+    The rank is the rank the least-squares projection keeps, because
+    :func:`numpy.linalg.matrix_rank` and :func:`numpy.linalg.lstsq` with
+    ``rcond=None`` both use NumPy's default singular-value cutoff. ``n_absent_columns``
+    counts the declared columns that are identically zero here, which is the
+    observable face of a categorical block whose resample omits a level.
     """
 
     matrix = np.asarray(design, dtype=np.float64)
@@ -465,7 +544,63 @@ def design_diagnostics(design: Sequence[Sequence[float]] | np.ndarray) -> dict[s
         "rank": rank,
         "residual_df": int(n_rows - rank),
         "rank_deficiency": int(n_columns - rank),
+        "n_absent_columns": int(np.count_nonzero(~matrix.any(axis=0))),
     }
+
+
+def absent_column_names(
+    design: Sequence[Sequence[float]] | np.ndarray, names: Sequence[str]
+) -> tuple[str, ...]:
+    """The declared columns that are identically zero on this support, by name.
+
+    A categorical block fixed on the whole support contributes one indicator per
+    non-reference level, and a support that omits a level carries a column of zeros
+    there. Such a column adds nothing to the design's column span, so naming it is
+    what makes the rank deficiency readable rather than merely countable.
+    """
+
+    matrix = np.asarray(design, dtype=np.float64)
+    if matrix.ndim != 2:
+        raise ValueError("a design is a two-dimensional matrix")
+    if matrix.shape[1] != len(names):
+        raise ValueError("the column names must align with the design's columns")
+    present = matrix.any(axis=0)
+    return tuple(str(name) for name, used in zip(names, present, strict=True) if not used)
+
+
+def _check_rank_policy(rank_policy: str) -> str:
+    """Refuse an undeclared rank policy rather than silently defaulting to one."""
+
+    if rank_policy not in RANK_POLICIES:
+        raise ValueError(f"rank policy {rank_policy!r} is not one of {RANK_POLICIES}")
+    return rank_policy
+
+
+def _rank_refusal(
+    diagnostics: Mapping[str, Any],
+    *,
+    rank_policy: str,
+    minimum_residual_df: int = MINIMUM_RESIDUAL_DF,
+) -> str | None:
+    """The reason a design cannot carry an adjusted association, or ``None``.
+
+    One gate, so the point association, the adjusted selection and the bootstrap
+    cannot drift onto different admission rules. Under
+    :data:`RANK_POLICY_FULL_COLUMN_RANK` a design that does not use every declared
+    column is refused; under :data:`RANK_POLICY_COLUMN_SPAN` it is admitted and the
+    caller counts the deficiency. Both refuse a design whose effective rank leaves
+    fewer residual degrees of freedom than ``minimum_residual_df``.
+    """
+
+    _check_rank_policy(rank_policy)
+    if (
+        rank_policy == RANK_POLICY_FULL_COLUMN_RANK
+        and diagnostics["rank"] < diagnostics["n_columns"]
+    ):
+        return "rank_deficient"
+    if diagnostics["residual_df"] < minimum_residual_df:
+        return "saturated"
+    return None
 
 
 # --------------------------------------------------------------- residualization
@@ -613,11 +748,15 @@ def partial_spearman(
     units: Sequence[Any] | np.ndarray | None = None,
     minimum_units: int = MINIMUM_BOOTSTRAP_UNITS,
     minimum_residual_df: int = MINIMUM_RESIDUAL_DF,
+    rank_policy: str = RANK_POLICY_FULL_COLUMN_RANK,
 ) -> dict[str, Any]:
     """Regression-adjusted association from the declared control ladder.
 
     Returns the design diagnostics whether or not the association is available, so
-    a caller never has to infer the support from a missing number.
+    a caller never has to infer the support from a missing number. ``rank_policy``
+    selects the admission rule: the frozen full-column-rank contract by default, or
+    the labelled column-span reanalysis of the module docstring, which admits a
+    rank-deficient design whose residual projection is still unique.
     """
 
     left = _as_1d(likelihood, "likelihood")
@@ -630,6 +769,7 @@ def partial_spearman(
         "estimator": "fwl_midrank_residual_spearman",
         **diagnostics,
         "minimum_residual_df": int(minimum_residual_df),
+        "rank_policy": _check_rank_policy(rank_policy),
     }
     if units is not None:
         labels = [str(unit) for unit in units]
@@ -638,11 +778,11 @@ def partial_spearman(
         n_units = len({*labels})
         record["n_units"] = int(n_units)
         record["unit_floor"] = bootstrap_unit_floor(n_units, minimum_units=minimum_units)
-    if diagnostics["rank"] < diagnostics["n_columns"]:
-        record.update(status="unavailable", reason="rank_deficient", spearman=None)
-        return record
-    if diagnostics["residual_df"] < minimum_residual_df:
-        record.update(status="unavailable", reason="saturated", spearman=None)
+    refusal = _rank_refusal(
+        diagnostics, rank_policy=rank_policy, minimum_residual_df=minimum_residual_df
+    )
+    if refusal is not None:
+        record.update(status="unavailable", reason=refusal, spearman=None)
         return record
     residual_likelihood = residualize(midranks(-left), matrix)
     residual_endpoint = residualize(midranks(right), matrix)
@@ -712,15 +852,25 @@ def cluster_bootstrap_association(
     seed: int,
     n_bootstrap: int,
     minimum_units: int = MINIMUM_BOOTSTRAP_UNITS,
+    rank_policy: str = RANK_POLICY_FULL_COLUMN_RANK,
 ) -> dict[str, Any]:
     """Cluster bootstrap of the adjusted association, controls refit per replicate.
 
     Each replicate resamples the declared units with replacement and refits the
     declared control design on the resampled rows before residualizing, so the
     adjustment is not held at its whole-pool value. A replicate is *invalid* when
-    the design is rank-deficient there, when it is saturated, or when the adjusted
-    statistic is undefined; the invalid reasons are counted and the valid fraction
-    is reported. Adjusted and unadjusted estimates are formed on the same rows.
+    its design is refused under the rank policy in force, when it is saturated, or
+    when the adjusted statistic is undefined; the invalid reasons are counted and
+    the valid fraction is reported. Adjusted and unadjusted estimates are formed on
+    the same rows.
+
+    ``rank_policy`` selects the admission rule: the frozen full-column-rank contract
+    by default, or the labelled column-span reanalysis, which uses a rank-deficient
+    draw rather than discarding it. In both cases the number of draws whose design
+    was rank-deficient, and how many of those carried an identically zero column, is
+    reported beside the discarded count. The draw's unit count is never a gate: the
+    declared floor governs the pool being resampled, and repeated clusters are the
+    bootstrap's own mechanism, not a defect of a draw.
     """
 
     left = _as_1d(likelihood, "likelihood")
@@ -741,6 +891,7 @@ def cluster_bootstrap_association(
         "n_bootstrap_requested": int(n_bootstrap),
         "controls_refit_within_replicate": True,
         "replicates_preserve_unit_multiplicity": True,
+        "rank_policy": _check_rank_policy(rank_policy),
     }
     if floor["degenerate"]:
         record.update(
@@ -760,16 +911,27 @@ def cluster_bootstrap_association(
     unadjusted: list[float] = []
     paired: list[float] = []
     invalid = {"rank_deficient": 0, "saturated": 0, "undefined_correlation": 0}
+    n_draws_rank_deficient = 0
+    n_draws_with_absent_columns = 0
     for _ in range(n_bootstrap):
         chosen = rng.choice(unit_values, size=unit_values.size, replace=True)
         indices = indices_for_unit_draw(index_lists, chosen)
         sub_design = matrix[indices]
         sub_rank = int(np.linalg.matrix_rank(sub_design))
         if sub_rank < n_columns:
-            invalid["rank_deficient"] += 1
-            continue
-        if int(indices.size - sub_rank) < MINIMUM_RESIDUAL_DF:
-            invalid["saturated"] += 1
+            n_draws_rank_deficient += 1
+        if not sub_design.any(axis=0).all():
+            n_draws_with_absent_columns += 1
+        refusal = _rank_refusal(
+            {
+                "n_columns": int(n_columns),
+                "rank": sub_rank,
+                "residual_df": int(indices.size - sub_rank),
+            },
+            rank_policy=rank_policy,
+        )
+        if refusal is not None:
+            invalid[refusal] += 1
             continue
         residual_likelihood = residualize(midranks(-left[indices]), sub_design)
         residual_endpoint = residualize(midranks(right[indices]), sub_design)
@@ -789,6 +951,8 @@ def cluster_bootstrap_association(
         n_valid_draws=n_valid,
         n_invalid_draws=n_bootstrap - n_valid,
         invalid_reasons=invalid,
+        n_draws_rank_deficient=n_draws_rank_deficient,
+        n_draws_with_absent_columns=n_draws_with_absent_columns,
         valid_replicate_fraction=float(valid_fraction),
     )
     minimum_draws = int(math.ceil(MINIMUM_FINITE_DRAW_FRACTION * n_bootstrap))
@@ -955,6 +1119,7 @@ def selection_diagnostics(
     *,
     fraction: float,
     rung_name: str,
+    rank_policy: str = RANK_POLICY_FULL_COLUMN_RANK,
 ) -> dict[str, Any]:
     """Raw and adjusted selection at one budget.
 
@@ -965,6 +1130,10 @@ def selection_diagnostics(
     raw likelihood on the declared design and evaluates the least-squares residual
     of the raw endpoint, which is a different unit from the raw endpoint: the two
     selected means are reported under different names and are never differenced.
+
+    The order and the endpoint are recomputed inside the call, so a caller that
+    refits per replicate re-selects per replicate. ``rank_policy`` selects the
+    admission rule, exactly as in :func:`partial_spearman`.
     """
 
     left = _as_1d(likelihood, "likelihood")
@@ -978,17 +1147,16 @@ def selection_diagnostics(
         "fraction": float(fraction),
         "n_selected": selected,
         "rung": rung_name,
+        "rank_policy": _check_rank_policy(rank_policy),
         "design": {
             key: diagnostics[key]
             for key in ("n_rows", "n_columns", "rank", "residual_df", "rank_deficiency")
         },
         "raw": raw_selection_block(left, right, fraction=fraction),
     }
-    if diagnostics["rank"] < diagnostics["n_columns"]:
-        record.update(status="unavailable", reason="rank_deficient", adjusted=None)
-        return record
-    if diagnostics["residual_df"] < MINIMUM_RESIDUAL_DF:
-        record.update(status="unavailable", reason="saturated", adjusted=None)
+    refusal = _rank_refusal(diagnostics, rank_policy=rank_policy)
+    if refusal is not None:
+        record.update(status="unavailable", reason=refusal, adjusted=None)
         return record
     residual_likelihood = residualize(left, matrix)
     residual_endpoint = residualize(right, matrix)

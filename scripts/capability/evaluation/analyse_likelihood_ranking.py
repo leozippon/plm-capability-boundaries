@@ -38,6 +38,17 @@ likelihood that is missing for a pool member, a novelty row that is missing, or 
 pool digest that does not match the declaration stops the run before any artefact
 is written. The whole record is assembled in memory and written once, atomically
 and with non-finite values rejected, so a partial success never reaches disk.
+
+A rank-deficient control design is refused by default: that is the frozen E17
+full-column-rank contract, and every refusal it produced stays in the frozen
+artefact. ``--column-span-reanalysis`` runs a separately labelled post-hoc
+reanalysis in which a rank-deficient design is admitted, because the least-squares
+projection onto a design's column span is unique whether or not the columns that
+span it are independent. Saturation, a constant residual, a constant score and the
+unit floors still refuse, and each rung reports the columns its support leaves
+identically zero and how many resampled draws were rank-deficient. The reanalysis
+writes its own label, rank policy and code hashes into a record in its own output
+directory, never into the frozen one.
 """
 
 from __future__ import annotations
@@ -64,6 +75,12 @@ from src.capability.evaluation import generated_phenotype as gp  # noqa: E402
 from src.capability.evaluation import likelihood_ranking as lr  # noqa: E402
 
 COMPLETION = "likelihood_ranking.json"
+
+#: The two sources that produce a record, hashed into it so a label binds to code.
+CODE_HASH_SOURCES: tuple[tuple[str, str], ...] = (
+    ("ranking_module", "src/capability/evaluation/likelihood_ranking.py"),
+    ("analysis_stage", "scripts/capability/evaluation/analyse_likelihood_ranking.py"),
+)
 
 #: The fewest draws at which a nominal 2.5% tail endpoint is an order statistic of
 #: at least ten draws rather than an extreme value (MINIMUM_DRAWS_IN_TAIL).
@@ -417,6 +434,15 @@ def source_hashes(args: argparse.Namespace, structure_receipts: list[dict[str, A
     return entries
 
 
+def code_hashes() -> list[dict[str, str]]:
+    """SHA-256 of the two sources that produced a record."""
+
+    return [
+        {"role": role, "path": path, "sha256": sha256_file(REPO_ROOT / path)}
+        for role, path in CODE_HASH_SOURCES
+    ]
+
+
 def rung_support(
     support_rows: list[dict[str, Any]],
     novelty: dict[str, float] | None,
@@ -454,6 +480,7 @@ def endpoint_report(
     *,
     seed: int,
     draws: int,
+    rank_policy: str,
 ) -> dict[str, Any]:
     """Every diagnostic for one arm and one endpoint."""
 
@@ -574,13 +601,16 @@ def endpoint_report(
             record["control_ladder"][rung.name] = block
             continue
         subset_rows = [support_rows[index] for index in subset]
-        design, _names = lr.build_design(
+        design, column_names = lr.build_design(
             [features[str(row["id"])] for row in subset_rows], rung, rung_vocabulary
         )
+        block["absent_columns"] = list(lr.absent_column_names(design, column_names))
         subset_likelihood = likelihood_vector[subset]
         subset_endpoint = endpoint_vector[subset]
         subset_units = [labels[index] for index in subset]
-        point = lr.partial_spearman(subset_likelihood, subset_endpoint, design, units=subset_units)
+        point = lr.partial_spearman(
+            subset_likelihood, subset_endpoint, design, units=subset_units, rank_policy=rank_policy
+        )
         unadjusted = lr.whole_pool_spearman(subset_likelihood, subset_endpoint)
         block["unadjusted_spearman_on_rung_support"] = unadjusted
         block["partial_spearman"] = point
@@ -597,6 +627,7 @@ def endpoint_report(
                 subset_units,
                 seed=seed,
                 n_bootstrap=draws,
+                rank_policy=rank_policy,
             )
         else:
             block["bootstrap"] = None
@@ -637,6 +668,7 @@ def endpoint_report(
                 state["design"],
                 fraction=fraction,
                 rung_name=rung.name,
+                rank_policy=rank_policy,
             )
             point["adjusted"][rung.name] = {
                 "status": block["status"],
@@ -657,6 +689,11 @@ def endpoint_report(
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     gp.require_fresh_out(args.out, COMPLETION)
+    rank_policy = (
+        lr.RANK_POLICY_COLUMN_SPAN
+        if args.column_span_reanalysis
+        else lr.RANK_POLICY_FULL_COLUMN_RANK
+    )
     cohort_path = args.cohort_dir / "evaluation_cohort.jsonl"
     e17 = json.loads((args.cohort_dir / "e17_declaration.json").read_text(encoding="utf-8"))
     background = json.loads((args.cohort_dir / "residue_background.json").read_text(encoding="utf-8"))
@@ -763,6 +800,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 unit,
                 seed=args.seed,
                 draws=args.draws,
+                rank_policy=rank_policy,
             )
         arms[arm] = arm_record
 
@@ -817,7 +855,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
         ),
         "method": lr.METHOD,
-        "limitations": list(lr.LIMITATIONS),
+        "rank_policy": rank_policy,
+        "rank_policy_statement": lr.RANK_POLICY_STATEMENTS[rank_policy],
+        "limitations": list(lr.LIMITATIONS)
+        + (list(lr.COLUMN_SPAN_LIMITATIONS) if args.column_span_reanalysis else []),
         "control_ladder": [
             {
                 "name": rung.name,
@@ -852,6 +893,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "survives and is not a trained selector",
         ],
     }
+    if args.column_span_reanalysis:
+        record["analysis_label"] = lr.POSTHOC_COLUMN_SPAN_LABEL
+        record["code_hashes"] = code_hashes()
     write_json(args.out / COMPLETION, record)
     return record
 
@@ -870,6 +914,15 @@ def main() -> None:
     )
     parser.add_argument("--draws", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20261010)
+    parser.add_argument(
+        "--column-span-reanalysis",
+        action="store_true",
+        help=(
+            "run the labelled post-hoc column-span reanalysis: admit a rank-deficient "
+            "control design because the least-squares projection onto its column span is "
+            "unique, while saturation, constant residuals and the unit floors still refuse"
+        ),
+    )
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()

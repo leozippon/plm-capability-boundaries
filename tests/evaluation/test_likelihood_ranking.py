@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -287,6 +288,265 @@ def test_adjusted_selected_tail_is_spearman_of_high_likelihood_residuals():
     assert bootstrap["paired_difference_ci95"] == pytest.approx([0., 0.], abs=1e-12)
 
 
+# ------------------------------------------------------ rank and column-span policy
+
+
+def test_a_zero_or_duplicate_nuisance_column_does_not_move_the_column_span_projection():
+    rng = np.random.default_rng(23)
+    n = 200
+    likelihood = rng.normal(size=n)
+    endpoint = -0.5 * likelihood + rng.normal(size=n)
+    base = np.column_stack([np.ones(n), rng.normal(size=n)])
+    designs = {
+        "zero": np.column_stack([base, np.zeros(n)]),
+        "duplicate": np.column_stack([base, base[:, 1]]),
+    }
+    reference = lr.partial_spearman(likelihood, endpoint, base)
+    assert reference["status"] == "measured"
+    assert lr.residualize(likelihood, base) == pytest.approx(
+        lr.residualize(likelihood, base)
+    )
+
+    for design in designs.values():
+        # The frozen contract refuses the redundant column; the span rule uses it.
+        frozen = lr.partial_spearman(likelihood, endpoint, design)
+        assert (frozen["status"], frozen["reason"]) == ("unavailable", "rank_deficient")
+        assert frozen["rank_policy"] == lr.RANK_POLICY_FULL_COLUMN_RANK
+        assert frozen["n_absent_columns"] == sum(
+            not column.any() for column in design.T
+        )
+
+        span = lr.partial_spearman(
+            likelihood, endpoint, design, rank_policy=lr.RANK_POLICY_COLUMN_SPAN
+        )
+        assert span["status"] == "measured"
+        assert span["rank_policy"] == lr.RANK_POLICY_COLUMN_SPAN
+        assert span["rank"] == reference["rank"]
+        assert span["spearman"] == pytest.approx(reference["spearman"], abs=1e-12)
+        # A redundant column changes neither the projection nor the residuals.
+        assert lr.residualize(likelihood, design) == pytest.approx(
+            lr.residualize(likelihood, base), abs=1e-12
+        )
+
+    with pytest.raises(ValueError):
+        lr.partial_spearman(likelihood, endpoint, base, rank_policy="undeclared")
+
+
+def test_an_absent_reference_leaves_the_dummy_block_spanning_the_same_space():
+    # Every row carries a non-reference level, so the intercept equals the sum of the
+    # indicators that remain. That is the dependency a draw omitting the reference
+    # level creates, and it is a coding redundancy rather than a lost direction.
+    rng = np.random.default_rng(24)
+    n = 240
+    level = rng.integers(0, 3, size=n)
+    indicators = np.column_stack([(level == k).astype(float) for k in range(3)])
+    deficient = np.column_stack([np.ones(n), indicators])
+    reduced = np.column_stack([np.ones(n), indicators[:, :2]])
+
+    diagnostics = lr.design_diagnostics(deficient)
+    assert (diagnostics["n_columns"], diagnostics["rank"]) == (4, 3)
+    assert diagnostics["n_absent_columns"] == 0
+    assert lr.design_diagnostics(reduced)["rank_deficiency"] == 0
+
+    likelihood = rng.normal(size=n)
+    endpoint = -0.4 * likelihood + rng.normal(size=n)
+    assert lr.residualize(likelihood, deficient) == pytest.approx(
+        lr.residualize(likelihood, reduced)
+    )
+    assert (
+        lr.partial_spearman(likelihood, endpoint, deficient)["reason"]
+        == "rank_deficient"
+    )
+    span = lr.partial_spearman(
+        likelihood, endpoint, deficient, rank_policy=lr.RANK_POLICY_COLUMN_SPAN
+    )
+    reference = lr.partial_spearman(likelihood, endpoint, reduced)
+    assert span["status"] == "measured"
+    assert span["spearman"] == pytest.approx(reference["spearman"])
+
+
+def test_absent_dummy_columns_are_named_rather_than_left_to_inference():
+    rng = np.random.default_rng(25)
+    families = ["PF00001", "PF00002", "PF00003"]
+    features = [
+        lr.make_row_features(
+            "".join(rng.choice(list(lr.AA20), size=60)),
+            int(rng.integers(40, 200)),
+            nearest_corpus_identity=float(rng.uniform(0.0, 90.0)),
+            families=[families[min(index // 30, 2)]],
+        )
+        for index in range(90)
+    ]
+    vocabulary = lr.family_vocabulary(features)
+    assert vocabulary == ("PF00001", "PF00002", "PF00003")
+    design, names = lr.build_design(features, lr.RUNG_FULL, vocabulary)
+    assert lr.absent_column_names(design, names) == ()
+    assert lr.design_diagnostics(design)["n_absent_columns"] == 0
+
+    # The first sixty rows carry PF00001 and PF00002 only, so the PF00003 indicator
+    # is identically zero -- the defect a resample that omits a level makes.
+    subset, subset_names = lr.build_design(features[:60], lr.RUNG_FULL, vocabulary)
+    assert subset_names == names
+    assert lr.absent_column_names(subset, subset_names) == ("family_PF00003",)
+    subset_diagnostics = lr.design_diagnostics(subset)
+    assert subset_diagnostics["n_absent_columns"] == 1
+    assert subset_diagnostics["rank_deficiency"] == 1
+
+    with pytest.raises(ValueError):
+        lr.absent_column_names(subset, subset_names[:-1])
+
+
+def test_the_span_policy_still_refuses_saturation_and_constant_residuals():
+    span = lr.RANK_POLICY_COLUMN_SPAN
+    n = 5
+    indicators = np.zeros((n, n - 1))
+    indicators[: n - 1] = np.eye(n - 1)
+    saturated = lr.partial_spearman(
+        np.arange(n, dtype=float),
+        np.arange(n, dtype=float),
+        np.column_stack([np.ones(n), indicators]),
+        rank_policy=span,
+    )
+    assert (saturated["status"], saturated["reason"]) == ("unavailable", "saturated")
+    assert saturated["residual_df"] == 0
+
+    rng = np.random.default_rng(27)
+    n = 30
+    likelihood = rng.normal(size=n)
+    design = np.column_stack([np.ones(n), rng.normal(size=n)])
+    constant_endpoint = lr.partial_spearman(
+        likelihood, np.ones(n), design, rank_policy=span
+    )
+    assert (constant_endpoint["status"], constant_endpoint["reason"]) == (
+        "unavailable",
+        "endpoint_residual_constant",
+    )
+    # A score the design already spans has no residual of its own either.
+    rank_design = np.column_stack([np.ones(n), np.arange(n, dtype=float)])
+    spanned_score = lr.partial_spearman(
+        np.arange(n, dtype=float), rng.normal(size=n), rank_design, rank_policy=span
+    )
+    assert spanned_score["reason"] == "likelihood_residual_constant"
+
+
+def test_the_span_bootstrap_does_not_add_a_per_draw_unit_floor():
+    rng = np.random.default_rng(26)
+    labels = np.repeat([f"c{index}" for index in range(8)], 30)
+    n = labels.size
+    likelihood = rng.normal(size=n)
+    endpoint = -0.7 * likelihood + rng.normal(size=n)
+    design = np.column_stack([np.ones(n), rng.normal(size=n)])
+    result = lr.cluster_bootstrap_association(
+        likelihood,
+        endpoint,
+        design,
+        labels,
+        seed=7,
+        n_bootstrap=400,
+        rank_policy=lr.RANK_POLICY_COLUMN_SPAN,
+    )
+    assert result["status"] == "measured"
+    assert result["rank_policy"] == lr.RANK_POLICY_COLUMN_SPAN
+    assert result["n_valid_draws"] == 400
+    assert set(result["invalid_reasons"]) == {
+        "rank_deficient",
+        "saturated",
+        "undefined_correlation",
+    }
+    assert result["n_draws_rank_deficient"] == result["invalid_reasons"]["rank_deficient"]
+
+    # A per-draw unit floor would discard most of these draws, and would discard
+    # 2,058 of the conditioned arm's 10,000 because that pool declares thirteen
+    # units. The declared floor governs the pool being resampled, not the draw.
+    draws = np.random.default_rng(7)
+    distinct = [
+        len(set(draws.choice(8, size=8, replace=True).tolist())) for _ in range(400)
+    ]
+    assert sum(count < 8 for count in distinct) > 100
+
+
+def test_the_bootstrap_counts_the_draws_whose_resample_leaves_a_column_zero():
+    # One level of a categorical block occurs in a single unit, so most draws omit it
+    # and its indicator is identically zero there. That is the defect the labelled
+    # reanalysis admits, and it must be counted rather than hidden.
+    rng = np.random.default_rng(29)
+    rows_per_unit = 20
+    labels = np.repeat([f"c{unit}" for unit in range(10)], rows_per_unit)
+    n = labels.size
+    level = np.zeros(n)
+    offset = 9 * rows_per_unit
+    level[offset : offset + 5] = 1.0
+    likelihood = rng.normal(size=n)
+    endpoint = -0.6 * likelihood + rng.normal(size=n)
+    design = np.column_stack([np.ones(n), rng.normal(size=n), level])
+
+    result = lr.cluster_bootstrap_association(
+        likelihood,
+        endpoint,
+        design,
+        labels,
+        seed=11,
+        n_bootstrap=400,
+        rank_policy=lr.RANK_POLICY_COLUMN_SPAN,
+    )
+    assert result["status"] == "measured"
+    assert result["n_valid_draws"] == 400
+    assert result["n_draws_with_absent_columns"] > 0
+    # An identically zero column always costs at least one rank, never more draws
+    # than the design was rank-deficient in.
+    assert result["n_draws_with_absent_columns"] <= result["n_draws_rank_deficient"]
+
+
+def test_the_reported_rank_is_the_rank_the_projection_keeps():
+    # matrix_rank and lstsq(rcond=None) share NumPy's default singular-value cutoff,
+    # so the residual degrees of freedom are counted against the rank the projection
+    # actually uses and a discarded direction is never credited to the residual space.
+    rng = np.random.default_rng(30)
+    n = 60
+    design = np.column_stack(
+        [np.ones(n), rng.normal(size=n), rng.normal(size=n), rng.normal(size=n)]
+    )
+    design[:, 3] = design[:, 2]
+    diagnostics = lr.design_diagnostics(design)
+    assert diagnostics["rank_deficiency"] == 1
+    assert diagnostics["n_absent_columns"] == 0
+    projection_rank = int(np.linalg.lstsq(design, rng.normal(size=n), rcond=None)[2])
+    assert diagnostics["rank"] == projection_rank
+    assert diagnostics["residual_df"] == n - projection_rank
+
+
+def test_the_span_policy_reorders_the_adjusted_selection_by_residualized_score():
+    rng = np.random.default_rng(28)
+    n = 200
+    likelihood = rng.normal(size=n)
+    endpoint = -0.5 * likelihood + rng.normal(size=n)
+    design = np.column_stack([np.ones(n), rng.normal(size=n)])
+    redundant = np.column_stack([design, design[:, 1]])
+
+    frozen = lr.selection_diagnostics(
+        likelihood, endpoint, redundant, fraction=0.25, rung_name="rung"
+    )
+    assert (frozen["status"], frozen["reason"]) == ("unavailable", "rank_deficient")
+    assert frozen["adjusted"] is None
+
+    reference = lr.selection_diagnostics(
+        likelihood, endpoint, design, fraction=0.25, rung_name="rung"
+    )
+    span = lr.selection_diagnostics(
+        likelihood,
+        endpoint,
+        redundant,
+        fraction=0.25,
+        rung_name="rung",
+        rank_policy=lr.RANK_POLICY_COLUMN_SPAN,
+    )
+    assert span["status"] == "measured"
+    assert span["rank_policy"] == lr.RANK_POLICY_COLUMN_SPAN
+    assert span["raw"] == reference["raw"]
+    for key in ("selected_mean", "gain_over_random", "selected_tail_spearman"):
+        assert span["adjusted"][key] == pytest.approx(reference["adjusted"][key])
+
+
 # --------------------------------------------------------------- end-to-end tree
 
 
@@ -485,7 +745,14 @@ def build_tree(root: Path, *, n_per_arm: int = 48, class_keys: int = 12) -> Tree
     )
 
 
-def make_args(tree: Tree, out: Path, *, with_novelty: bool = True, draws: int = 200) -> argparse.Namespace:
+def make_args(
+    tree: Tree,
+    out: Path,
+    *,
+    with_novelty: bool = True,
+    draws: int = 200,
+    column_span_reanalysis: bool = False,
+) -> argparse.Namespace:
     return argparse.Namespace(
         cohort_dir=tree.cohort,
         structure=[tree.fold],
@@ -495,6 +762,7 @@ def make_args(tree: Tree, out: Path, *, with_novelty: bool = True, draws: int = 
         draws=draws,
         seed=3,
         device="cpu",
+        column_span_reanalysis=column_span_reanalysis,
         out=out,
     )
 
@@ -715,3 +983,94 @@ def test_a_cohort_sequence_digest_mismatch_stops_the_run(tmp_path: Path):
     write_jsonl(tree.cohort / "evaluation_cohort.jsonl", rows)
     with pytest.raises(SystemExit):
         alr.run(make_args(tree, tmp_path / "out"))
+
+
+def test_the_column_span_reanalysis_is_labelled_and_leaves_the_frozen_result_alone(
+    tmp_path: Path,
+):
+    tree = build_tree(tmp_path / "tree")
+    frozen_dir = tmp_path / "frozen"
+    frozen = alr.run(make_args(tree, frozen_dir, draws=1000))
+    assert frozen["rank_policy"] == lr.RANK_POLICY_FULL_COLUMN_RANK
+    assert "analysis_label" not in frozen
+    assert "code_hashes" not in frozen
+
+    span_dir = tmp_path / "span"
+    labelled = alr.run(make_args(tree, span_dir, draws=1000, column_span_reanalysis=True))
+    assert labelled["analysis_label"] == lr.POSTHOC_COLUMN_SPAN_LABEL
+    assert labelled["rank_policy"] == lr.RANK_POLICY_COLUMN_SPAN
+    assert {entry["role"] for entry in labelled["code_hashes"]} == {
+        "ranking_module",
+        "analysis_stage",
+    }
+    assert any(
+        "post-hoc column-span reanalysis" in line for line in labelled["limitations"]
+    )
+    json.dumps(labelled, allow_nan=False)
+
+    for arm in labelled["arms"]:
+        for endpoint in lr.ENDPOINTS:
+            frozen_endpoint = frozen["arms"][arm]["endpoints"][endpoint]
+            span_endpoint = labelled["arms"][arm]["endpoints"][endpoint]
+            for rung in lr.RUNGS:
+                frozen_block = frozen_endpoint["control_ladder"][rung.name]
+                span_block = span_endpoint["control_ladder"][rung.name]
+                # Every estimate the frozen contract measured is reproduced exactly.
+                assert span_block["partial_spearman"]["spearman"] == pytest.approx(
+                    frozen_block["partial_spearman"]["spearman"]
+                )
+                assert span_block["bootstrap"]["rank_policy"] == lr.RANK_POLICY_COLUMN_SPAN
+                if frozen_block["bootstrap"]["n_draws_rank_deficient"] == 0:
+                    # No draw was refused by the frozen gate, so the same draws carry
+                    # the same interval in both modes.
+                    assert span_block["bootstrap"]["adjusted_ci95"] == pytest.approx(
+                        frozen_block["bootstrap"]["adjusted_ci95"]
+                    )
+                    assert (
+                        span_block["bootstrap"]["n_valid_draws"]
+                        == frozen_block["bootstrap"]["n_valid_draws"]
+                    )
+
+            frozen_full = frozen_endpoint["control_ladder"][lr.RUNG_FULL.name]
+            span_full = span_endpoint["control_ladder"][lr.RUNG_FULL.name]
+            assert span_full["absent_columns"] == []
+            span_bootstrap = span_full["bootstrap"]
+            # The draws the frozen gate withheld by rank are now used, and the
+            # deficiency is reported rather than hidden.
+            assert span_bootstrap["n_draws_rank_deficient"] > 0
+            assert span_bootstrap["n_draws_with_absent_columns"] <= span_bootstrap[
+                "n_draws_rank_deficient"
+            ]
+            # The rank gate is off, so no draw is discarded for it, and the admitted
+            # draws raise the valid count. What remains discarded is refused by the
+            # variance and valid-fraction checks the reanalysis keeps.
+            assert span_bootstrap["invalid_reasons"]["rank_deficient"] == 0
+            assert (
+                span_bootstrap["n_valid_draws"]
+                > frozen_full["bootstrap"]["n_valid_draws"]
+            )
+            if frozen_full["bootstrap"]["status"] == "unavailable":
+                assert span_bootstrap["status"] in {"measured", "unavailable"}
+            if span_bootstrap["status"] == "unavailable":
+                assert span_bootstrap["reason"] == "valid_replicate_fraction_below_floor"
+    # The 600-unit arm's interval is published by the reanalysis; the 13-unit arm of
+    # this fixture is too thin to clear the valid-fraction floor either way.
+    assert all(
+        labelled["arms"]["protgpt2"]["endpoints"][endpoint]["control_ladder"][
+            lr.RUNG_FULL.name
+        ]["bootstrap"]["status"]
+        == "measured"
+        for endpoint in lr.ENDPOINTS
+    )
+
+    # The frozen record is a different file in a different directory, and a
+    # reanalysis cannot be written over the run it reanalyses.
+    with pytest.raises(SystemExit):
+        alr.run(make_args(tree, frozen_dir, draws=1000, column_span_reanalysis=True))
+
+
+def test_the_column_span_flag_is_declared_opt_in(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["analyse_likelihood_ranking.py", "--help"])
+    with pytest.raises(SystemExit):
+        alr.main()
+    assert "--column-span-reanalysis" in capsys.readouterr().out
