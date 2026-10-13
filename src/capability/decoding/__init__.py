@@ -1,1 +1,1 @@
-"""Decoding as the limiting factor: fixed weights, swept sampler."""
+"""Decoding at fixed weights: the sampler swept, and the next-token logits guided."""
