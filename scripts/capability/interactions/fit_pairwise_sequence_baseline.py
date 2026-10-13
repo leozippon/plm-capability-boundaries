@@ -25,7 +25,7 @@ import numpy as np
 
 from src.capability.core.sequence_alignment import alignment_rows, verify_rows_against_profile
 from src.capability.context.homology import ALIGNMENT_FIELDS, parse_hits
-from src.capability.stability.pairwise_stability import read_plmc, validate_cycle
+from src.capability.stability.pairwise_stability import COHORT_SCHEMA, read_plmc, validate_cycle
 from src.capability.context.profiles import (
     AA20, GAP_CODE, NEFF_IDENTITY_FLOOR, PROFILE_COVERAGE_FLOOR,
     REWEIGHT_IDENTITY_FLOOR, build_profile, sequence_weights)
@@ -313,7 +313,26 @@ def main() -> None:
         raise FileExistsError(report)
 
     cohort = json.loads(args.cohort.read_text())
+    # The lambda grid is selected on held-out homolog rows alone, but a pairwise
+    # contrast needs the paired-cycle support, so a cohort that does not carry it
+    # is refused here rather than fitted with an empty contrast list. A
+    # ``stability_singles_cohort_v1`` panel is WT plus variants: its variant count
+    # is an experimental panel size, not MSA depth, and it names no distinct site
+    # pair. Reading its cycles through a default would silently deliver a model
+    # with no contrast at all.
+    if cohort.get("schema") != COHORT_SCHEMA:
+        raise SystemExit(
+            f"{args.cohort}: schema {cohort.get('schema')!r} is not {COHORT_SCHEMA!r}. "
+            "This fit requires the paired-cycle cohort a double-mutant contrast is "
+            "defined on; a singles panel is unsupported here and is not fitted.")
     wanted = {row["name"]: row for row in cohort["backgrounds"]}
+    without_cycles = sorted(name for name, row in wanted.items() if not row.get("cycles"))
+    if without_cycles:
+        raise SystemExit(
+            f"{len(without_cycles)} backgrounds carry no pairwise cycles, e.g. "
+            f"{without_cycles[:3]}; the paired contrast is required for every "
+            "background and a missing one is a corrupt paired cohort, not an "
+            "empty contrast list")
     grouped: dict[str, list] = {name: [] for name in wanted}
     for hit in parse_hits(args.hits, fields=ALIGNMENT_FIELDS):
         if hit.query in grouped:
