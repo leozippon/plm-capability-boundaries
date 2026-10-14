@@ -70,10 +70,13 @@ def test_overlapping_candidates_are_refused():
         bud.analyse(dev, dev[:30] + records(400, 5000, "p"), {"T": make_model("T", 10, 1)}, 5)
 
 
-def test_determinism_bound_is_computed():
-    base = records(4, 1, "a")
-    twin = [{**base[0], "id": "x", "tm_score": base[0]["tm_score"] + 0.004}, {**base[1], "id": "y"}]
-    out = bud.determinism(base + twin)
-    assert out["n_records"] == 6 and out["n_distinct_domain_sequence_pairs"] == 4
-    assert out["n_pairs_with_more_than_one_record"] == 2 and out["n_pairs_with_two_distinct_tm_values"] == 1
-    assert out["max_abs_tm_difference"] == pytest.approx(0.004)
+def test_determinism_bound_is_computed_and_split_by_run():
+    dev = records(4, 1, "a")
+    pool = [{**dev[0], "id": "x", "tm_score": dev[0]["tm_score"] + 0.004}, {**dev[1], "id": "y"},
+            {**dev[2], "id": "z"}, {**dev[2], "id": "w"}]  # dev[2] repeats once across runs and once within the pool run
+    out = bud.determinism(dev, pool)
+    assert out["n_records"] == 8 and out["n_distinct_domain_sequence_pairs"] == 4
+    assert out["n_pairs_repeated_across_runs"] == 3 and out["n_across_run_pairs_with_two_distinct_tm_values"] == 1
+    assert out["max_abs_tm_difference_across_runs"] == pytest.approx(0.004)
+    assert out["n_pairs_repeated_within_a_run"] == 1 and out["n_within_run_pairs_with_two_distinct_tm_values"] == 0
+    assert "different GPUs" in out["note"] and "three orders of magnitude" in out["note"]

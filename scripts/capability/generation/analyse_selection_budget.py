@@ -47,8 +47,13 @@ DEVELOPMENT_ONLY = (
     "primary-family cells and 100 in the descriptive frontier cells, not 500, so budget scaling cannot be tested "
     "on them; only the captured fraction at their depths can be.")
 DETERMINISM_NOTE = (
-    "The oracle cannot be exploiting per-fold stochasticity if the endpoint is effectively deterministic per "
-    "sequence: the bound below is the spread of TM between records of the same (domain, sequence).")
+    "The oracle cannot be exploiting per-fold stochasticity if the endpoint is deterministic per sequence. It is "
+    "exactly deterministic within a fold run (records of one sequence in one run share a single fold, because the "
+    "cohort stage deduplicates folding within its own records) and reproducible across runs to within the bound "
+    "below. The few sequences carrying two TM values were folded once in the development campaign and again in the "
+    "pools campaign, on different GPUs, which is why they differ at all. The cross-run bound is about three orders "
+    "of magnitude below the oracle headroom. Within-run identity is a property of the deduplication, not an "
+    "independent measurement; the cross-run counts are the measurement.")
 
 
 def tm_oracle_top(tm: np.ndarray, values: dict, k: int) -> dict:
@@ -57,18 +62,24 @@ def tm_oracle_top(tm: np.ndarray, values: dict, k: int) -> dict:
     return sf.topk_means(tm, values, k)
 
 
-def determinism(records) -> dict:
-    """How far TM varies between records of one (domain, sequence): the evidence that the endpoint is deterministic."""
+def determinism(dev_records, pool_records) -> dict:
+    """How far TM varies between records of one (domain, sequence), split into within-run and across-run repeats."""
 
-    tms = defaultdict(list)
-    for r in records:
-        tms[(r["domain"], r["sequence"])].append(r["tm_score"])
-    spreads = sorted(float(np.ptp(v)) for v in tms.values() if len(v) > 1 and np.ptp(v) > 0.0)
-    return {"note": DETERMINISM_NOTE, "n_records": len(records), "n_distinct_domain_sequence_pairs": len(tms),
-            "n_pairs_with_more_than_one_record": sum(len(v) > 1 for v in tms.values()),
-            "n_pairs_with_two_distinct_tm_values": len(spreads),
-            "max_abs_tm_difference": spreads[-1] if spreads else 0.0,
-            "median_abs_tm_difference_among_those": float(np.median(spreads)) if spreads else 0.0}
+    tms = defaultdict(lambda: {"dev": [], "pool": []})
+    for source, records in (("dev", dev_records), ("pool", pool_records)):
+        for r in records:
+            tms[(r["domain"], r["sequence"])][source].append(r["tm_score"])
+    across = {k: v["dev"] + v["pool"] for k, v in tms.items() if v["dev"] and v["pool"]}
+    within = {k: v[s] for k, v in tms.items() for s in ("dev", "pool") if len(v[s]) > 1}
+    differing = lambda groups: sorted(float(np.ptp(v)) for v in groups.values() if np.ptp(v) > 0.0)
+    spreads, within_spreads = differing(across), differing(within)
+    return {"note": DETERMINISM_NOTE, "n_records": len(dev_records) + len(pool_records),
+            "n_distinct_domain_sequence_pairs": len(tms),
+            "n_pairs_repeated_across_runs": len(across), "n_across_run_pairs_with_two_distinct_tm_values": len(spreads),
+            "max_abs_tm_difference_across_runs": spreads[-1] if spreads else 0.0,
+            "median_abs_tm_difference_across_runs_among_differing": float(np.median(spreads)) if spreads else 0.0,
+            "n_pairs_repeated_within_a_run": len(within),
+            "n_within_run_pairs_with_two_distinct_tm_values": len(within_spreads)}
 
 
 def cell_depths(rows, model, donor, permutation_seed) -> dict:
@@ -160,7 +171,7 @@ def analyse(dev_records, pool_records, family_models, permutation_seed) -> dict:
                           "summaries the ratio of the cross-cell mean gains; depth d = the first d candidates of a "
                           "cell in generation-seed order",
             "depths": list(DEPTHS), "ks": list(KS), "selectors": [*sf.SELECTORS], "permutation_seed": permutation_seed,
-            "determinism": determinism([*dev_records, *pool_records]),
+            "determinism": determinism(dev_records, pool_records),
             "summary": {arm: summarise_arm([c for c in cells if c["arm"] == arm]) for arm in arms},
             "cells": cells}
 
