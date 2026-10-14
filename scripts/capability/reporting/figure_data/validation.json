@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-14T13:28:09.724455+00:00",
+  "date": "2026-10-14T13:34:09.856895+00:00",
   "journal": "Nature Computational Science",
   "article_type": "Analysis",
   "status": "format_and_provenance_checks_qualified_pass",
@@ -9,7 +9,7 @@
   "warnings": [
     "Supplied raster: native [1536, 1024] at 298.41 DPI; burned-in text not certified; 450-DPI preview does not raise native resolution."
   ],
-  "main_word_count": 3481,
+  "main_word_count": 3495,
   "abstract_word_count": 141,
   "count_convention": "Whitespace-separated prose after removing display environments, section headings and citation/reference commands; excludes abstract, Methods, references and legends. Hyphenated tokens count once; tildes and inline-math delimiters are normalized.",
   "main_figures": 5,
@@ -27,7 +27,7 @@
   "pdfs": {
     "main": {
       "pages": 23,
-      "sha256": "78cdf845dcb3886a1fea9e51b3a93beff82d3de764350bbcdb7b19a1bbab1f90",
+      "sha256": "c1a08cb3a98e65f2605851af36660adf5cf098672f4503083187ffcc0b8cf2a0",
       "footer_faults": []
     },
     "supplementary-information": {
@@ -38,12 +38,12 @@
   },
   "failures": [],
   "files_sha256": {
-    "main.tex": "90ff934d1e4d8c4dc9032a503e2b7250c524630c5cf3bbfc5fdc9f4ff53a7ee8",
+    "main.tex": "f4626fb8a3ccac13946806197a9af2165f5a20ebb81290eeb44959a76b10597f",
     "supplementary-information.tex": "9e67a3507eae2ec75cb89e9a0644bbf2f06363504a743abbbe34bad7e5d6776f",
     "references.bib": "559e3e7c365dcb01f5f01c2bdebea8de56b40d4ecdc9779463cf498679d377fb",
     "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
     "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",
-    "validate_manuscript.py": "a53f6e474333bfbdd4d4f312f859e1795125293df8578c8f048333a32a1d04c8"
+    "validate_manuscript.py": "a5daac93c21e4184eea3c29967510f98fe51f8caef547ecb7db02531ab0fcd10"
   },
   "source_tables_sha256": {
     "capability-map-source.csv": "5a349f70229b04618cb91bc638d8c71f145ddb0967e3235e437386306d236b67",
