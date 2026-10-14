@@ -21,6 +21,9 @@ spec.loader.exec_module(ana)
 
 DEV_RECORDS = ROOT / "results/R6/e20_development_20261013/e20devc_measure_cpu/per_sequence.jsonl"
 DEV_REFERENCES = ROOT / "data/pairwise_assets/family_references_jointh_20261013"
+MSA_DIR = ROOT / "data/pairwise_assets/same12_provenance_20260924/msa"
+WILD_TYPES = ROOT / "data/pairwise_assets/same12_provenance_20260924/query_12.faa"
+ASSETS = ["--msa-dir", str(MSA_DIR), "--wild-type-fasta", str(WILD_TYPES)]
 AA = "ACDEFGHIKLMNPQRSTVWY"
 OFFSETS = np.linspace(-0.01, 0.01, 8)  # sum to zero, so the mean of a planted per-domain effect is the effect
 
@@ -73,7 +76,7 @@ def run(rows, family_models=None):
 def test_development_records_are_refused_on_every_primary_contrast(tmp_path):
     out = tmp_path / "dev.json"
     assert ana.main(["--records", str(DEV_RECORDS), "--references", str(DEV_REFERENCES), "--out", str(out),
-                     "--permutation-seed", "20261013"]) == 0
+                     "--permutation-seed", "20261013", *ASSETS]) == 0
     result = json.loads(out.read_text())
     assert len(result["domains"]) == 4 < ana.MINIMUM_BOOTSTRAP_UNITS and not result["matches_sealed_eight"]
     for family in ("primary_tm", "coprimary_feasibility"):
@@ -87,6 +90,9 @@ def test_development_records_are_refused_on_every_primary_contrast(tmp_path):
     assert len(pooled["C-Pr"]["per_domain"]) == 4  # the raw pattern stays visible
     assert pooled["C-Cx"]["n_domains"] == 0 and "no Cx cell" in pooled["C-Cx"]["reason"]
     assert result["equivalence"]["verdict"] == ana.VERDICT_UNESTIMABLE
+    depth = result[ana.DEPTH_LABEL]  # no evaluation domain is present, so the secondary is refused too
+    assert all(t["status"] == "unestimable" for t in depth["tests"].values())
+    assert depth["per_domain_gain"] == {}
 
 
 def test_planted_effect_is_recovered_and_covered():
@@ -275,10 +281,10 @@ def test_missing_asset_names_the_option(tmp_path):
     assert run_.returncode == 2 and "--references" in run_.stderr
     with pytest.raises(FileNotFoundError, match="--references"):
         ana.main(["--records", str(DEV_RECORDS), "--references", str(tmp_path / "nope"),
-                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1"])
+                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *ASSETS])
     with pytest.raises(FileNotFoundError, match="--records"):
         ana.main(["--records", str(tmp_path / "nope.jsonl"), "--references", str(DEV_REFERENCES),
-                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1"])
+                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *ASSETS])
 
 
 def test_verdict_reason_names_every_condition_with_numbers():
@@ -294,3 +300,51 @@ def test_verdict_reason_names_every_condition_with_numbers():
     assert "progen2-medium C-Pr upper bound" in reason  # the clear bounds are listed too
     clean = run(synthetic({}))["equivalence"]["verdict_reason"]
     assert clean.startswith("all four model-level upper bounds are below margin")
+
+
+def test_real_covariates_cover_twelve_domains_and_match_the_declared_depths():
+    wild = ana.fr.load_wild_types(WILD_TYPES)
+    cov = ana.msa_covariates(MSA_DIR, wild)
+    assert len(cov) == 12 and {d for d, v in cov.items() if v["role"] == "evaluation"} == set(ana.SEALED_DOMAINS)
+    declared = {d: v["msa_rows"] for d, v in ana.DEVELOPMENT_OBSERVATION.items()}
+    assert {d: cov[d]["msa_rows"] for d in declared} == declared
+    rows = [v["msa_rows"] for v in cov.values() if v["role"] == "evaluation"]
+    assert (min(rows), max(rows)) == (177, 9842)
+    assert all(0.0 < v["mean_msa_identity_to_query"] < 100.0 for v in cov.values())
+
+
+def depth_covariates(depths):
+    return {d: {"role": "evaluation", "length": 40 + 3 * k, "msa_rows": n, "log10_msa_depth": float(np.log10(n)),
+                "mean_msa_identity_to_query": 50.0 + k}
+            for k, (d, n) in enumerate(zip(ana.SEALED_DOMAINS, depths))}
+
+
+def test_depth_hypothesis_recovers_a_planted_negative_ordering_and_leaves_the_verdict_alone():
+    depths = [200, 300, 450, 700, 1000, 1500, 3000, 9000]
+    rows = []
+    for model in ana.MODELS:
+        for k, d in enumerate(ana.SEALED_DOMAINS):
+            rows += make_cell(model, d, "N", 0.40 + 0.01 * ((k * 3) % 8) , seed=k)
+            for arm in ana.GUIDANCE_ARMS:  # gain falls with depth; F is the best arm
+                rows += make_cell(model, d, arm, 0.40 + 0.01 * ((k * 3) % 8) + (0.1 - 0.01 * k) * (arm == "F"), seed=k)
+    plain = run(rows)
+    with_depth = ana.analyse(rows, {}, 7, depth_covariates(depths))
+    block = with_depth[ana.DEPTH_LABEL]
+    t = block["tests"]["log10_msa_depth"]
+    assert t["status"] == "reported" and t["spearman"]["estimate"] == pytest.approx(-1.0)
+    assert t["spearman"]["interval95_percentile"][1] <= 1e-9
+    assert t["predeclared_direction"] == "negative"
+    assert block["provenance"]["influences_primary_verdict"] is False and block["provenance"]["outside_primary_holm_family"]
+    assert "1/24" in block["caveat"] and "no pass/fail" in block["caveat"]
+    assert block["per_domain_gain"]["1E0L"]["gain"] == pytest.approx(0.1) and block["per_domain_gain"]["1E0L"]["best_arm_by_model"]["protgpt2"] == "F"
+    assert set(block["covariates_all_twelve_domains"]) == set(ana.SEALED_DOMAINS)
+    for key in ("primary_tm", "coprimary_feasibility", "equivalence"):  # the secondary cannot move the primary
+        assert with_depth[key] == plain[key]
+
+
+def test_rank_correlation_and_partial():
+    x, y = [1, 2, 3, 4, 5, 6, 7, 8], [8, 7, 6, 5, 4, 3, 2, 1]
+    assert ana.rank_correlation(x, y) == pytest.approx(-1.0)
+    z = [3, 1, 4, 1.5, 5, 9, 2, 6]
+    assert ana.rank_correlation(x, x[::-1], [z]) == pytest.approx(-1.0)
+    assert np.isnan(ana.rank_correlation(x, [1] * 8))

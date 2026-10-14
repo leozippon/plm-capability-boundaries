@@ -92,6 +92,23 @@ SIGN_FLIP_NOTE = ("exact two-sided sign-flip p cannot fall below 2/2**n (0.0078 
                   "reach family-wise significance at 0.05 by this test. The decision rests on the interval "
                   "and the margin, not on either p-value.")
 
+#: The secondary hypothesis about family depth. Declared from the four development domains before the
+#: evaluation domains were read; it sits outside the primary Holm family and cannot touch the verdict.
+DEPTH_LABEL = "secondary_predeclared_msa_depth"
+GUIDANCE_ARMS = ("M", "Pr", "C", "F")  # the genuine guidance arms; Cx and Cd are wrong-constraint controls
+DEVELOPMENT_OBSERVATION = {  # as declared by the coordinator: MSA rows, novelty-constrained guidance gain
+    "2KWH": {"msa_rows": 145, "gain": 0.1030}, "1UFM": {"msa_rows": 358, "gain": 0.0762},
+    "1K1V": {"msa_rows": 524, "gain": 0.0647}, "3L1X": {"msa_rows": 798, "gain": 0.0480}}
+DEPTH_COVARIATES = ("log10_msa_depth", "mean_msa_identity_to_query")
+DEPTH_DIRECTION = {"log10_msa_depth": "negative", "mean_msa_identity_to_query": "none declared; descriptive"}
+DEPTH_CAVEAT = (
+    "Suggestive only. In development, four domains ordered the gain perfectly inversely with MSA depth; a perfect "
+    "monotone ordering in a specified direction arises by chance with probability 1/24 at n=4, so this is a "
+    "hypothesis, not a finding. Gain can also track chain length or the native baseline instead of depth; four "
+    "domains cannot separate the three, so the length- and baseline-controlled partial is reported alongside. "
+    "Gain is the best of four guidance arms minus native, which is biased upward by selecting the maximum. With "
+    "eight domains the intervals are wide; no pass/fail threshold is attached and no verdict is drawn.")
+
 STATEMENT = (
     "Pre-specified analysis; decision rules frozen before the data existed. The independence unit is the "
     "domain. Contrasts with fewer than MINIMUM_BOOTSTRAP_UNITS domains carry no interval and no p-value. "
@@ -404,6 +421,144 @@ def verdict_reason(primary: dict, strata: dict) -> str:
     return f"all four model-level upper bounds are below margin {MARGIN}: " + "; ".join(clear)
 
 
+# ------------------------------------------------------------------ secondary: family depth
+
+
+def msa_covariates(msa_dir: Path, wild_types: dict) -> dict:
+    """Per domain: chain length, MSA row count, log10 depth and mean percent identity of the rows to the query.
+
+    Identity follows ``fold_recapitulation.max_msa_identity`` (matches over the row's non-gap columns, rows
+    covering at least MIN_MSA_COVERAGE of the query); exact copies of the query are excluded from the mean.
+    """
+
+    out = {}
+    for domain, query in sorted(wild_types.items()):
+        rows = fr.load_msa(msa_dir, domain, len(query))
+        q = np.frombuffer(query.encode(), dtype=np.uint8)
+        identities, copies = [], 0
+        for row in rows:
+            codes = np.frombuffer(row.upper().encode(), dtype=np.uint8)
+            aligned = codes != ord("-")
+            n = int(aligned.sum())
+            if n < fr.MIN_MSA_COVERAGE * len(query):
+                continue
+            ident = 100.0 * float(np.sum((codes == q) & aligned)) / n
+            if ident == 100.0:
+                copies += 1
+            else:
+                identities.append(ident)
+        out[domain] = {"role": "evaluation" if domain in SEALED_DOMAINS else "development", "length": len(query),
+                       "msa_rows": len(rows), "log10_msa_depth": float(np.log10(len(rows))),
+                       "mean_msa_identity_to_query": float(np.mean(identities)), "n_rows_in_mean": len(identities),
+                       "n_query_copies_excluded": copies}
+    return out
+
+
+def _ranks_residual(v, controls):
+    """Rank-transform, then remove a least-squares fit on the ranked controls (with intercept)."""
+
+    r = stats.rankdata(v)
+    if controls is None:
+        return r
+    design = np.column_stack([np.ones(len(r))] + [stats.rankdata(c) for c in controls])
+    return r - design @ np.linalg.lstsq(design, r, rcond=None)[0]
+
+
+def rank_correlation(x, y, controls=None) -> float:
+    """Spearman correlation, or the partial Spearman controlling ``controls``; NaN when a margin is constant."""
+
+    a, b = _ranks_residual(x, controls), _ranks_residual(y, controls)
+    if np.ptp(a) < 1e-12 or np.ptp(b) < 1e-12:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def correlation_with_interval(x, y, controls=None) -> dict:
+    """Point estimate and 95% percentile bootstrap over domains; degenerate resamples are dropped and counted."""
+
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    controls = None if controls is None else [np.asarray(c, float) for c in controls]
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    draws = []
+    for _ in range(N_RESAMPLES):
+        i = rng.integers(0, len(x), len(x))
+        r = rank_correlation(x[i], y[i], None if controls is None else [c[i] for c in controls])
+        if np.isfinite(r):
+            draws.append(r)
+    point = rank_correlation(x, y, controls)
+    if not np.isfinite(point) or len(draws) < 0.9 * N_RESAMPLES:
+        return {"estimate": None if not np.isfinite(point) else point, "interval95_percentile": None,
+                "n_draws_used": len(draws), "note": "interval withheld: too many degenerate resamples"}
+    return {"estimate": point, "interval95_percentile": [float(np.percentile(draws, 2.5)),
+                                                          float(np.percentile(draws, 97.5))],
+            "n_draws_used": len(draws), "n_draws_dropped_degenerate": N_RESAMPLES - len(draws)}
+
+
+def depth_hypothesis(sources: "Sources", domains, covariates: dict) -> dict:
+    """Secondary pre-declared hypothesis: guidance gain against family depth, tested on evaluation domains only."""
+
+    evaluation = [d for d in SEALED_DOMAINS if d in domains]
+    per_domain, missing = {}, {}
+    for d in evaluation:
+        gains, arms, baselines = [], {}, []
+        for model in MODELS:
+            base, why = sources.cell(model, d, "N")
+            base, why = side_value(base, why, "N", "tm")
+            options = {}
+            for arm in GUIDANCE_ARMS:
+                cell, reason = side_value(*sources.cell(model, d, arm), arm, "tm")
+                if cell is not None:
+                    options[arm] = cell["tm"]
+            if base is None or not options:
+                missing[d] = f"{model}: " + (why or "no guidance arm meets the 25-candidate floor")
+                break
+            best = max(options, key=options.get)
+            arms[model], gains, baselines = best, gains + [options[best] - base["tm"]], baselines + [base["tm"]]
+        else:
+            per_domain[d] = {"gain": float(np.mean(gains)), "best_arm_by_model": arms,
+                             "native_baseline_tm": float(np.mean(baselines))}
+    units = bootstrap_unit_floor(len(per_domain))
+    tests = {}
+    for name in DEPTH_COVARIATES:
+        entry = {"predeclared_direction": DEPTH_DIRECTION[name], "n_domains": len(per_domain)}
+        if units["degenerate"]:
+            entry.update(status="unestimable", reason=f"{len(per_domain)} evaluation domains have a gain, below the "
+                         f"{MINIMUM_BOOTSTRAP_UNITS}-domain floor" + (f"; without one: {missing}" if missing else ""))
+        else:
+            ds = list(per_domain)
+            x = [covariates[d][name] for d in ds]
+            gain = [per_domain[d]["gain"] for d in ds]
+            controls = [[covariates[d]["length"] for d in ds], [per_domain[d]["native_baseline_tm"] for d in ds]]
+            entry.update(status="reported", spearman=correlation_with_interval(x, gain),
+                         partial_spearman_controlling_length_and_native_baseline=
+                         correlation_with_interval(x, gain, controls))
+        tests[name] = entry
+    depths = [v["msa_rows"] for v in covariates.values() if v["role"] == "evaluation"]
+    dev = [v["msa_rows"] for v in covariates.values() if v["role"] == "development"]
+    return {
+        "label": DEPTH_LABEL,
+        "predeclared_direction": DEPTH_DIRECTION,
+        "provenance": {"generated_from": "the four development domains (1K1V, 1UFM, 2KWH, 3L1X)",
+                       "frozen_before_evaluation_domains_were_read": True,
+                       "outside_primary_holm_family": True, "influences_primary_verdict": False},
+        "caveat": DEPTH_CAVEAT,
+        "development_observation": DEVELOPMENT_OBSERVATION,
+        "gain_definition": f"per model, the best of {GUIDANCE_ARMS} at the frozen dose minus N, each a mean TM over "
+                           f"candidates below {ADMISSIBLE_IDENTITY:g}% identity with at least {MIN_ADMISSIBLE}; "
+                           "the domain gain is the mean over the two models and needs both",
+        "depth_range": {"evaluation_rows": [min(depths), max(depths)], "evaluation_fold": max(depths) / min(depths),
+                        "development_rows": [min(dev), max(dev)] if dev else None,
+                        "development_fold": max(dev) / min(dev) if dev else None,
+                        "note": "the evaluation set spans a far wider depth range than development did, so it is "
+                                "better suited to this question"},
+        "covariates_all_twelve_domains": covariates,
+        "per_domain_gain": per_domain, "domains_without_gain": missing,
+        "tests": tests,
+        "interval_note": "percentile bootstrap over domains; with eight units coverage is below nominal (see "
+                         "interval_coverage_note) and the interval is wide; no threshold is applied",
+    }
+
+
 def equivalence(primary: dict) -> dict:
     """Headline: achieved upper 95% bounds on C-Pr and F-M. Flag: both models' bounds strictly below +0.05.
 
@@ -465,7 +620,7 @@ def dose_axis(sources: Sources, arms) -> list[dict]:
 # ------------------------------------------------------------------ driver
 
 
-def analyse(records, family_models, permutation_seed: int) -> dict:
+def analyse(records, family_models, permutation_seed: int, covariates: dict | None = None) -> dict:
     domains = sorted({r["domain"] for r in records})
     sources = Sources(records, family_models, permutation_seed)
     cell_getter = sources.cell
@@ -515,6 +670,7 @@ def analyse(records, family_models, permutation_seed: int) -> dict:
         "coprimary_feasibility": feasibility,
         "reference_arms_descriptive": reference,
         "sensitivity_leave_out_1IFY_descriptive": sensitivity,
+        DEPTH_LABEL: None if covariates is None else depth_hypothesis(sources, domains, covariates),
         "frontier": dose_axis(sources, FRONTIER_ARMS),
         "dose_response_recovery_confounded": {
             "label": "recovery-confounded: mean TM over all candidates, admissibility not applied",
@@ -545,6 +701,20 @@ def render(result: dict) -> str:
                 p = (f" p_holm t={c['p_holm_ttest']:.4f} signflip={c['p_holm_signflip']:.4f}" if holm else "")
                 lines.append(f"{head}mean {c['mean']:+.4f} CI95 [{lo:+.4f}, {hi:+.4f}] +{c['favouring']['positive']}/"
                              f"-{c['favouring']['negative']} d_id_wt {c['mean_identity_diff']:+.1f}{p} [{per}]")
+    depth = result.get(DEPTH_LABEL)
+    if depth:
+        lines.append(f"== {DEPTH_LABEL} (declared direction for depth: {depth['predeclared_direction']['log10_msa_depth']}; "
+                     "outside the Holm family, no verdict) ==")
+        for name, t in depth["tests"].items():
+            if t["status"] == "unestimable":
+                lines.append(f"{name}: UNESTIMABLE ({t['reason']})")
+                continue
+            sp, pt = t["spearman"], t["partial_spearman_controlling_length_and_native_baseline"]
+            fmt = lambda c: "n/a" if c["estimate"] is None else (
+                f"{c['estimate']:+.3f}" + ("" if c["interval95_percentile"] is None else
+                                           f" [{c['interval95_percentile'][0]:+.3f}, {c['interval95_percentile'][1]:+.3f}]"))
+            lines.append(f"{name}: spearman {fmt(sp)}  partial(length, baseline) {fmt(pt)}")
+        lines.append(depth["caveat"])
     eq = result["equivalence"]
     lines.append(f"== HEADLINE: achieved upper 95% BCa bound on mean TM difference ({eq['interval_coverage_note']}) ==")
     for name, by_stratum in eq["achieved_upper_bound"].items():
@@ -560,6 +730,8 @@ def main(argv=None):
     ap.add_argument("--records", type=Path, required=True, help="per_sequence.jsonl of the confirmatory cells")
     ap.add_argument("--references", type=Path, required=True, help="directory of family-reference <DOMAIN>.npz/.json")
     ap.add_argument("--out", type=Path, required=True, help="output JSON artefact")
+    ap.add_argument("--msa-dir", type=Path, required=True, help="directory of <DOMAIN>.pdb.fasta alignments (all twelve)")
+    ap.add_argument("--wild-type-fasta", type=Path, required=True, help="wild-type FASTA of all twelve domains")
     ap.add_argument("--permutation-seed", type=int, required=True,
                     help="the declared permuted_coupling seed of the generation protocol")
     args = ap.parse_args(argv)
@@ -569,7 +741,9 @@ def main(argv=None):
     if not records:
         raise ValueError(f"--records {args.records} holds no records")
     family_models = {d: load_family_model(d, args.references) for d in sorted({r["domain"] for r in records})}
-    result = analyse(records, family_models, args.permutation_seed)
+    wild_types = fr.load_wild_types(args.wild_type_fasta, "--wild-type-fasta")
+    fr.require_asset(args.msa_dir, "--msa-dir", directory=True)
+    result = analyse(records, family_models, args.permutation_seed, msa_covariates(args.msa_dir, wild_types))
     result["inputs"] = {"records": str(args.records), "references": str(args.references)}
     write_json(args.out, result)
     print(render(result))
