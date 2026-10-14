@@ -7,9 +7,12 @@ Convention (plmc OutputParametersFull, focus mode, gap-ignoring). The model is
 ``P(a) proportional to exp(E(a))`` with ``E(a) = sum_i h[i, a_i] + sum_{i<j} J[i, j, a_i, a_j]``,
 so a larger value is more favourable. ``J[i, j]`` is the ``(20, 20)`` block with the
 first axis on residue ``i``; ``J[j, i] = J[i, j].T`` and the diagonal blocks are zero.
-The gauge is plmc's own (L2-regularised ``h`` and ``J``, no gauge fixing afterwards): a
-bias vector is only meaningful up to an additive constant per position, and the
-coupling-only vector is not invariant to moving mass between ``h`` and ``J``. Column
+The stored parameters are in plmc's own gauge (L2-regularised ``h`` and ``J``, no gauge
+fixing afterwards, as ``GAUGE_CONVENTION`` states), and at most 0.68% of the coupling
+norm is gauge-removable, so they sit that close to the zero-sum gauge (see the gauge
+note below). A bias vector is only meaningful up to an additive constant per position,
+and the coupling-only vector is not invariant to moving mass between ``h`` and ``J``.
+Column
 ``j`` of every array is residue ``j`` (0-based) of the wild type.
 
 Left-to-right use. Conditioned on a prefix, the next residue is scored by
@@ -118,7 +121,11 @@ def guidance_biases(model: FamilyModel, prefix: str) -> dict[str, np.ndarray]:
 
     ``marginal`` is ``log f_t(a)`` of the frozen profile, ``coupling`` is
     ``sum_{s<t} J[t, s, a, a_s]`` and ``full`` is ``h[t, a]`` plus that. All are in
-    natural-log units; ``coupling`` is exactly zero at ``t = 0``.
+    natural-log units; ``coupling`` is exactly zero at ``t = 0``. That zero is an
+    arithmetic fact about the empty prefix sum, not a gauge-free "no information"
+    baseline: the coupling-only bias is gauge-dependent at every later position, so
+    what the coupling component means is fixed by the declared gauge (see the gauge
+    note in this module).
     """
     t = len(prefix)
     if t >= model.length:

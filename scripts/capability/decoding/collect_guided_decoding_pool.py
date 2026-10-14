@@ -144,9 +144,10 @@ DIAGNOSTICS_FILENAME = "sequence_diagnostics.jsonl"
 ALLOWED_MODEL_ARMS = ("protgpt2", "progen2-medium")
 SETTLED_NATIVE_CONTRACT: dict[str, Any] = {"batch_size": 1, "budget": 1024, "dtype": "float32"}
 
-#: The declared strength axes, one per component. The coupling term is an order of magnitude
-#: weaker per unit than the fields term on the qualified (heavily shrunk) fits, so its axis
-#: reaches 16 while the fields axis stops at 2. ``native`` sits at ``(0, 0)``. At ``(1, 1)`` the ``full`` *bias* equals
+#: The declared strength axes, one per component. The coupling term is weaker per unit than
+#: the fields term (the measured ratio and its basis are in the module docstring of
+#: ``src/capability/decoding/guided_decoding.py``), so its axis reaches 16 while the fields
+#: axis stops at 2. ``native`` sits at ``(0, 0)``. At ``(1, 1)`` the ``full`` *bias* equals
 #: the prefix-truncated Potts conditional up to a per-position constant (not the full-joint
 #: conditional), and the *arm* samples the product of that with the language model; an evaluation protocol declares the single frozen point
 #: chosen on the development domains. A protocol value off its axis is refused rather than

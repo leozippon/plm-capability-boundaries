@@ -16,7 +16,10 @@ def to_zero_sum(h: np.ndarray, J: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     ``J`` is centred in both residue indices; ``h`` absorbs the full
     off-diagonal row-mean sum, which is what keeps every full-sequence
-    energy fixed up to an additive constant.
+    energy fixed up to an additive constant. The per-step coupling-only bias
+    is not preserved: it shifts, up to a constant in the candidate residue
+    ``a``, by ``-sum_{s<t} mean_b J[t, s, a, b]``, a first-order term in ``a``
+    (see the gauge note in ``family_potts`` for the full statement).
     """
     L = h.shape[0]
     ra = J.mean(axis=3, keepdims=True)

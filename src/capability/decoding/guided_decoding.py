@@ -61,8 +61,10 @@ component is the model missing". ``P`` (prefix-chain or Gibbs Potts sampling) an
 (held-out natural rows) involve no language model and are produced elsewhere.
 
 **Why two strengths and not one.** The fields terms are order one to three nats,
-while the coupling sum runs over up to ``L - 1`` prefix positions and is roughly
-an order of magnitude larger. Under one shared scalar the fields-on and
+while the coupling sum runs over up to ``L - 1`` prefix positions and is smaller
+per unit strength: the ratio of fields to coupling spread, as measured in
+``results/R6/e20_development_20261013/e20devc_records_cpu/component_scale.json``, is
+3.1-7.1 on the wild-type basis and 3.1-32.9 (median 10.7) across sampled pools. Under one shared scalar the fields-on and
 couplings-on cells would be interventions of very different effective strength,
 so a difference between them would partly measure scale rather than information
 content. The two components therefore carry independent scalars, and the arms are
