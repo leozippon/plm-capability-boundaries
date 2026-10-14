@@ -528,7 +528,12 @@ def validate(source_only=False):
         subsections[section] = len(arguments(chunk, "subsection"))
     failures.extend(section_faults(sections, subsections))
     require(not re.search(r"\\cite\{", abstracts[0]), "Abstract contains references")
-    max_caption_words = max((words(c) for c in arguments(main, "caption")), default=0)
+    # A caption-less main text used to satisfy the length limit on a sentinel of
+    # zero, so the one state in which no caption can be measured was the one
+    # state that passed. Having nothing to read is its own failure.
+    caption_words = [words(caption) for caption in arguments(main, "caption")]
+    require(caption_words, "Main text declares no captions to check the length of")
+    max_caption_words = max(caption_words, default=0)
     require(max_caption_words <= 350, "Main caption exceeds 350 words")
 
     provenance_path = NCS / 'source-provenance.json'
