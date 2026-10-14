@@ -465,6 +465,129 @@ class BothIntervalNotationsCarryTheirInterval(unittest.TestCase):
                 self.assertEqual(report["status"], "refused")
 
 
+def span(prefix: str, low: float, high: float, **overrides) -> list[dict]:
+    """One recorded span: the ``min`` and ``max`` of a reduction over a row set."""
+    shared = dict(family="fixture", kind="range_bound", interval_low=None, interval_high=None,
+                  interval_kind=None, resampling_unit=None, resampling_draws=None, verdict=None)
+    shared.update(overrides)
+    return [entry(id=f"{prefix}/min", value=low,
+                  claim="range of the fitted increment over the resolving checkpoints (min)",
+                  **shared),
+            entry(id=f"{prefix}/max", value=high,
+                  claim="range of the fitted increment over the resolving checkpoints (max)",
+                  **shared)]
+
+
+class ARangeAcrossModelsIsNotAnEstimateWithAnInterval(unittest.TestCase):
+    """``0.007--0.015`` is a span over a set of models, not one estimate.
+
+    The manuscript quotes a quantity's spread across models that way. Reading
+    either endpoint as a point estimate of its own attributes it to whichever of
+    several thousand rows happens to share the number, and then reports the
+    sentence as quoting that other row's estimate without the interval the
+    table carries for it --- a correction to a sentence that quotes no estimate
+    at all. The pair is matched against the recorded ``min``/``max`` bounds of
+    one span instead, so a range is verified rather than merely exempted, and a
+    range the table records no span for is reported as uncovered rather than
+    passing silently.
+    """
+
+    POLICY = dict(interval_convention_statement=None)
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.case = Path(tempfile.mkdtemp(prefix="evidence-range-"))
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.case, ignore_errors=True)
+
+    def _run(self, body: str, quantities: list[dict]) -> dict:
+        return run(self.case, quantities, {"support_a": "the fixture support"}, body,
+                   dict(CHECKER.default_policy(), **self.POLICY))
+
+    def test_a_dash_between_two_digits_survives_markup_stripping(self):
+        # Every other dash stays punctuation, and every offset is preserved.
+        rendered = CHECKER.strip_markup("\\begin{document}\nspan 0.007--0.015 on 163--174 strata---19")
+        self.assertIn("0.007\u2013 0.015", rendered)
+        self.assertIn("163\u2013 174", rendered)
+        self.assertIn("strata   19", rendered)
+        self.assertEqual(len(rendered.split("document}", 1)[-1]),
+                         len("\nspan 0.007--0.015 on 163--174 strata---19"))
+
+    def test_a_quoted_range_is_verified_against_the_span_the_table_records(self):
+        report = self._run(
+            "Resolved increments span 0.007--0.015 Spearman.",
+            span("fixture/increments/resolved", 0.00712, 0.01544))
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+        self.assertEqual(report["ranges_verified_against_a_recorded_span"], 1)
+        self.assertEqual(report["ranges_matching_no_recorded_span"], 0)
+        self.assertEqual(report["verified_ranges"][0]["spans"],
+                         ["fixture/increments/resolved"])
+
+    def test_a_range_whose_endpoints_are_not_the_recorded_bounds_fails(self):
+        report = self._run(
+            "Resolved increments span 0.007--0.016 Spearman.",
+            span("fixture/increments/resolved", 0.00712, 0.01544))
+        self.assertEqual(report["status"], "refused", report)
+        self.assertEqual(report["ranges_verified_against_a_recorded_span"], 0)
+        self.assertEqual(report["ranges_matching_no_recorded_span"], 1)
+        # The endpoint the table does not carry is a number a reader cannot check.
+        self.assertEqual([item["token"] for item in report["untraced"]], ["0.016"])
+
+    def test_a_range_endpoint_is_never_reported_as_a_bare_point_estimate(self):
+        # The sentence quotes a span and, separately, one estimate bare. Only
+        # the bare estimate is refused.
+        quantities = span("fixture/increments/resolved", 0.00712, 0.01544) + [entry()]
+        report = self._run(
+            "Resolved increments span 0.007--0.015 Spearman, and ProGen3-3B exceeds the profile "
+            "by 0.05678.", quantities)
+        self.assertEqual(report["findings_by_check"], {"bare_point_estimate": 1}, report)
+        self.assertEqual([finding["token"] for finding in report["findings"]], ["0.05678"])
+
+    def test_only_the_dash_classifies_a_range(self):
+        # Two estimates that merely sit beside each other are two estimates.
+        quantities = [entry(), entry(id="fixture/other/profile_contrast", value=0.03842,
+                                     interval_low=0.01751, interval_high=0.05923)]
+        report = self._run("The fitted increments are 0.03842 and 0.05678.", quantities)
+        self.assertEqual(report["findings_by_check"], {"bare_point_estimate": 2}, report)
+        self.assertEqual(report["ranges_matching_no_recorded_span"], 0)
+        # Joined by a dash they are one span, which the table records no bounds
+        # for: reported as uncovered, and not as two bare estimates.
+        report = self._run("The fitted increments span 0.03842--0.05678.", quantities)
+        self.assertEqual(report["findings_by_check"], {}, report)
+        self.assertEqual(report["ranges_matching_no_recorded_span"], 1)
+        self.assertEqual(report["ranges_without_a_recorded_span"][0]["range"], "0.03842\u20130.05678")
+
+    def test_a_labelled_interval_is_an_interval_and_not_a_range(self):
+        for dash in ("--", "–"):
+            with self.subTest(separator=dash):
+                report = self._run(
+                    f"ProGen3-3B exceeds the profile by 0.05678 (95\\% CI, 0.03601{dash}0.07894).",
+                    [entry()])
+                self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+                self.assertEqual(report["ranges_verified_against_a_recorded_span"], 0)
+                self.assertEqual(report["ranges_matching_no_recorded_span"], 0)
+                # And the bounds are still checked against the recorded interval.
+                report = self._run(
+                    f"ProGen3-3B exceeds the profile by 0.05678 (95\\% CI, 0.03601{dash}0.08912).",
+                    [entry(), entry(id="fixture/other/contrast", value=0.12345,
+                                    interval_low=0.01001, interval_high=0.08912)])
+                self.assertEqual(report["findings_by_check"], {"point_interval_mismatch": 1}, report)
+                self.assertEqual(report["ranges_matching_no_recorded_span"], 0)
+
+    def test_a_span_missing_one_of_its_two_bounds_verifies_nothing(self):
+        rows = span("fixture/increments/resolved", 0.00712, 0.01544)
+        index = CHECKER.Index([rows[0]])
+        self.assertEqual(index.spans, [])
+        self.assertEqual(index.span_candidates("0.007", "0.015"), [])
+        index = CHECKER.Index(rows)
+        self.assertEqual([prefix for prefix, _, _ in index.spans],
+                         ["fixture/increments/resolved"])
+
+
 class AMagnitudeIsReadAgainstTheSignedDifferenceItStates(unittest.TestCase):
     """The prose states a reduction as the amount reduced.
 

@@ -24,6 +24,18 @@ following does not hold:
 * **a provisional result is marked** --- a representation-level quantity is
   quoted only in a paragraph that says it is provisional.
 
+A span written ``a--b`` with no interval label is a range over a set of
+quantities rather than one estimate with its uncertainty, so neither endpoint is
+read as a point estimate and none of the estimate conditions above is refused
+against one. The pair is instead matched against the recorded ``min``/``max``
+bounds of one span, and the report says for every quoted range whether it was
+verified that way or matches no recorded span. An unverified range is reported
+rather than refused: the table records only a minority of the spans the
+manuscript writes, and several of them --- residue numbering, requested product
+lengths --- are not estimates at all, so the honest statement is that the span is
+not covered. Its endpoints are still traced or reported untraced as any other
+number.
+
 Declared exceptions live in the policy file and each must name a live anchor in
 the manuscript, so an exception cannot outlive the sentence it was written for.
 The checker never edits the manuscript.
@@ -169,6 +181,22 @@ INTERVAL = re.compile(
     r"|"
     r"\(\s*95\s*\\%\s*CI\s*,\s*" + _BOUND + r"(?:[–—-]\s*|(?<=\s))" + _BOUND + r"\)"
 )
+#: The dash a numeric range keeps once ``strip_markup`` has run. Every other
+#: dash is blanked, because an em or en dash elsewhere is punctuation and a
+#: hyphen before a digit would read as a sign; a dash *between two digits* is
+#: neither, and blanking it threw away the only evidence that the two numbers
+#: are one span.
+RANGE_DASH = "–"
+#: A range over a set of quantities: two numbers the manuscript joins with an en
+#: dash, as in "resolved increments span 0.007--0.015". Only the dash itself
+#: classifies a range --- two numbers that merely sit near each other do not ---
+#: and a pair governed by a ``95\%`` CI label is that interval, which
+#: :data:`INTERVAL` reads and this must not take from it.
+#: The trailing guard forbids a truncated endpoint --- 0.0567 of 0.05678 --- while
+#: allowing the sentence's own full stop to follow the number it ends on.
+RANGE = re.compile(
+    r"(?<![\w.])([-+]?\d[\d,]*(?:\.\d+)?)\s*" + RANGE_DASH + r"\s*([-+]?\d[\d,]*(?:\.\d+)?)(?!\.?\d)"
+)
 
 
 def interval_bounds(match: re.Match) -> tuple[str, str]:
@@ -229,8 +257,13 @@ def strip_markup(text: str) -> str:
     for pattern in NON_EVIDENCE_PATTERNS:
         body = re.sub(pattern, " ", body)
     # An em or en dash is punctuation, not a sign: "163--174" states two counts
-    # and "strata---19 native" one. Blanking them keeps every offset.
-    body = body.replace("---", "   ").replace("--", "  ")
+    # and "strata---19 native" one. Blanking them keeps every offset. A dash
+    # joining two digits is kept as one en dash, because it is what makes the
+    # two numbers a range rather than two estimates; the trailing space keeps
+    # every offset and keeps the dash out of the second number's sign.
+    body = body.replace("---", "   ")
+    body = re.sub(r"(?<=\d)--(?=\d)", RANGE_DASH + " ", body)
+    body = body.replace("--", "  ")
     # A scientific form is one number. Rendering it in exponent notation would
     # re-tokenize as its mantissa, which reported 1.11 and 2.8 as numbers the
     # manuscript never wrote; a fixed-point rendering keeps it whole.
@@ -315,6 +348,17 @@ class Index:
         # indexed by significant figures. Without this a decomposition residual
         # of 1.11e-16 could never match the row it came from.
         self.significant: dict[str, list[dict]] = {}
+        # The recorded spans, each the ``min``/``max`` pair of one reduction
+        # over a named set of rows. A quoted range is checked against these as
+        # a pair, which is what makes it verifiable rather than merely exempt.
+        bounds_by_prefix: dict[str, dict[str, dict]] = {}
+        for entry in quantities:
+            if entry["kind"] == "range_bound":
+                prefix, _, bound = entry["id"].rpartition("/")
+                if bound in ("min", "max"):
+                    bounds_by_prefix.setdefault(prefix, {})[bound] = entry
+        self.spans = [(prefix, pair["min"], pair["max"])
+                      for prefix, pair in sorted(bounds_by_prefix.items()) if len(pair) == 2]
         for entry in quantities:
             value = entry["value"]
             for decimals in range(0, MAX_DECIMALS + 1):
@@ -354,6 +398,24 @@ class Index:
         value, decimals = parse(token)
         return self.bounds.get((decimals, value), [])
 
+    def span_candidates(self, low: str, high: str) -> list[tuple[str, dict, dict]]:
+        """The recorded spans whose own bounds are the quoted pair.
+
+        Both ends have to agree at the precision they are written to, which is
+        what distinguishes verifying a range from exempting it: a recorded
+        reduction over a named set of rows either has these two numbers as its
+        smallest and largest member, or the quoted span is not that reduction.
+        A bound is rounded onto the token rather than matched exactly, because
+        a span is quoted to the precision the sentence needs --- "100--124
+        residues" for 100.26 and 124.10 --- and the pair match plus the
+        ``range_bound`` kind is what keeps that from matching anything.
+        """
+        low_value, low_decimals = parse(low)
+        high_value, high_decimals = parse(high)
+        return [span for span in self.spans
+                if round(span[1]["value"], low_decimals) == low_value
+                and round(span[2]["value"], high_decimals) == high_value]
+
 
 def paired_interval_candidates(candidates: list[dict], interval: re.Match) -> list[dict]:
     """Attribute a point by both ordered bounds at their quoted precision."""
@@ -364,6 +426,22 @@ def paired_interval_candidates(candidates: list[dict], interval: re.Match) -> li
             if entry.get("interval_low") is not None and entry.get("interval_high") is not None
             and round(entry["interval_low"], low_decimals) == low
             and round(entry["interval_high"], high_decimals) == high]
+
+
+def quoted_ranges(scope: str, intervals: list[tuple[int, int]]) -> list[re.Match]:
+    """The ranges the scope writes, excluding the ones an interval label governs.
+
+    The manuscript quotes a quantity's spread across a set of models as a bare
+    ``a--b``: "resolved increments span 0.007--0.015". Those endpoints are the
+    smallest and largest member of a set, not an estimate and its uncertainty,
+    and looking either up as an estimate of its own attributes it to whichever
+    unrelated row happens to share the number --- which then reports the
+    sentence as quoting an estimate without the interval the table carries for
+    that other row. Only the dash classifies a range; a labelled
+    ``(95\\% CI, a--b)`` is an interval and stays one.
+    """
+    return [match for match in RANGE.finditer(scope)
+            if not any(match.start() < end and start < match.end() for start, end in intervals)]
 
 
 def negated(token: str) -> str:
@@ -534,6 +612,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
     ambiguous: list[dict] = []
     weak: list[dict] = []
     unmatched_bounds: list[dict] = []
+    verified_ranges: list[dict] = []
+    unverified_ranges: list[dict] = []
     traced = 0
     untraced: list[dict] = []
     accepted = set(policy.get("untraced_accepted", []))
@@ -562,6 +642,28 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
             scope_words = _words(scope)
             numeric_scope = NAME.sub(lambda m: " " * len(m.group(0)), scope)
             matched: list[tuple[str, list[dict], bool, bool]] = []
+            # Each quoted range, matched as a pair against the recorded spans.
+            # Where it matches, the endpoint is attributed to that span's own
+            # bound rather than to whatever else shares the number; where it
+            # does not, the range is recorded as uncovered. Either way the
+            # endpoint is not a point estimate, so the estimate conditions are
+            # not refused against it --- the same treatment an interval bound
+            # already gets.
+            range_extents: list[tuple[int, int]] = []
+            span_bounds: dict[int, list[dict]] = {}
+            for quoted in quoted_ranges(scope, intervals):
+                low, high = (group.rstrip(",") for group in quoted.groups())
+                spans = index.span_candidates(low, high)
+                record = {"source": name, "scope_kind": kind, "range": f"{low}{RANGE_DASH}{high}",
+                          "context": scope.strip()[:200]}
+                range_extents.append((quoted.start(1), quoted.end(2)))
+                if spans:
+                    record["spans"] = sorted(prefix for prefix, _, _ in spans)[:4]
+                    verified_ranges.append(record)
+                    span_bounds[quoted.start(1)] = [span[1] for span in spans]
+                    span_bounds[quoted.start(2)] = [span[2] for span in spans]
+                else:
+                    unverified_ranges.append(record)
             # Where a magnitude has been attributed to a stored interval of the
             # opposite sign. Those bounds belong to that entry, so they are not
             # looked up again on their own: a reflected bound cannot match a
@@ -576,7 +678,14 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     continue
                 matches = index.candidates(token) or index.tiny_candidates(token)
                 inside = any(start <= match.start() < end for start, end in intervals)
-                if not inside:
+                in_range = any(start <= match.start() < end for start, end in range_extents)
+                if match.start() in span_bounds:
+                    # This endpoint is one bound of a span the table records,
+                    # found by matching the quoted pair; it is that bound and
+                    # not another row that happens to share the number.
+                    matches = span_bounds[match.start()]
+                endpoint = inside or in_range
+                if not endpoint:
                     following = re.search(r"[^\s$]", scope[match.end():])
                     paired = INTERVAL.match(scope, match.end() + following.start()) if following else None
                     if paired:
@@ -641,10 +750,10 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                                  "entries": sorted({entry["id"] for entry in candidates})[:6],
                                  "context": scope.strip()[:180]})
                     continue
-                matched.append((token, candidates, inside, strong))
+                matched.append((token, candidates, endpoint, strong))
 
-            for token, candidates, inside, strong in matched:
-                if inside:
+            for token, candidates, endpoint, strong in matched:
+                if endpoint:
                     continue
                 families = {entry["family"] for entry in candidates}
                 if len(families) > 1:
@@ -731,15 +840,15 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
             # one support per comparison: refuse only when no assignment of the
             # scope's estimates to candidate entries keeps them on one support
             estimate_tokens = [(token, [entry for entry in candidates if entry["kind"] == "estimate"])
-                               for token, candidates, inside, _ in matched
-                               if not inside and agrees(candidates, "support_id")]
+                               for token, candidates, endpoint, _ in matched
+                               if not endpoint and agrees(candidates, "support_id")]
             estimate_tokens = [(token, entries) for token, entries in estimate_tokens if entries]
             # one unit per comparison: two supports now carry different
             # measured units --- kcal/mol and log2 enrichment --- and a
             # difference between them is not a quantity at all.
             unit_tokens = [(token, [entry for entry in candidates
                                     if entry["unit"] in MEASURED_SCALES])
-                           for token, candidates, inside, _ in matched if not inside]
+                           for token, candidates, endpoint, _ in matched if not endpoint]
             unit_tokens = [(token, entries) for token, entries in unit_tokens if entries]
             if len(unit_tokens) > 1 and not exempt(policy, "cross_unit_exceptions", scope):
                 shared_units = None
@@ -799,6 +908,10 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
         "numbers_matched_but_not_pinned_to_one_row": len(weak),
         "interval_bounds_matching_no_recorded_interval": len(unmatched_bounds),
         "unmatched_interval_bounds": unmatched_bounds,
+        "ranges_verified_against_a_recorded_span": len(verified_ranges),
+        "ranges_matching_no_recorded_span": len(unverified_ranges),
+        "verified_ranges": verified_ranges,
+        "ranges_without_a_recorded_span": unverified_ranges,
         "ambiguous_matches": ambiguous,
         "weak_attributions": weak,
         "findings_by_check": _tally(findings),
@@ -823,6 +936,8 @@ def main() -> int:
     report = check(options.evidence_dir)
     print(json.dumps({key: report[key] for key in
                       ("status", "traced_numbers", "untraced_numbers", "findings_by_check",
+                       "ranges_verified_against_a_recorded_span",
+                       "ranges_matching_no_recorded_span",
                        "derived_number_table")}, indent=2))
     return 0 if report["status"] == "pass" else 1
 
