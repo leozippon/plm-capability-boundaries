@@ -465,6 +465,100 @@ class BothIntervalNotationsCarryTheirInterval(unittest.TestCase):
                 self.assertEqual(report["status"], "refused")
 
 
+class AMagnitudeIsReadAgainstTheSignedDifferenceItStates(unittest.TestCase):
+    """The prose states a reduction as the amount reduced.
+
+    "The stage reduces the rate by 0.1146 (95\\% CI, 0.0909--0.1383)" is the
+    readable and correct statement of a ledger row holding -0.1146 on
+    [-0.1383, -0.0909]; writing the double negative instead would not be. The
+    checker therefore reads one orientation against the other, under the same
+    triple match it already makes: the point and both bounds have to flip
+    together, so negating the stored interval reverses it and the quoted low
+    bound can only be the stored high bound's magnitude. A pair that is not
+    consistently oriented, a pair with one bound of its own, a stored interval
+    that straddles zero, and a sign-flipped point quoted with no interval at
+    all are all still refused, and a same-sign entry is never displaced by a
+    reflected one.
+    """
+
+    #: The stored row: a reduction, signed, with its interval on one side of zero.
+    REDUCTION = dict(id="fixture/prollama/any_family_rate", family="generation_replication",
+                     claim="second-minus-first stage unconditional model rate",
+                     value=-0.1146, interval_low=-0.1383, interval_high=-0.0909,
+                     unit="dimensionless rate difference",
+                     resampling_unit="generation stream at a fixed checkpoint", verdict=None)
+
+    CONVENTION = ("Intervals throughout are 95\\% percentile intervals over the resampling unit "
+                  "named with each quantity.")
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.case = Path(tempfile.mkdtemp(prefix="evidence-reflected-"))
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.case, ignore_errors=True)
+
+    def _report(self, quoted: str, quantities: list[dict] | None = None) -> dict:
+        return run(self.case, quantities if quantities is not None else [entry(**self.REDUCTION)],
+                   {"support_a": "the fixture support"},
+                   f"The second training stage reduces the any-family recognition rate by {quoted}. "
+                   + self.CONVENTION)
+
+    def test_a_reduction_quoted_as_a_magnitude_traces_to_its_signed_row(self):
+        report = self._report("0.1146 (95\\% CI, 0.0909–0.1383)")
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+        self.assertEqual(report["untraced_numbers"], 0)
+        # Both bounds belong to the entry the point was attributed by, so
+        # neither is reported as an endpoint no recorded interval carries.
+        self.assertEqual(report["interval_bounds_matching_no_recorded_interval"], 0)
+
+    def test_a_pair_that_is_not_consistently_oriented_is_refused(self):
+        report = self._report("0.1146 (95\\% CI, 0.1383–0.0909)")
+        self.assertEqual(report["status"], "refused", report)
+        self.assertEqual([item["token"] for item in report["untraced"]], ["0.1146"])
+        self.assertEqual(report["interval_bounds_matching_no_recorded_interval"], 2)
+
+    def test_a_pair_with_one_bound_of_its_own_is_refused(self):
+        report = self._report("0.1146 (95\\% CI, 0.0909–0.1400)")
+        self.assertEqual(report["status"], "refused", report)
+        self.assertEqual([item["token"] for item in report["untraced"]], ["0.1146"])
+
+    def test_a_sign_flipped_point_quoted_without_an_interval_is_not_matched(self):
+        report = self._report("0.1146")
+        self.assertEqual(report["status"], "refused", report)
+        self.assertEqual([item["token"] for item in report["untraced"]], ["0.1146"])
+
+    def test_an_interval_straddling_zero_has_no_magnitude_to_quote(self):
+        straddling = entry(**dict(self.REDUCTION, value=-0.0100,
+                                  interval_low=-0.0300, interval_high=0.0200))
+        paired = CHECKER.INTERVAL.search("(95\\% CI, -0.0200–0.0300)")
+        self.assertEqual(CHECKER.reflected_interval_candidates([straddling], paired), [])
+
+    def test_a_degenerate_interval_carries_no_orientation_to_confirm(self):
+        degenerate = entry(**dict(self.REDUCTION, interval_low=-0.1146, interval_high=-0.1146))
+        paired = CHECKER.INTERVAL.search("(95\\% CI, 0.1146–0.1146)")
+        self.assertEqual(CHECKER.reflected_interval_candidates([degenerate], paired), [])
+
+    def test_a_same_sign_entry_is_never_displaced_by_a_reflected_one(self):
+        # The reflected row carries a physical unit the sentence does not name,
+        # so attributing it would refuse; the same-sign row is dimensionless.
+        increase = entry(id="fixture/prollama/increase", family="generation_replication",
+                         claim="first-minus-second stage unconditional model rate",
+                         value=0.1146, interval_low=0.0909, interval_high=0.1383,
+                         unit="dimensionless rate difference",
+                         resampling_unit="generation stream at a fixed checkpoint", verdict=None)
+        reflected = entry(**dict(self.REDUCTION, unit="kcal/mol"))
+        report = self._report("0.1146 (95\\% CI, 0.0909–0.1383)", [increase, reflected])
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+        # Without the same-sign row the reflected one is found, and is held to
+        # the same refusals as any other attribution.
+        report = self._report("0.1146 (95\\% CI, 0.0909–0.1383)", [reflected])
+        self.assertIn("unit_not_named", report["findings_by_check"])
+
+
 class TheTableRefusesARowWithAHoleInIt(unittest.TestCase):
     """A row that cannot be quoted safely must not reach the table at all."""
 

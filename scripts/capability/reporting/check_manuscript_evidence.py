@@ -366,6 +366,46 @@ def paired_interval_candidates(candidates: list[dict], interval: re.Match) -> li
             and round(entry["interval_high"], high_decimals) == high]
 
 
+def negated(token: str) -> str:
+    """The token with its sign reversed, so it can be looked up as written."""
+    return token[1:] if token.startswith("-") else "-" + token.lstrip("+")
+
+
+def reflected_interval_candidates(candidates: list[dict], interval: re.Match) -> list[dict]:
+    """Attribute a magnitude quoted against a stored signed difference.
+
+    The prose states a reduction as the amount reduced: "Stage 2 reduces the
+    rate by 0.1146 (95\\% CI, 0.0909--0.1383)", where the ledger stores the
+    signed difference -0.1146 on [-0.1383, -0.0909]. The sentence is the
+    correct statement and the double negative would not be, so the checker has
+    to read the one orientation against the other.
+
+    This is the same triple match ``paired_interval_candidates`` makes, applied
+    once under reflection through zero, which is a single map and not a
+    relaxation: negating an interval reverses it, so the quoted low bound can
+    only be the stored high bound's magnitude and the quoted high bound only
+    the stored low bound's. A point, a low bound and a high bound therefore all
+    have to flip together for the match to hold, and the stored triple has to
+    lie strictly on one side of zero --- an interval straddling zero has no
+    magnitude the prose could quote, and a bound at zero would make the
+    orientation carry no information. Callers reach this only after the
+    same-sign match has found nothing, so it can never displace one.
+    """
+    quoted_low, quoted_high = interval_bounds(interval)
+    low, low_decimals = parse(quoted_low)
+    high, high_decimals = parse(quoted_high)
+    reflected = []
+    for entry in candidates:
+        stored_low, stored_high = entry.get("interval_low"), entry.get("interval_high")
+        if stored_low is None or stored_high is None or not stored_low < stored_high:
+            continue
+        if not (stored_low < 0 and stored_high < 0) and not (stored_low > 0 and stored_high > 0):
+            continue
+        if round(-stored_high, low_decimals) == low and round(-stored_low, high_decimals) == high:
+            reflected.append(entry)
+    return reflected
+
+
 def _words(text: str) -> set[str]:
     return {re.sub(r"[^a-z0-9]", "", word) for word in text.lower().split()}
 
@@ -522,6 +562,12 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
             scope_words = _words(scope)
             numeric_scope = NAME.sub(lambda m: " " * len(m.group(0)), scope)
             matched: list[tuple[str, list[dict], bool, bool]] = []
+            # Where a magnitude has been attributed to a stored interval of the
+            # opposite sign. Those bounds belong to that entry, so they are not
+            # looked up again on their own: a reflected bound cannot match a
+            # stored bound of its own sign, and reporting it as an endpoint no
+            # interval carries would correct a sentence written correctly.
+            reflected_extents: list[tuple[int, int]] = []
             for match in NUMBER.finditer(numeric_scope):
                 # A trailing thousands comma belongs to the sentence, not the
                 # number: "1,614," is one count and a comma.
@@ -533,26 +579,43 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 if not inside:
                     following = re.search(r"[^\s$]", scope[match.end():])
                     paired = INTERVAL.match(scope, match.end() + following.start()) if following else None
-                    if paired and matches:
-                        narrowed = paired_interval_candidates(matches, paired)
+                    if paired:
+                        narrowed = paired_interval_candidates(matches, paired) if matches else []
                         if not narrowed:
+                            # The prose may quote a reduction as the amount
+                            # reduced while the ledger stores the signed
+                            # difference. That is the same triple reflected
+                            # through zero, and only a triple that flips whole
+                            # matches.
+                            narrowed = reflected_interval_candidates(
+                                index.candidates(negated(token)), paired)
+                            if narrowed:
+                                reflected_extents.append(interval_extent(paired))
+                        if narrowed:
+                            matches = narrowed
+                        elif matches:
                             traced += 1
                             findings.append({
                                 "check": "point_interval_mismatch", "source": name,
                                 "scope_kind": kind, "token": token,
                                 "interval": paired.group(0),
                                 "detail": "the ordered pair of quoted bounds matches no interval "
-                                          "for this point at the bounds' stated precision",
+                                          "for this point at the bounds' stated precision, in "
+                                          "either orientation",
                                 "context": scope.strip()[:220],
                             })
                             continue
-                        matches = narrowed
                 candidates, strong = attributable(token, matches, scope_words)
                 if not candidates:
                     if attributable(token, index.bound_candidates(token), scope_words)[0]:
                         traced += 1
                         continue
                     if inside:
+                        if any(start <= match.start() < end for start, end in reflected_extents):
+                            # This bound's own entry has already been found, by
+                            # the reflected triple its point was attributed by.
+                            traced += 1
+                            continue
                         # An endpoint of a bracketed interval is not a point
                         # estimate, and reporting it as an untraced number of
                         # its own invites a correction to a sentence that is
