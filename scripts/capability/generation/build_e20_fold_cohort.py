@@ -7,6 +7,11 @@ against the e20_generated_sequence_v1 contract). The output ``fold_cohort.jsonl`
 is folded by the unchanged ``run_structure_evidence.py``; both runs must use the
 same instrument settings, which ``measure_fold_recapitulation.py`` enforces.
 Flat parser: the campaign queue prepends ``--device`` and ``--out``.
+
+Deduplication is within this record file only. In the confirmatory pools campaign four sequences already
+folded in an earlier campaign were folded again (under 0.05% of the cohort); they are the only sequences of
+31,079 with two TM values, differing by at most 0.0094 (typically 0.0003). That bounds the instrument:
+deterministic within a run, reproducible to about 0.01 across runs.
 """
 
 from __future__ import annotations

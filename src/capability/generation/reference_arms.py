@@ -7,8 +7,12 @@ fields are null for exactly these two arms and whose ``model`` is ``potts-joint`
 
 Arm ``P`` draws from :func:`~..context.family_potts.sample_potts_joint`, the Gibbs sampler of the actual
 Potts joint. It never uses ``sample_prefix_chain``, which samples a different distribution. A cell whose
-chains fail the mixing check raises :class:`~..context.family_potts.MixingError` and yields no records:
-no retry with more sweeps, no fallback sampler, no shorter pool.
+chains fail the per-domain validation (:func:`~..context.family_potts.validate_gibbs_mixing`: two overdispersed
+initialisations must agree to within a declared factor of the sampling-noise floor) raises
+:class:`~..context.family_potts.MixingError` and yields no records: no retry with more sweeps, no fallback
+sampler, no shorter pool. The first declaration, an absolute 0.02 half-run-versus-full-run tolerance, was
+withdrawn: at 100 chains that statistic is Monte-Carlo noise (about 1/sqrt(n)), unattainable whatever the chain
+does, and blind to chains stuck near their start.
 
 Arm ``H`` takes MSA rows from the whole-cluster holdout recorded at fit time, and only rows that are
 gapless across the family model's columns. The fold endpoint compares residue ``i`` with wild-type
@@ -23,7 +27,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from ..context.family_potts import FamilyModel, sample_potts_joint
+from ..context.family_potts import FamilyModel, sample_potts_joint, validate_gibbs_mixing
 from ..core.amino_acids import AA20
 from .fold_recapitulation import MODEL_FREE_ARMS, SCHEMA_VERSION
 
@@ -41,22 +45,22 @@ def contract_row(arm: str, domain: str, index: int, seed: int, sequence: str) ->
     }
 
 
-def potts_joint_cell(model: FamilyModel, *, domain: str, chains: int, sweeps: int, mixing_tolerance: float,
-                     seed: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """``chains`` independent Gibbs chains, one draw each, seeded by the cell's stream seed.
+def potts_joint_cell(model: FamilyModel, *, domain: str, chains: int, sweeps: int, validation_chains: int,
+                     mixing_factor: float, seed: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate the sampler on this domain, then draw ``chains`` independent chains, one draw each.
 
-    Returns the records and the cell's sampling manifest. Raises ``MixingError`` (no records) when the
-    measured single-site total variation exceeds ``mixing_tolerance``. The record ``seed`` is the cell
-    seed for every draw: the chains share one generator, so no per-draw seed could regenerate a draw.
+    Validation (own seed stream ``[seed, 1]``) raises ``MixingError`` carrying the measured numbers, before any
+    record exists. The draw uses the cell's stream seed from uniform-random initialisation. The record ``seed``
+    is the cell seed for every draw: the chains share one generator, so no per-draw seed could regenerate a draw.
     """
 
-    draws = sample_potts_joint(model, chains, np.random.default_rng(seed), sweeps=sweeps,
-                               mixing_tolerance=mixing_tolerance)
+    validation = validate_gibbs_mixing(model, np.random.default_rng(np.random.SeedSequence([seed, 1])),
+                                       n=validation_chains, sweeps=sweeps, factor=mixing_factor)
+    draws = sample_potts_joint(model, chains, np.random.default_rng(seed), sweeps=sweeps, mixing_tolerance=None)
     if len(draws.sequences) != chains or {len(s) for s in draws.sequences} != {model.length}:
         raise RuntimeError("the Gibbs sampler returned a pool that is not `chains` sequences of the domain length")
-    manifest = {"sampler": "sample_potts_joint", "chains": chains, "draws_per_chain": 1, "sweeps": draws.sweeps,
-                "check_sweeps": draws.check_sweeps, "mixing_max_tv": draws.mixing_max_tv,
-                "mixing_tolerance": draws.mixing_tolerance, "seed": seed}
+    manifest = {"sampler": "sample_potts_joint", "chains": chains, "draws_per_chain": 1, "sweeps": sweeps,
+                "initialisation": "uniform random residues", "validation": validation, "seed": seed}
     return [contract_row("P", domain, i, seed, s) for i, s in enumerate(draws.sequences)], manifest
 
 

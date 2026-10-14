@@ -35,6 +35,11 @@ an intrinsic split of information. Measured magnitude in plmc's gauge (see
 ``results/R6/e20_potts_gauge_20261013/gauge_diagnostic.json``): at most 0.68% of the
 coupling Frobenius norm is gauge-removable, and the gauge-carried first-order share of the
 coupling bias is 3.4-7.9% (median).
+
+Provenance note. This file is hashed into the guided-decoding cell records (``code_sha256``). The ``MixingError``
+class, :func:`validate_gibbs_mixing` and the optional mixing check were added after the 232 development cells were
+generated, so new cells record a different hash for it; no guided-decoding path calls any of them and
+:func:`sample_potts_joint` draws are bit-identical at a fixed seed.
 """
 from __future__ import annotations
 
@@ -166,17 +171,16 @@ class GibbsDraws:
     sequences: list[str]
     sweeps: int  # sweeps each chain ran before its final state was taken (burn-in = sweeps)
     check_sweeps: int  # the earlier sweep count whose marginals were compared with the final ones
-    mixing_max_tv: float  # max over columns of TV(single-site marginals at check_sweeps vs sweeps)
-    mixing_tolerance: float
+    mixing_max_tv: float | None  # max over columns of TV(single-site marginals at check_sweeps vs sweeps)
+    mixing_tolerance: float | None
 
 
 class MixingError(RuntimeError):
-    """The Gibbs chains failed the mixing check; carries the measured distance for the cell record."""
+    """A Gibbs mixing check failed; ``numbers`` holds the measured quantities for the cell record."""
 
-    def __init__(self, message: str, *, mixing_max_tv: float, check_sweeps: int, sweeps: int, mixing_tolerance: float):
+    def __init__(self, message: str, **numbers):
         super().__init__(message)
-        self.mixing_max_tv, self.check_sweeps = mixing_max_tv, check_sweeps
-        self.sweeps, self.mixing_tolerance = sweeps, mixing_tolerance
+        self.numbers = numbers
 
 
 def _site_marginals(codes: np.ndarray) -> np.ndarray:
@@ -184,38 +188,77 @@ def _site_marginals(codes: np.ndarray) -> np.ndarray:
     return np.stack([np.bincount(codes[:, i], minlength=q) for i in range(codes.shape[1])]) / codes.shape[0]
 
 
+def _column_tv(a: np.ndarray, b: np.ndarray) -> float:
+    return float(0.5 * np.abs(a - b).sum(axis=1).max())
+
+
+def _gibbs(model: FamilyModel, X: np.ndarray, sweeps: int, rng: np.random.Generator, snapshot_at: int | None = None):
+    """Run ``sweeps`` random-scan sweeps in place on ``X`` (chains by columns); return the marginals at ``snapshot_at``."""
+    cols, early = np.arange(model.length), None
+    for sweep in range(1, sweeps + 1):
+        for i in rng.permutation(model.length):
+            logits = model.h[i] + model.J[i][cols, :, X].sum(axis=1)  # (n, 20); J[i, i] = 0
+            p = np.exp(logits - logits.max(axis=1, keepdims=True))
+            cdf = p.cumsum(axis=1)
+            X[:, i] = (rng.random((len(X), 1)) * cdf[:, -1:] > cdf).sum(axis=1)
+        if sweep == snapshot_at:
+            early = _site_marginals(X)
+    return early
+
+
 def sample_potts_joint(model: FamilyModel, n: int, rng: np.random.Generator, *, sweeps: int,
-                       mixing_tolerance: float) -> GibbsDraws:
+                       mixing_tolerance: float | None) -> GibbsDraws:
     """Draw ``n`` sequences from ``P_L(x) proportional to exp(E(x))`` by random-scan Gibbs sampling.
 
     ``n`` independent chains start from uniform random sequences and each runs ``sweeps`` sweeps
     (one sweep resamples every column once, in a random order, from its full conditional given
     all other columns); the final state is the draw, so the burn-in is the whole ``sweeps``.
-    Mixing check: the single-site marginals after ``sweeps // 2`` sweeps are compared with the
-    final ones, and the call raises if any column's total-variation distance exceeds
-    ``mixing_tolerance``. The tolerance must sit above the Monte-Carlo noise of ``n`` draws.
+    With a ``mixing_tolerance`` the single-site marginals after ``sweeps // 2`` sweeps are compared with
+    the final ones and the call raises if any column's total-variation distance exceeds it; that
+    statistic is dominated by Monte-Carlo noise unless ``n`` is large (about 1/sqrt(n)), so the tolerance
+    must sit above that noise. ``None`` skips the check (``mixing_max_tv`` is then ``None``); use
+    :func:`validate_gibbs_mixing` to validate the sampler for a domain.
     """
-    if n < 1 or sweeps < 2 or mixing_tolerance <= 0:
+    if n < 1 or sweeps < 2 or (mixing_tolerance is not None and mixing_tolerance <= 0):
         raise ValueError("need n >= 1, sweeps >= 2 and a positive mixing tolerance")
-    L, q = model.length, len(AA20)
-    X = rng.integers(0, q, size=(n, L))
+    X = rng.integers(0, len(AA20), size=(n, model.length))
     check_sweeps = sweeps // 2
-    cols = np.arange(L)
-    for sweep in range(1, sweeps + 1):
-        for i in rng.permutation(L):
-            logits = model.h[i] + model.J[i][cols, :, X].sum(axis=1)  # (n, 20); J[i, i] = 0
-            p = np.exp(logits - logits.max(axis=1, keepdims=True))
-            cdf = p.cumsum(axis=1)
-            X[:, i] = (rng.random((n, 1)) * cdf[:, -1:] > cdf).sum(axis=1)
-        if sweep == check_sweeps:
-            early = _site_marginals(X)
-    tv = float(0.5 * np.abs(early - _site_marginals(X)).sum(axis=1).max())
-    if tv > mixing_tolerance:
-        raise MixingError(f"Gibbs chains have not mixed: max single-site TV {tv:.4f} between "
-                          f"{check_sweeps} and {sweeps} sweeps exceeds {mixing_tolerance}",
-                          mixing_max_tv=tv, check_sweeps=check_sweeps, sweeps=sweeps, mixing_tolerance=mixing_tolerance)
+    early = _gibbs(model, X, sweeps, rng, check_sweeps if mixing_tolerance is not None else None)
+    tv = None
+    if mixing_tolerance is not None:
+        tv = _column_tv(early, _site_marginals(X))
+        if tv > mixing_tolerance:
+            raise MixingError(f"Gibbs chains have not mixed: max single-site TV {tv:.4f} between "
+                              f"{check_sweeps} and {sweeps} sweeps exceeds {mixing_tolerance}",
+                              mixing_max_tv=tv, check_sweeps=check_sweeps, sweeps=sweeps,
+                              mixing_tolerance=mixing_tolerance)
     letters = np.array(list(model.alphabet))
     return GibbsDraws(["".join(row) for row in letters[X]], sweeps, check_sweeps, tv, mixing_tolerance)
+
+
+def validate_gibbs_mixing(model: FamilyModel, rng: np.random.Generator, *, n: int, sweeps: int, factor: float) -> dict:
+    """Initialisation-dependence check of the Gibbs sampler on one domain; raises ``MixingError`` on failure.
+
+    Two overdispersed initialisations -- A uniform-random residues, B the wild type -- each run ``n`` chains for
+    ``sweeps`` sweeps. ``between_init_tv`` is the largest single-site TV between the two final marginals;
+    ``noise_floor`` the largest single-site TV between two independent halves of A (pure sampling noise at
+    comparable size). Pass when ``between_init_tv <= factor * noise_floor``. Chains stuck near their start would
+    differ between A and B, which the half-run-versus-full-run statistic cannot see.
+    """
+    if n < 2 or n % 2 or sweeps < 1 or factor <= 0:
+        raise ValueError("need an even n >= 2, sweeps >= 1 and a positive factor")
+    A = rng.integers(0, len(AA20), size=(n, model.length))
+    B = np.tile(encode(model.wildtype), (n, 1))
+    _gibbs(model, A, sweeps, rng)
+    _gibbs(model, B, sweeps, rng)
+    between = _column_tv(_site_marginals(A), _site_marginals(B))
+    floor = _column_tv(_site_marginals(A[: n // 2]), _site_marginals(A[n // 2:]))
+    numbers = {"between_init_tv": between, "noise_floor": floor, "ratio": between / floor if floor else float("inf"),
+               "factor": factor, "n_validation_per_init": n, "sweeps": sweeps, "passed": between <= factor * floor}
+    if not numbers["passed"]:
+        raise MixingError(f"Gibbs chains depend on their initialisation: between-init TV {between:.4f} exceeds "
+                          f"{factor} x noise floor {floor:.4f}", **numbers)
+    return numbers
 
 
 def sha256_file(path: Path) -> str:

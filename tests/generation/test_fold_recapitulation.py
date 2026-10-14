@@ -273,7 +273,7 @@ def test_strength_guard_accepts_only_declared_strengths():
         fr.require_frozen_strength(recs, [_decl("M", (0.5, 0.0))])
     with pytest.raises(fr.ContractError, match="keys must be"):  # no frozen_strength key at all
         fr.require_frozen_strength(recs, [{"model": "m", "arm": "C", "dose_response_strengths": []}])
-    with pytest.raises(fr.ContractError, match="exactly"):  # several frozen strengths
+    with pytest.raises(fr.ContractError, match="a strength is an object"):  # several frozen strengths
         fr.require_frozen_strength(recs, [dict(ok[0], frozen_strength=[ok[0]["frozen_strength"]] * 2)])
     with pytest.raises(fr.ContractError, match="twice"):
         fr.require_frozen_strength(recs, ok + ok)
@@ -345,3 +345,10 @@ def test_reference_arms_take_null_language_model_fields_and_no_other_arm_does():
         fr.validate_records([_rec(1, arm="C", model="natural")], WT)
     with pytest.raises(fr.ContractError, match="must be null"):
         fr.validate_records([ref("H", lambda_fields=0.0, lambda_coupling=0.0)], WT)
+
+
+def test_a_protocol_without_a_strengths_declaration_refuses_evaluation_clearly(tmp_path):
+    protocol = tmp_path / "p.json"
+    protocol.write_text(json.dumps({"roles": {"development": [], "evaluation": []}}))
+    with pytest.raises(fr.ContractError, match="declares no ``strengths``"):
+        fr.load_strengths(protocol)

@@ -91,12 +91,29 @@ def test_parent_directory_discovery_and_strength_pair(tmp_path):
     assert len(json.loads((tmp_path / "out" / "component_scale.json").read_text())) == 3
     # the explicit-list form still works, and evaluation refuses several strengths of one arm
     assert m.merge_records([parent / "a", parent / "b"], tmp_path / "o2", WILD, None, None)["cells"] == 2
-    pair = lambda f: {"lambda_fields": f, "lambda_coupling": 0.0}
+    pair = lambda f, n=1: {"lambda_fields": f, "lambda_coupling": 0.0, "pool_size": n}
     declared = [{"model": "x", "arm": "N", "frozen_strength": pair(0.0)},
                 {"model": "x", "arm": "M", "frozen_strength": pair(0.5)}]
-    with pytest.raises(ValueError, match="undeclared strength"):  # 0.25 was not pre-declared
+    with pytest.raises(ValueError, match="no declared pool_size"):  # 0.25 was not pre-declared
         m.merge_records([parent], tmp_path / "o3", WILD, {"D0": "evaluation"}, "evaluation", strengths=declared)
     declared[1]["dose_response_strengths"] = [pair(0.25)]
     assert m.merge_records([parent], tmp_path / "o4", WILD, {"D0": "evaluation"}, "evaluation", strengths=declared)["cells"] == 3
+    # depth is each cell's own declaration: 2 for the dose arm, 1 elsewhere is fine, a mismatch is refused
+    declared[1]["dose_response_strengths"] = [pair(0.25, 2)]
+    with pytest.raises(ValueError, match="declaration names a depth of 2"):
+        m.merge_records([parent], tmp_path / "o5", WILD, {"D0": "evaluation"}, "evaluation", strengths=declared)
+    deep = _cell(tmp_path / "deep", "c", 9, [_row("c1", arm="M", lam=0.25), _row("c2", arm="M", lam=0.25)],
+                 arm_code="M", fields=0.25)
+    (deep / "guided_decoding_pool.json").write_text(
+        (deep / "guided_decoding_pool.json").read_text().replace('"sequences_per_cell": 1', '"sequences_per_cell": 2'))
+    assert m.merge_records([parent / "a", parent / "b", deep], tmp_path / "o6", WILD, {"D0": "evaluation"},
+                           "evaluation", strengths=declared)["records"] == 4
+    del declared[1]["dose_response_strengths"][0]["pool_size"]
+    with pytest.raises(ValueError, match="no declared pool_size"):
+        m.merge_records([parent / "a", parent / "b", deep], tmp_path / "o7", WILD, {"D0": "evaluation"},
+                        "evaluation", strengths=declared)
+    # without a declaration (development) one shared depth is still required
+    with pytest.raises(ValueError, match="different sampling recipes"):
+        m.merge_records([parent / "a", deep], tmp_path / "o8", WILD, None, None)
     with pytest.raises(ValueError, match="no cell"):
         m.discover_cells([tmp_path / "out"])

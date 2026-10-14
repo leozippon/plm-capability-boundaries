@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.capability.context.family_potts import (  # noqa: E402
+    MixingError, validate_gibbs_mixing,
     DEFAULT_DIRECTORY, guidance_biases, load_family_model, potts_score, sample_potts_joint,
     sample_prefix_chain, save_family_model)
 from src.capability.context.potts_gauge import to_zero_sum  # noqa: E402
@@ -309,3 +310,15 @@ def test_guidance_bias_is_the_prefix_truncated_conditional_and_not_the_full_join
             assert np.abs(spread).max() > 1e-3
         else:  # ... except at the last column, where no later column is left to sum out
             assert np.abs(spread).max() < 1e-12
+
+
+def test_validation_passes_for_a_mixing_sampler_and_flags_a_stuck_one(tmp_path):
+    model = _tiny_model(tmp_path, length=3, seed=5, scale=0.8)
+    ok = validate_gibbs_mixing(model, np.random.default_rng(0), n=2000, sweeps=40, factor=2.0)
+    assert ok["passed"] and ok["between_init_tv"] <= 2.0 * ok["noise_floor"]
+    # one sweep leaves the chains near their starts, A uniform and B at the wild type: initialisation dependence must be seen
+    with pytest.raises(MixingError) as stuck:
+        validate_gibbs_mixing(model, np.random.default_rng(0), n=2000, sweeps=1, factor=2.0)
+    assert not stuck.value.numbers["passed"] and stuck.value.numbers["ratio"] > 2.0
+    with pytest.raises(ValueError):
+        validate_gibbs_mixing(model, np.random.default_rng(0), n=3, sweeps=40, factor=2.0)

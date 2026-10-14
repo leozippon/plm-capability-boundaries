@@ -33,7 +33,7 @@ def world(tmp_path):
     protocol = {"schema": "coupling_guided_generation_v1",
                 "domains": {"AAA": {"L": L, "wt_sha256": hashlib.sha256(wt.encode()).hexdigest()}},
                 "seed_streams": [1000, 3000, 5000],
-                "reference_arms": {"potts_joint": {"chains": 40, "sweeps": 20, "mixing_tolerance": 0.99},
+                "reference_arms": {"potts_joint": {"chains": 40, "sweeps": 20, "validation_chains": 400, "mixing_factor": 2.0},
                                    "natural": {"max_rows": 3, "min_admissible": 2}}}
     path = tmp_path / "protocol.json"
     path.write_text(json.dumps(protocol))
@@ -57,20 +57,23 @@ def test_potts_cell_records_protocol_values_and_null_language_model_fields(world
     assert fr.validate_records(rows, {"AAA": wt})
     done = json.loads((tmp / "p/guided_decoding_pool.json").read_text())
     sampling = done["reference_arm"]["sampling"]
-    assert done["reference_arm"]["protocol_values"] == {"chains": 40, "sweeps": 20, "mixing_tolerance": 0.99}
-    assert sampling["sweeps"] == 20 and sampling["check_sweeps"] == 10 and 0 <= sampling["mixing_max_tv"] <= 1
+    assert done["reference_arm"]["protocol_values"] == {"chains": 40, "sweeps": 20, "validation_chains": 400, "mixing_factor": 2.0}
+    v = sampling["validation"]
+    assert sampling["sweeps"] == 20 and v["passed"] and v["between_init_tv"] <= 2.0 * v["noise_floor"]
+    assert {"between_init_tv", "noise_floor", "ratio"} <= set(v) and v["n_validation_per_init"] == 400
 
 
 def test_failed_mixing_check_fails_the_cell_with_no_records_and_no_retry(world):
     tmp, protocol, _, spec = world
-    spec["reference_arms"]["potts_joint"]["mixing_tolerance"] = 1e-6
+    spec["reference_arms"]["potts_joint"]["mixing_factor"] = 1e-6  # nothing can pass this
     protocol.write_text(json.dumps(spec))
     with pytest.raises(MixingError):
         _run(tmp, protocol, "p", "P", family_reference_dir=tmp / "ref")
     assert not (tmp / "p/sequences.jsonl").exists() and not (tmp / "p/guided_decoding_pool.json").exists()
     failure = json.loads((tmp / "p" / stage.FAILURE_FILENAME).read_text())
-    assert failure["status"] == "failed" and failure["mixing"]["max_tv"] > 1e-6
-    assert failure["mixing"]["sweeps"] == 20  # the declared sweeps; never raised
+    m = failure["mixing"]
+    assert failure["status"] == "failed" and not m["passed"] and m["between_init_tv"] > 1e-6 * m["noise_floor"]
+    assert {"between_init_tv", "noise_floor", "ratio"} <= set(m) and m["sweeps"] == 20  # declared sweeps, never raised
 
 
 def test_protocol_values_are_declared_not_defaulted(world):
@@ -150,9 +153,12 @@ def test_reference_cells_merge_with_the_guided_cells_unchanged(world):
     tmp, protocol, wt, spec = world
     _run(tmp, protocol, "p", "P", family_reference_dir=tmp / "ref")
     strengths = [{"model": "potts-joint", "arm": "P",
-                  "frozen_strength": {"lambda_fields": None, "lambda_coupling": None}}]
+                  "frozen_strength": {"lambda_fields": None, "lambda_coupling": None, "pool_size": 40}}]
     out = tmp / "merged"
     summary = merge.merge_records([tmp / "p"], out, {"AAA": wt}, {"AAA": "evaluation"}, "evaluation", 1, strengths)
     assert summary == {"cells": 1, "records": 40}
+    strengths[0]["frozen_strength"]["pool_size"] = 100
+    with pytest.raises(ValueError, match="declaration names a depth of 100"):
+        merge.merge_records([tmp / "p"], tmp / "m3", {"AAA": wt}, {"AAA": "evaluation"}, "evaluation", 1, strengths)
     with pytest.raises(ValueError, match="strengths declaration"):
         merge.merge_records([tmp / "p"], tmp / "m2", {"AAA": wt}, {"AAA": "evaluation"}, "evaluation", 1)

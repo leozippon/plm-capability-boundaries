@@ -10,14 +10,15 @@ language-model fields and the strength pair are null.
 Protocol: the ``coupling_guided_generation_v1`` protocol of the guided cells (``domains``,
 ``seed_streams``) plus a ``reference_arms`` object, whose values are recorded in the completion record::
 
-    "reference_arms": {"potts_joint": {"chains": 100, "sweeps": 200, "mixing_tolerance": 0.02},
+    "reference_arms": {"potts_joint": {"chains": 100, "sweeps": 200, "validation_chains": 4000,
+                                           "mixing_factor": 2.0},
                        "natural": {"max_rows": 100, "min_admissible": 25}}
 
 ``--stream-index`` picks the cell's seed; ``merge_e20_cells.py`` refuses two cells sharing a stream seed,
 so each (arm, domain) cell needs its own stream, distinct from the guided cells'.
 
-``P`` needs ``--family-reference-dir``. A domain whose chains fail the mixing check fails the cell: a
-failure record with the measured distance, no sequences, a non-zero exit. ``H`` needs ``--msa-dir`` and
+``P`` needs ``--family-reference-dir``. A domain whose sampler fails validation fails the cell: a
+failure record with between_init_tv, noise_floor and their ratio, no sequences, a non-zero exit. ``H`` needs ``--msa-dir`` and
 ``--qualification`` (``family_references_jointh_*/qualification.json``): the holdout is recomputed with
 the fit script's own ``split_rows`` and must reproduce the recorded split parameters and held-out row
 count, else the cell fails. Fewer than ``min_admissible`` gapless held-out rows is recorded, not an error.
@@ -74,16 +75,19 @@ def bind_protocol(protocol: Any, *, arm: str, domain: str, stream_index: int) ->
     declared = (protocol.get("reference_arms") or {}).get({"P": "potts_joint", "H": "natural"}[arm])
     if not isinstance(declared, Mapping):
         raise ValueError(f"protocol.reference_arms declares no {arm} values")
-    keys = {"P": ("chains", "sweeps", "mixing_tolerance"), "H": ("max_rows", "min_admissible")}[arm]
+    keys = {"P": ("chains", "sweeps", "validation_chains", "mixing_factor"),
+            "H": ("max_rows", "min_admissible")}[arm]
     if set(declared) != set(keys):
         raise ValueError(f"protocol.reference_arms for {arm} must hold exactly {list(keys)}")
-    values = {k: _int(declared[k], k, 1) for k in keys if k != "mixing_tolerance"}
+    values = {k: _int(declared[k], k, 1) for k in keys if k != "mixing_factor"}
     if arm == "P":
         _int(declared["sweeps"], "sweeps", 2)
-        tolerance = declared["mixing_tolerance"]
-        if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not 0 < tolerance < 1:
-            raise ValueError(f"mixing_tolerance must be in (0, 1), got {tolerance!r}")
-        values["mixing_tolerance"] = float(tolerance)
+        if values["validation_chains"] < 2 or values["validation_chains"] % 2:
+            raise ValueError("validation_chains must be an even integer >= 2")
+        factor = declared["mixing_factor"]
+        if isinstance(factor, bool) or not isinstance(factor, (int, float)) or factor <= 0:
+            raise ValueError(f"mixing_factor must be a positive number, got {factor!r}")
+        values["mixing_factor"] = float(factor)
     return {"arm": arm, "domain": domain, "length": _int(entry.get("L"), "domains.L", 1),
             "wt_sha256": entry["wt_sha256"], "stream_index": stream_index,
             "stream_seed": _int(streams[stream_index], "seed_streams[]", 0), "values": values}
@@ -192,8 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                        "stream_index": args.stream_index, "error_type": type(error).__name__, "error": str(error),
                        "updated_utc": datetime.now(timezone.utc).isoformat()}
             if isinstance(error, MixingError):
-                failure["mixing"] = {"max_tv": error.mixing_max_tv, "tolerance": error.mixing_tolerance,
-                                     "sweeps": error.sweeps, "check_sweeps": error.check_sweeps}
+                failure["mixing"] = error.numbers
             write_json(Path(args.out) / FAILURE_FILENAME, failure)
         raise
     print(json.dumps({"cell": completion["cell"], "reference_arm": completion["reference_arm"]}, indent=1))

@@ -137,24 +137,31 @@ def cell_key(row: Mapping[str, Any]) -> tuple:
     return (row["model"], row["domain"], row["arm"], *strength_pair(row))
 
 
-def _declared_pair(value: Any, where: str) -> tuple:
-    if not isinstance(value, Mapping) or set(value) != set(OPTIONAL_FIELDS):
-        raise ContractError(f"{where}: a strength is an object with exactly {list(OPTIONAL_FIELDS)}")
+def _declared_pair(value: Any, where: str) -> tuple[tuple, int | None]:
+    """``((lambda_fields, lambda_coupling), pool_size or None)`` of one declared strength object."""
+
+    if not isinstance(value, Mapping) or not set(OPTIONAL_FIELDS) <= set(value) \
+            or set(value) - {*OPTIONAL_FIELDS, "pool_size"}:
+        raise ContractError(f"{where}: a strength is an object with {list(OPTIONAL_FIELDS)} and optionally pool_size")
     pair = tuple(value[k] for k in OPTIONAL_FIELDS)
+    size = value.get("pool_size")
+    if size is not None and (not isinstance(size, int) or isinstance(size, bool) or size < 1):
+        raise ContractError(f"{where}: pool_size must be an integer >= 1")
     if pair == (None, None):
-        return pair
+        return pair, size
     if not all(_finite(v) and v >= 0 for v in pair):
         raise ContractError(f"{where}: a strength pair is two finite numbers >= 0, or two nulls")
-    return tuple(float(v) for v in pair)
+    return tuple(float(v) for v in pair), size
 
 
 def parse_strength_declaration(entries: Any) -> dict[tuple, tuple]:
-    """``(model, arm) -> (frozen pair, dose-response pairs)`` from the protocol's ``strengths`` list.
+    """``(model, arm) -> (frozen pair, dose-response pairs, {pair: declared pool size})``.
 
-    Each entry is ``{"model", "arm", "frozen_strength", "dose_response_strengths"?}``. The single
-    ``frozen_strength`` is the only pair eligible for the primary contrasts;
-    ``dose_response_strengths`` are descriptive only. Refused: a repeated (model, arm), a missing
-    or non-object ``frozen_strength``, a repeated dose, and a pair in both places.
+    Each entry is ``{"model", "arm", "frozen_strength", "dose_response_strengths"?}`` and a strength object may
+    carry the cell's declared ``pool_size`` (depth may differ between strengths and arms by design; the merge
+    checks each cell against its own declaration). The single ``frozen_strength`` is the only pair eligible
+    for the primary contrasts; ``dose_response_strengths`` are descriptive only. Refused: a repeated
+    (model, arm), a missing or non-object ``frozen_strength``, a repeated dose, and a pair in both places.
     """
 
     if not isinstance(entries, list) or not entries:
@@ -169,16 +176,18 @@ def parse_strength_declaration(entries: Any) -> dict[tuple, tuple]:
         where = f"protocol.strengths[{key[0]}|{key[1]}]"
         if key[1] not in ARMS or key in out:
             raise ContractError(f"{where}: unknown arm or declared twice")
-        frozen = _declared_pair(entry["frozen_strength"], f"{where}.frozen_strength")
-        doses = entry.get("dose_response_strengths", [])
-        if not isinstance(doses, list):
+        frozen, frozen_size = _declared_pair(entry["frozen_strength"], f"{where}.frozen_strength")
+        raw = entry.get("dose_response_strengths", [])
+        if not isinstance(raw, list):
             raise ContractError(f"{where}.dose_response_strengths must be a list")
-        doses = tuple(_declared_pair(d, f"{where}.dose_response_strengths") for d in doses)
+        parsed = [_declared_pair(d, f"{where}.dose_response_strengths") for d in raw]
+        doses = tuple(p for p, _ in parsed)
         if len(set(doses)) != len(doses):
             raise ContractError(f"{where}: a dose-response strength is declared twice")
         if frozen in doses:
             raise ContractError(f"{where}: strength {frozen} is both the frozen strength and a dose-response strength")
-        out[key] = (frozen, doses)
+        sizes = {p: n for p, n in [(frozen, frozen_size), *parsed] if n is not None}
+        out[key] = (frozen, doses, sizes)
     return out
 
 
@@ -197,7 +206,7 @@ def require_frozen_strength(rows: Iterable[Mapping[str, Any]], declared: Any) ->
     for key, pairs in sorted(seen.items(), key=str):
         if key not in declaration:
             raise ContractError(f"(model, arm) {key} has records but no declared frozen_strength")
-        frozen, doses = declaration[key]
+        frozen, doses, _ = declaration[key]
         undeclared = sorted(pairs - {frozen, *doses}, key=str)
         if undeclared:
             raise ContractError(
