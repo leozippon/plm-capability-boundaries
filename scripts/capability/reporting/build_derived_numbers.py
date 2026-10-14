@@ -1157,14 +1157,26 @@ CENSUS_FIELDS = {
 }
 
 
-def family_generation_census(ledger: Ledger) -> None:
-    support = ledger.declare_support("uncond_census_800", CENSUS_SUPPORT)
+def census_checkpoints(ledger: Ledger) -> dict[str, tuple[dict, str]]:
+    """The census population: one entry per checkpoint, over every census source.
+
+    The 3B campaign is reported in its own file and is also carried in the main
+    one, so the sources overlap. Keying by checkpoint name makes this the
+    distinct population, and makes it the same object both the per-arm rows and
+    the count of contributing procedures are read from: a count taken by adding
+    the two files' lengths counted the shared arm twice.
+    """
     census: dict[str, tuple[dict, str]] = {}
     for path in CENSUS_SOURCES:
         payload = ledger.artifacts.json(path)
         for arm, block in payload["checkpoints"].items():
             census[arm] = (block, path)
-    for arm, (block, path) in census.items():
+    return census
+
+
+def family_generation_census(ledger: Ledger) -> None:
+    support = ledger.declare_support("uncond_census_800", CENSUS_SUPPORT)
+    for arm, (block, path) in census_checkpoints(ledger).items():
         for field, (claim, unit) in CENSUS_FIELDS.items():
             if block.get(field) is None:
                 ledger.gap(id=f"generation_census/{arm}/{field}", claim=claim,
@@ -1919,12 +1931,13 @@ def family_roster_and_conventions(ledger: Ledger, strata: dict[str, str]) -> Non
         ))
     ledger.add(Quantity(
         id="conventions/census_procedures",
-        claim="native unconditional procedures contributing to the attempt census",
-        family="conventions", value=float(len(census["checkpoints"])
-                                          + len(ledger.artifacts.json(CENSUS_SOURCES[1])["checkpoints"])),
+        claim="native unconditional procedures contributing to the attempt census, counted once "
+              "each: the census sources overlap on the 3B campaign, which is reported in its own "
+              "file and carried in the main one",
+        family="conventions", value=float(len(census_checkpoints(ledger))),
         unit="procedures", kind="support_count", support_id="uncond_census_800", level="generation",
         source_path=census_path, source_sha256=ledger.artifacts.sha256(census_path),
-        source_pointer=("checkpoints",),
+        source_pointer=("checkpoints", "<distinct across the census sources>"),
     ))
 
 
