@@ -8,7 +8,7 @@
     "manuscript/assets/selection.json": "a327cc5a79737b5b24d7a1f104abc7dd33a1f3d22f10abff287da4e1fdb65bdd",
     "scripts/capability/reporting/figure_data/main/local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
     "results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/local_context_measurement.json": "6d18d2f40c99e6c969121d0806794c8dd4017af4ef3bc344093e7014b160447e",
-    "results/shared/manuscript_evidence_20261004/derived-numbers.csv": "f48c7c6f49522aed5e485873ac3233be8f47838bd052c1c2afb2fd2db9038278",
+    "results/shared/manuscript_evidence_20261004/derived-numbers.csv": "3c7486fd498b4e7c4a11bb6be11caf85e1b28e26db05a73ce4a1aa96daa0e441",
     "results/R1/position_terms_20260926/position_simultaneous.json": "adc04054ea5ad55b5dd5f1be2d70ca4c1d3c62b2b9371defd5cc3cd16c0752e8",
     "scripts/capability/reporting/figure_data/main/external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
     "results/R1/external_confirmation_20260924/fits/fit_bygpt5-base-en.json": "ab6fae0b6bd2a81a29bbf58db85ff9a4fb2bff4d332c2de4363f163d8a069b08",
@@ -340,7 +340,7 @@
       "png_path": "scripts/capability/reporting/figure_data/main/Fig1_framework.png",
       "png_sha256": "d45d01496c2ae185599d3a932e1bcef423d7acfe33adcf28bded03830fe3b058",
       "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig1_framework-plotted.csv",
-      "plotted_source_sha256": "72504ab369a35c564ee277cb06bf446355912e7fcd050f28bd56137b73afd05f"
+      "plotted_source_sha256": "30e235313f737b56e06813dbb9f76025777c538cbb39917bff4d262433c73ee4"
     }
   ]
 }
