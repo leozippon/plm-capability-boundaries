@@ -381,3 +381,48 @@ def test_axis_gain_is_descriptive_outcome_maximised_and_outside_the_test():
     assert block["descriptive_best_over_dose_axis_gain"]["arms"]["Pr"]["mean_best_over_axis_gain"] == pytest.approx(0.02)
     assert "upward-biased" in block["descriptive_best_over_dose_axis_gain"]["label"]
     assert block["per_domain_gain"]["1E0L"]["gain"] == pytest.approx(0.03)  # the declared test ignores the axis
+
+
+def planted_pools(models):
+    rows = []
+    for model in ana.MODELS:
+        for k, d in enumerate(ana.SEALED_DOMAINS):
+            for arm in ana.CAPTURE_ARMS:
+                cell = make_cell(model, d, arm, 0.4, seed=k)
+                for i, r in enumerate(cell):
+                    r["tm_score"] = 0.2 + 0.005 * (i % 40) if r["identity_to_wild_type"] < 20 else 0.9
+                rows += cell
+    return rows
+
+
+def test_captured_fraction_oracle_ceiling_and_floor():
+    models = {d: make_model(d, 12, i) for i, d in enumerate(ana.SEALED_DOMAINS)}
+    rows = planted_pools(models)
+    block = ana.analyse(rows, models, 7)[ana.CAPTURE_LABEL]
+    assert block["outside_primary_holm_family"] and block["influences_primary_verdict"] is False
+    assert "does not increase" in block["expectation"] and "cannot be repeated" in block["development_only_note"]
+    assert "not a selector" in block["oracle_statement"]
+    n = block["arms"]["N"]
+    assert n["n_domains"] == 8
+    admissible = [r for r in rows if (r["model"], r["domain"], r["arm"]) == ("protgpt2", "1E0L", "N")
+                  and r["identity_to_wild_type"] < 20]
+    tm = sorted((r["tm_score"] for r in admissible), reverse=True)
+    expected = np.mean(tm[:10]) - np.mean(tm)
+    assert n["per_domain"]["1E0L"]["oracle_gain"] == pytest.approx(expected)  # same pool in both models
+    for entry in n["selectors"].values():
+        assert entry["status"] == "estimated" and entry["interval95_bca"] is not None
+    for dom in n["per_domain"].values():  # no selector can beat the ceiling
+        assert all(s["gain"] <= dom["oracle_gain"] + 1e-12 for s in dom["selectors"].values())
+    # a domain without a usable pool is missing and the floor is enforced
+    short = [r for r in rows if not (r["domain"] == "1E0L" and r["arm"] == "N")]
+    short += make_cell("protgpt2", "1E0L", "N", 0.4, n_admissible=24) + make_cell("progen2-medium", "1E0L", "N", 0.4)
+    broken = ana.analyse(short, models, 7)[ana.CAPTURE_LABEL]["arms"]["N"]
+    assert broken["n_domains"] == 7 and "1E0L" in broken["missing_domains"]
+    assert all(e["status"] == "unestimable" for e in broken["selectors"].values())
+
+
+def test_oracle_is_not_reachable_through_the_selector_registry():
+    view = ana.selector_view(make_cell("protgpt2", "1E0L", "N", 0.4))
+    for name in ("tm_oracle", "tm_score"):
+        with pytest.raises(ValueError):
+            ana.selector_scores([name], view, None, 1)

@@ -141,15 +141,33 @@ def load_records(path: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def analyse(records, models, permutation_seed):
+def pool_scores(model, donor, permutation_seed, rows):
+    """Every selector score and the metric arrays of one pool of records."""
+
+    codes = encode_pool([r["sequence"] for r in rows], model.length, model.domain)
+    scores = selector_scores(model, donor, permutation_seed, codes)
+    scores["native_loglik"] = np.array([r["native_loglik"] for r in rows], dtype=np.float64)
+    values = {m: np.array([r[m] for r in rows], dtype=np.float64) for m in METRICS}
+    scores["identity_oracle"] = values["identity_to_wild_type"]
+    return scores, values
+
+
+def cross_domain_donors(models):
+    """Declared donor model per domain (None where the pre-registered rule refuses: no admissible donor)."""
+
     lengths = {d: m.length for d, m in models.items() if m.qualified}
     donors = {}
     for domain in models:
         try:
             donors[domain] = models[select_cross_domain_donor(domain, lengths)]
-        except ValueError as error:  # the pre-registered refusal: no admissible donor
+        except ValueError as error:
             donors[domain] = None
             print(f"note: {error}", file=sys.stderr)
+    return donors
+
+
+def analyse(records, models, permutation_seed):
+    donors = cross_domain_donors(models)
     by_cell = defaultdict(list)
     for r in records:
         by_cell[(r["model"], r["domain"], r["arm"], r["lambda_fields"], r["lambda_coupling"])].append(r)
@@ -158,11 +176,7 @@ def analyse(records, models, permutation_seed):
         raise ValueError(f"pools must share one size of at least {max(KS)}, found {sorted(sizes)}")
     cells = []
     for (model, domain, arm, lf, lc), rows in sorted(by_cell.items()):
-        codes = encode_pool([r["sequence"] for r in rows], models[domain].length, domain)
-        scores = selector_scores(models[domain], donors[domain], permutation_seed, codes)
-        scores["native_loglik"] = np.array([r["native_loglik"] for r in rows], dtype=np.float64)
-        values = {m: np.array([r[m] for r in rows], dtype=np.float64) for m in METRICS}
-        scores["identity_oracle"] = values["identity_to_wild_type"]
+        scores, values = pool_scores(models[domain], donors[domain], permutation_seed, rows)
         cell = {"model": model, "domain": domain, "arm": arm, "lambda_fields": lf, "lambda_coupling": lc,
                 "pool_size": len(rows), "pool_mean": {m: float(values[m].mean()) for m in METRICS},
                 "selectors": {}}

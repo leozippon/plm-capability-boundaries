@@ -129,6 +129,23 @@ DEPTH_CAVEAT = (
     "Gain is the best of four guidance arms minus native, which is biased upward by selecting the maximum. With "
     "eight domains the intervals are wide; no pass/fail threshold is attached and no verdict is drawn.")
 
+#: Pre-declared secondary on how much of the oracle headroom a selector captures. Outside the Holm family, no
+#: bearing on the verdict, no threshold.
+CAPTURE_LABEL = "captured_fraction_of_oracle_headroom"
+CAPTURE_ARMS = ("N", "Pr", "C")
+CAPTURE_EXPECTATION = (
+    "Declared expectation, stated before the numbers: the captured fraction is well below 1 and does not increase "
+    "with pool depth. No threshold and no pass/fail verdict is attached; the value is the number itself.")
+CAPTURE_ORACLE_STATEMENT = (
+    "The TM oracle selects the top candidates by the realised TM-score, the primary endpoint, which is prohibited "
+    "for any method. It is computed outside the selector registry, which cannot see tm_score, and exists only to "
+    "measure the ceiling. It is not a selector and not a proposed method.")
+CAPTURE_DEVELOPMENT_ONLY = (
+    "Budget scaling (whether the gain grows with candidate budget) is development-only, measured by "
+    "analyse_selection_budget.py at depths 100 to 500. The sealed domains carry 200 candidates in the primary-family "
+    "cells and 100 in the frontier cells, not 500, so it cannot be repeated on them. Only the captured fraction at "
+    "their own depths is reported here.")
+
 STATEMENT = (
     "Pre-specified analysis; decision rules frozen before the data existed. The independence unit is the "
     "domain. Contrasts with fewer than MINIMUM_BOOTSTRAP_UNITS domains carry no interval and no p-value. "
@@ -609,6 +626,75 @@ def depth_hypothesis(sources: "Sources", domains, covariates: dict) -> dict:
     }
 
 
+def tm_oracle_gain(admissible_rows, k: int = SELECTION_K) -> float:
+    """Ceiling measurement, not a selector: top-k by realised TM minus the pool mean, within the admissible pool.
+
+    Deliberately outside the selector registry (which cannot see tm_score) and used only for the captured
+    fraction below.
+    """
+
+    tm = np.sort([r["tm_score"] for r in admissible_rows])[::-1]
+    return float(tm[:k].mean() - tm.mean())
+
+
+def captured_fraction(records, family_models, permutation_seed: int) -> dict:
+    """Per sealed domain at the frozen doses, k = 10: each selector's gain, the oracle's, and the captured fraction.
+
+    Within a (model, domain) cell the pool is the admissible candidates (at least 25); a domain's gains are the
+    means over the two models and a domain's captured fraction is the ratio of those mean gains. The interval is
+    BCa over the domains, withheld below the unit floor.
+    """
+
+    cells = group_cells(records)
+    domains = sorted({r["domain"] for r in records} & set(SEALED_DOMAINS))
+    names = list(SELECTOR_NAMES)
+    out = {"label": CAPTURE_LABEL, "outside_primary_holm_family": True, "influences_primary_verdict": False,
+           "expectation": CAPTURE_EXPECTATION, "oracle_statement": CAPTURE_ORACLE_STATEMENT,
+           "development_only_note": CAPTURE_DEVELOPMENT_ONLY, "k": SELECTION_K, "interval_coverage_note": BCA_NOTE,
+           "arms": {}}
+    for arm in CAPTURE_ARMS:
+        per, missing = {}, {}
+        for d in domains:
+            sel_gain = {n: [] for n in names}
+            oracle_gain, sizes = [], {}
+            for model in MODELS:
+                rows = cells.get((model, d, arm, *FROZEN_DOSES[arm][model]))
+                admissible = [r for r in rows or [] if r["identity_to_wild_type"] < ADMISSIBLE_IDENTITY]
+                if len(admissible) < MIN_ADMISSIBLE or d not in family_models:
+                    missing[d] = f"{model}: no {arm} pool with {MIN_ADMISSIBLE} admissible candidates and a family model"
+                    break
+                sizes[model] = {"pool": len(rows), "admissible": len(admissible)}
+                scores = selector_scores(names, selector_view(admissible), family_models[d], permutation_seed)
+                pool_mean = float(np.mean([r["tm_score"] for r in admissible]))
+                for n in names:
+                    top = np.argsort(-scores[n], kind="stable")[:SELECTION_K]
+                    sel_gain[n].append(float(np.mean([admissible[i]["tm_score"] for i in top])) - pool_mean)
+                oracle_gain.append(tm_oracle_gain(admissible))
+            else:
+                og = float(np.mean(oracle_gain))
+                per[d] = {"oracle_gain": og, "pool_sizes": sizes,
+                          "selectors": {n: {"gain": float(np.mean(sel_gain[n])),
+                                            "captured_fraction": float(np.mean(sel_gain[n])) / og if og > 0 else None}
+                                        for n in names}}
+        floor = bootstrap_unit_floor(len(per))
+        block = {"n_domains": len(per), "per_domain": per, "missing_domains": missing,
+                 "mean_oracle_gain": _mean([v["oracle_gain"] for v in per.values()]), "selectors": {}}
+        for n in names:
+            fr_values = [v["selectors"][n]["captured_fraction"] for v in per.values()]
+            entry = {"mean_gain": _mean([v["selectors"][n]["gain"] for v in per.values()]),
+                     "mean_captured_fraction": _mean(fr_values)}
+            if floor["degenerate"] or None in fr_values:
+                entry.update(status="unestimable", interval95_bca=None,
+                             reason=f"{len(per)} evaluation domains have a value, below the "
+                                    f"{MINIMUM_BOOTSTRAP_UNITS}-domain floor" if floor["degenerate"]
+                             else "an oracle gain was not positive in some domain")
+            else:
+                entry.update(status="estimated", interval95_bca=bca_interval(fr_values)[0])
+            block["selectors"][n] = entry
+        out["arms"][arm] = block
+    return out
+
+
 def equivalence(primary: dict) -> dict:
     """Headline: achieved upper 95% bounds on C-Pr and F-M. Flag: both models' bounds strictly below +0.05.
 
@@ -720,6 +806,7 @@ def analyse(records, family_models, permutation_seed: int, covariates: dict | No
         "coprimary_feasibility": feasibility,
         "reference_arms_descriptive": reference,
         "sensitivity_leave_out_1IFY_descriptive": sensitivity,
+        CAPTURE_LABEL: captured_fraction(records, family_models, permutation_seed),
         DEPTH_LABEL: None if covariates is None else depth_hypothesis(sources, domains, covariates),
         "frontier": dose_axis(sources, FRONTIER_ARMS),
         "dose_response_recovery_confounded": {
@@ -751,6 +838,15 @@ def render(result: dict) -> str:
                 p = (f" p_holm t={c['p_holm_ttest']:.4f} signflip={c['p_holm_signflip']:.4f}" if holm else "")
                 lines.append(f"{head}mean {c['mean']:+.4f} CI95 [{lo:+.4f}, {hi:+.4f}] +{c['favouring']['positive']}/"
                              f"-{c['favouring']['negative']} d_id_wt {c['mean_identity_diff']:+.1f}{p} [{per}]")
+    cap = result[CAPTURE_LABEL]
+    lines.append(f"== {CAPTURE_LABEL} (k={cap['k']}; outside the Holm family; no verdict) ==")
+    lines.append(cap["expectation"])
+    for arm, b in cap["arms"].items():
+        for n, e in b["selectors"].items():
+            ci = "unestimable" if e["interval95_bca"] is None else f"CI95 [{e['interval95_bca'][0]:+.3f}, {e['interval95_bca'][1]:+.3f}]"
+            cf = "n/a" if e["mean_captured_fraction"] is None else f"{e['mean_captured_fraction']:+.3f}"
+            lines.append(f"[{arm}] {n:<18} n={b['n_domains']} gain {e['mean_gain'] if e['mean_gain'] is None else format(e['mean_gain'], '+.4f')} "
+                         f"oracle {b['mean_oracle_gain'] if b['mean_oracle_gain'] is None else format(b['mean_oracle_gain'], '+.4f')} captured {cf} {ci}")
     depth = result.get(DEPTH_LABEL)
     if depth:
         lines.append(f"== {DEPTH_LABEL} (declared direction for depth: {depth['predeclared_direction']['log10_msa_depth']}; "
