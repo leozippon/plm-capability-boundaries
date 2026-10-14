@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.capability.context.family_potts import encode, load_family_model  # noqa: E402
 from src.capability.context.potts_gauge import to_zero_sum  # noqa: E402
-from src.capability.core.io import write_json  # noqa: E402
+from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.decoding.guided_decoding import permutation_for, select_cross_domain_donor  # noqa: E402
 
 SCHEMA = "selection_factorial_v2"
@@ -52,7 +52,11 @@ STRATA_STATEMENT = (
     "imputed). The shrinkage is 1 - restricted gain / unrestricted gain on the cross-domain means, where gain is "
     "selected-set TM minus pool-mean TM. shrinkage_matched compares against the unrestricted gain on exactly the "
     "cells that have a restricted value; shrinkage_vs_all_cells compares against the unrestricted summary over all "
-    "cells and so also reflects which cells dropped out.")
+    "cells and so also reflects which cells dropped out. A shrinkage ratio is unstable where its unrestricted gain "
+    "is near zero (values such as -0.31 and -17.22 occur for coupling_permuted); the field "
+    "shrinkage_*_unreliable is true when the unrestricted gain magnitude is below 0.01 TM, and then the gains "
+    "themselves, or shrinkage_matched, should be read instead.")
+UNRELIABLE_BELOW_GAIN = 0.01
 SELECTORS = ("native_loglik", "profile", "identity_oracle", "potts_fields", "potts_coupling", "potts_full",
              "coupling_permuted", "coupling_cross_domain", "potts_fields_raw", "potts_coupling_raw")
 #: (name, minuend, subtrahend); each is a difference of selected-set mean TM-scores.
@@ -243,6 +247,8 @@ def shrinkage(unrestricted_all, unrestricted_matched, restricted):
                 else:
                     row[f"gain_unrestricted_{tag}"] = base["mean_gain"]["gain_tm"]
                     row[f"shrinkage_{tag}"] = 1.0 - gain / base["mean_gain"]["gain_tm"]
+                row[f"shrinkage_{tag}_unreliable"] = (row[f"shrinkage_{tag}"] is None
+                                                      or abs(base["mean_gain"]["gain_tm"]) < UNRELIABLE_BELOW_GAIN)
             out[k][name] = row
     return out
 
@@ -308,15 +314,17 @@ def main(argv=None):
         "shrinkage": shrinkages, "summaries": summaries, "cells": cells})
     for s in summaries:
         print(render(s))
+    print(f"sha256 {sha256_file(args.out)}  {args.out}")
     print(ORACLE_STATEMENT)
     for name, per_k in shrinkages.items():
         print(f"== shrinkage, stratum {name}: restricted gain vs unrestricted on matched cells / on all cells ==")
         for k, per in per_k.items():
             for sel, r in per.items():
                 f = lambda v: "   n/a" if v is None else f"{v:+.4f}"
+                flag = lambda t: " (unreliable)" if r[f"shrinkage_{t}_unreliable"] else ""
                 print(f"k={k:<3}{sel:<24} restricted {f(r['gain_restricted'])}  matched {f(r['gain_unrestricted_matched'])} "
-                      f"shrink {f(r['shrinkage_matched'])}  all-cells {f(r['gain_unrestricted_vs_all_cells'])} "
-                      f"shrink {f(r['shrinkage_vs_all_cells'])}")
+                      f"shrink {f(r['shrinkage_matched'])}{flag('matched')}  all-cells {f(r['gain_unrestricted_vs_all_cells'])} "
+                      f"shrink {f(r['shrinkage_vs_all_cells'])}{flag('vs_all_cells')}")
     return 0
 
 

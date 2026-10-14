@@ -306,7 +306,7 @@ def test_real_covariates_cover_twelve_domains_and_match_the_declared_depths():
     wild = ana.fr.load_wild_types(WILD_TYPES)
     cov = ana.msa_covariates(MSA_DIR, wild)
     assert len(cov) == 12 and {d for d, v in cov.items() if v["role"] == "evaluation"} == set(ana.SEALED_DOMAINS)
-    declared = {d: v["msa_rows"] for d, v in ana.DEVELOPMENT_OBSERVATION.items()}
+    declared = ana.DEVELOPMENT_OBSERVATION["msa_rows"]
     assert {d: cov[d]["msa_rows"] for d in declared} == declared
     rows = [v["msa_rows"] for v in cov.values() if v["role"] == "evaluation"]
     assert (min(rows), max(rows)) == (177, 9842)
@@ -348,3 +348,36 @@ def test_rank_correlation_and_partial():
     z = [3, 1, 4, 1.5, 5, 9, 2, 6]
     assert ana.rank_correlation(x, x[::-1], [z]) == pytest.approx(-1.0)
     assert np.isnan(ana.rank_correlation(x, [1] * 8))
+
+
+def test_development_support_is_recorded_as_definition_dependent():
+    obs = ana.DEVELOPMENT_OBSERVATION
+    depth_order = sorted(obs["msa_rows"], key=obs["msa_rows"].get)
+    best = [obs["best_over_dose_axis"][d] for d in depth_order]
+    assert best == sorted(best, reverse=True) and obs["best_over_dose_axis"]["monotone_in_depth"]
+    for model, gains in obs["frozen_dose"].items():
+        if model in ana.MODELS:
+            g = [gains[d] for d in depth_order]
+            assert g != sorted(g, reverse=True) and gains["1UFM"] < gains["1K1V"]  # 1UFM breaks the ordering
+    assert obs["frozen_dose"]["monotone_in_depth"] is False
+    assert "lowers the prior" in obs["support_statement"] and "negative" in obs["support_statement"]
+    assert ana.DEPTH_DIRECTION["log10_msa_depth"] == "negative"
+
+
+def test_axis_gain_is_descriptive_outcome_maximised_and_outside_the_test():
+    depths = [200, 300, 450, 700, 1000, 1500, 3000, 9000]
+    rows = []
+    for model in ana.MODELS:
+        for k, d in enumerate(ana.SEALED_DOMAINS):
+            rows += make_cell(model, d, "N", 0.40, seed=k) + make_cell(model, d, "Pr", 0.42, seed=k)
+            rows += make_cell(model, d, "C", 0.43, seed=k)
+            extra = make_cell(model, d, "C", 0.50, seed=k + 100)  # a second C dose, better than the frozen one
+            for r in extra:
+                r["lambda_coupling"] = 16.0
+            rows += extra
+    block = ana.analyse(rows, {}, 7, depth_covariates(depths))[ana.DEPTH_LABEL]
+    c = block["descriptive_best_over_dose_axis_gain"]["arms"]["C"]
+    assert c["mean_best_over_axis_gain"] == pytest.approx(0.10) and c["mean_frozen_dose_gain"] == pytest.approx(0.03)
+    assert block["descriptive_best_over_dose_axis_gain"]["arms"]["Pr"]["mean_best_over_axis_gain"] == pytest.approx(0.02)
+    assert "upward-biased" in block["descriptive_best_over_dose_axis_gain"]["label"]
+    assert block["per_domain_gain"]["1E0L"]["gain"] == pytest.approx(0.03)  # the declared test ignores the axis

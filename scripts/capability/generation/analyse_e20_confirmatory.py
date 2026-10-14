@@ -96,15 +96,35 @@ SIGN_FLIP_NOTE = ("exact two-sided sign-flip p cannot fall below 2/2**n (0.0078 
 #: evaluation domains were read; it sits outside the primary Holm family and cannot touch the verdict.
 DEPTH_LABEL = "secondary_predeclared_msa_depth"
 GUIDANCE_ARMS = ("M", "Pr", "C", "F")  # the genuine guidance arms; Cx and Cd are wrong-constraint controls
-DEVELOPMENT_OBSERVATION = {  # as declared by the coordinator: MSA rows, novelty-constrained guidance gain
-    "2KWH": {"msa_rows": 145, "gain": 0.1030}, "1UFM": {"msa_rows": 358, "gain": 0.0762},
-    "1K1V": {"msa_rows": 524, "gain": 0.0647}, "3L1X": {"msa_rows": 798, "gain": 0.0480}}
+MSA_ROWS_DEVELOPMENT = {"2KWH": 145, "1UFM": 358, "1K1V": 524, "3L1X": 798}
+#: The development support is definition-dependent. Best over the whole dose axis (the declared observation) orders
+#: perfectly inversely with depth; the frozen-dose gain used for the test does not (1UFM breaks the ordering in both
+#: models). Both are recorded; the frozen-dose numbers are the best of M, Pr, C, F at the frozen dose minus N.
+DEVELOPMENT_OBSERVATION = {
+    "best_over_dose_axis": {"2KWH": 0.1030, "1UFM": 0.0762, "1K1V": 0.0647, "3L1X": 0.0480,
+                            "definition": "best non-native arm over the whole dose axis minus native, below 20% "
+                                          "identity, 25-candidate floor; outcome-maximised, so upward-biased",
+                            "monotone_in_depth": True},
+    "frozen_dose": {"progen2-medium": {"2KWH": 0.0505, "1UFM": 0.0169, "1K1V": 0.0325, "3L1X": 0.0152},
+                    "protgpt2": {"2KWH": 0.0544, "1UFM": 0.0275, "1K1V": 0.0603, "3L1X": 0.0301},
+                    "definition": "the definition the depth hypothesis is tested under",
+                    "monotone_in_depth": False},
+    "msa_rows": MSA_ROWS_DEVELOPMENT,
+    "support_statement": (
+        "The development support is definition-dependent: monotone under a best-over-dose-axis gain, non-monotone "
+        "under the frozen-dose gain (ordered by depth the frozen-dose gains are 0.0505, 0.0169, 0.0325, 0.0152 for "
+        "progen2-medium and 0.0544, 0.0275, 0.0603, 0.0301 for protgpt2). This lowers the prior on the hypothesis. "
+        "It is tested anyway because the sealed set spans 56-fold in depth against development's 5.5-fold, so it is "
+        "the first adequately-ranged test rather than a confirmation of a development finding. The declared "
+        "direction stays negative: it was declared before this recomputation, and changing it now would fit the "
+        "declaration to the data.")}
 DEPTH_COVARIATES = ("log10_msa_depth", "mean_msa_identity_to_query")
 DEPTH_DIRECTION = {"log10_msa_depth": "negative", "mean_msa_identity_to_query": "none declared; descriptive"}
 DEPTH_CAVEAT = (
-    "Suggestive only. In development, four domains ordered the gain perfectly inversely with MSA depth; a perfect "
-    "monotone ordering in a specified direction arises by chance with probability 1/24 at n=4, so this is a "
-    "hypothesis, not a finding. Gain can also track chain length or the native baseline instead of depth; four "
+    "Suggestive only, and weaker than first declared. In development, four domains ordered a best-over-dose-axis "
+    "gain perfectly inversely with MSA depth, but the frozen-dose gain used here does not (see "
+    "development_observation). A perfect monotone ordering in a specified direction arises by chance with "
+    "probability 1/24 at n=4, so even the first was a hypothesis, not a finding. Gain can also track chain length or the native baseline instead of depth; four "
     "domains cannot separate the three, so the length- and baseline-controlled partial is reported alongside. "
     "Gain is the best of four guidance arms minus native, which is biased upward by selecting the maximum. With "
     "eight domains the intervals are wide; no pass/fail threshold is attached and no verdict is drawn.")
@@ -494,6 +514,35 @@ def correlation_with_interval(x, y, controls=None) -> dict:
             "n_draws_used": len(draws), "n_draws_dropped_degenerate": N_RESAMPLES - len(draws)}
 
 
+def axis_gain_descriptive(sources: "Sources", domains) -> dict:
+    """Outcome-maximised best-over-dose-axis gain for Pr and C, beside their frozen-dose gain. Not part of the test."""
+
+    out = {"label": "descriptive; best over the dose axis is chosen on the outcome and is therefore upward-biased; "
+                    "kept out of the declared test; shown so the definition dependence is visible",
+           "arms": {}}
+    for arm in FRONTIER_ARMS:
+        per = {}
+        for d in [x for x in SEALED_DOMAINS if x in domains]:
+            gains, frozen, chosen = [], [], {}
+            for model in MODELS:
+                base, why = side_value(*sources.cell(model, d, "N"), "N", "tm")
+                axis = {k[3:]: c["tm"] for k, c in sources.cells.items() if k[:3] == (model, d, arm) and c["tm"] is not None}
+                fz, _ = side_value(*sources.cell(model, d, arm), arm, "tm")
+                if base is None or not axis:
+                    break
+                dose = max(axis, key=axis.get)
+                chosen[model] = list(dose)
+                gains.append(axis[dose] - base["tm"])
+                frozen.append(None if fz is None else fz["tm"] - base["tm"])
+            else:
+                per[d] = {"best_over_axis_gain": float(np.mean(gains)), "chosen_dose_by_model": chosen,
+                          "frozen_dose_gain": None if None in frozen else float(np.mean(frozen))}
+        out["arms"][arm] = {"per_domain": per,
+                            "mean_best_over_axis_gain": _mean([v["best_over_axis_gain"] for v in per.values()]),
+                            "mean_frozen_dose_gain": _mean([v["frozen_dose_gain"] for v in per.values()])}
+    return out
+
+
 def depth_hypothesis(sources: "Sources", domains, covariates: dict) -> dict:
     """Secondary pre-declared hypothesis: guidance gain against family depth, tested on evaluation domains only."""
 
@@ -543,6 +592,7 @@ def depth_hypothesis(sources: "Sources", domains, covariates: dict) -> dict:
                        "outside_primary_holm_family": True, "influences_primary_verdict": False},
         "caveat": DEPTH_CAVEAT,
         "development_observation": DEVELOPMENT_OBSERVATION,
+        "descriptive_best_over_dose_axis_gain": axis_gain_descriptive(sources, domains),
         "gain_definition": f"per model, the best of {GUIDANCE_ARMS} at the frozen dose minus N, each a mean TM over "
                            f"candidates below {ADMISSIBLE_IDENTITY:g}% identity with at least {MIN_ADMISSIBLE}; "
                            "the domain gain is the mean over the two models and needs both",

@@ -125,3 +125,11 @@ def test_shrinkage_is_one_minus_the_gain_ratio():
     out = sel.shrinkage(block(0.10), block(0.05), block(0.02))["5"]["s"]
     assert out["shrinkage_matched"] == pytest.approx(0.6) and out["shrinkage_vs_all_cells"] == pytest.approx(0.8)
     assert sel.shrinkage(block(0.0), block(0.0), block(0.02))["5"]["s"]["shrinkage_matched"] is None  # no base, no ratio
+
+
+def test_shrinkage_is_flagged_unreliable_where_the_base_gain_is_small():
+    def block(gain):
+        return {"k": {"5": {"selectors": {"s": {"n_domains": 4, "mean_gain": {"gain_tm": gain}}}}}}
+    out = sel.shrinkage(block(0.005), block(0.05), block(0.02))["5"]["s"]
+    assert out["shrinkage_vs_all_cells_unreliable"] is True and out["shrinkage_matched_unreliable"] is False
+    assert "unreliable" in sel.STRATA_STATEMENT and "0.01" in sel.STRATA_STATEMENT
