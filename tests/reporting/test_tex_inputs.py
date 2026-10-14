@@ -1,7 +1,13 @@
 """Local input files participate in reference and freshness checks."""
 import pytest
 
-from scripts.capability.reporting.validate_manuscript import arguments, float_placement_faults, tex_inputs
+from scripts.capability.reporting.validate_manuscript import (
+    arguments,
+    float_placement_faults,
+    tex_inputs,
+    without_comments,
+    words,
+)
 
 
 def test_extensionless_nested_inputs_expose_labels_and_dependencies(tmp_path):
@@ -51,3 +57,20 @@ def test_invalid_input_refuses_instead_of_being_ignored(tmp_path):
         tex_inputs(r'\input{cycle}', tmp_path)
     with pytest.raises(ValueError, match='Nonlocal'):
         tex_inputs(r'\input{../outside}', tmp_path)
+
+
+def test_a_comment_is_not_body_text():
+    """The journal word limit measures what is typeset, not source annotation.
+
+    An unstripped comment inflates the count, so a correct manuscript carrying
+    a long explanatory note would fail the length check. Placeholder blocks
+    recording deliberately unwritten sections are exactly that case.
+    """
+    assert words(without_comments('two words % and four commented ones')) == 2
+    assert without_comments(r'90\% yield') == r'90\% yield'
+    assert words(without_comments(r'90\% yield')) == 2
+    # A comment may not swallow the line that follows it.
+    assert words(without_comments('% hidden\nvisible text')) == 2
+    # Nor may it hide structure from the float checker.
+    assert float_placement_faults('% \\begin{figure}[t]\n') == []
+    assert float_placement_faults(r'\begin{figure}[t]') != []

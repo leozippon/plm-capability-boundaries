@@ -150,6 +150,11 @@ def arguments(text, command):
     return values
 
 
+def without_comments(text):
+    """Drop LaTeX comments. A comment is not body text and is not typeset."""
+    return re.sub(r'(?m)(?<!\\)%.*$', '', text)
+
+
 def words(text):
     text = re.sub(r"\\(?:sub)?section\*?\{[^}]*\}|\\(?:cite|ref|label)\{[^}]*\}", "", text)
     text = text.replace("~", " ")
@@ -436,7 +441,7 @@ def pdf_footer_faults(content):
 def tex_inputs(text, root, active=()):
     """Read literal manuscript-local inputs, preserving repeated inclusions."""
     dependencies = []
-    uncommented = re.sub(r'(?m)(?<!\\)%.*$', '', text)
+    uncommented = without_comments(text)
     for name in arguments(uncommented, 'input'):
         path = root / name
         if not path.suffix:
@@ -454,7 +459,7 @@ def tex_inputs(text, root, active=()):
 
 def float_placement_faults(text):
     """Allow ordinary text-page floats and float pages, including class defaults."""
-    uncommented = re.sub(r'(?m)(?<!\\)%.*$', '', text)
+    uncommented = without_comments(text)
     faults = []
     for match in re.finditer(r'\\begin\{(figure\*?|table\*?)\}\s*(?:\[([^]]*)\])?', uncommented):
         placement = match[2] if match[2] is not None else 'tbp'
@@ -508,6 +513,7 @@ def validate(source_only=False):
     require(allkeys == set(bibkeys), "Uncited bibliography entries remain")
     sections = arguments(main, "section")
     body = main.split(r"\maketitle", 1)[1].split(r"\section{Methods}", 1)[0]
+    body = without_comments(body)
     body = re.sub(r"\\begin\{(figure|table)\}.*?\\end\{\1\}", "", body, flags=re.S)
     body_words = words(body)
     abstracts = arguments(main, "abstract")
