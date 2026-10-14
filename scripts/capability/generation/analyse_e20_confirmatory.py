@@ -8,9 +8,11 @@ Endpoints, per domain per cell: the primary is the mean TM-score over candidates
 identity_to_wild_type < 20 (at least 25 such candidates, otherwise the value is missing and is never
 imputed); the co-primary is the feasibility rate, the admissible fraction of the pool. The independence
 unit is the domain. A contrast with fewer than MINIMUM_BOOTSTRAP_UNITS domains is "unestimable": no
-interval, no p-value. The equivalence verdict rests on the pooled-over-models C - Pr and F - M intervals
-against a margin of 0.05 TM and is only ever "no pairwise-specific design benefit", "inconclusive at this
-power" or "unestimable"; it is never "positive" and never "equivalent".
+interval, no p-value. The headline is the achieved
+upper 95% bound on C - Pr and F - M, per model and pooled. The verdict flag requires that bound to lie
+below the 0.05 TM margin in each model separately, and is only ever "no pairwise-specific design benefit",
+"inconclusive at this power" or "unestimable"; it is never "positive" and never "equivalent". The decision
+rests on the interval and the margin, not on either p-value.
 
 Selection is structurally blind to structure-derived fields: selectors see a SelectorView holding the
 sequences and native_loglik and nothing else, and plddt_mean, ptm and tm_score are refused by name.
@@ -64,8 +66,6 @@ EQUIVALENCE_CONTRASTS = ("C-Pr", "F-M")
 _C = {"progen2-medium": (0.0, 4.0), "protgpt2": (0.0, 8.0)}
 FROZEN_DOSES = {
     "N": {m: (0.0, 0.0) for m in MODELS},
-    "P": {m: (0.0, 0.0) for m in MODELS},
-    "H": {m: (0.0, 0.0) for m in MODELS},
     "Pr": {m: (0.25, 0.0) for m in MODELS},
     "M": {m: (0.25, 0.0) for m in MODELS},
     "C": _C, "Cx": _C, "Cd": _C,
@@ -82,10 +82,21 @@ FRONTIER_ARMS = ("Pr", "C")
 FORBIDDEN_SELECTOR_FIELDS = frozenset({"plddt_mean", "ptm", "tm_score"})
 SELECTOR_NAMES = ("native_loglik", "potts_fields", "potts_coupling", "potts_full", "coupling_permuted")
 
+#: Reference arms are keyed on the model label their records carry; a record under any other label is refused.
+REFERENCE_MODEL_LABELS = {"P": "potts-joint", "H": "natural"}
+BCA_NOTE = ("BCa over 8 domains: realised coverage of a nominal 95% percentile interval is about 0.89 at eight "
+            "units (src.capability.core.statistics); the interval is anti-conservative, so read the bound as "
+            "optimistic, not exact.")
+SIGN_FLIP_NOTE = ("exact two-sided sign-flip p cannot fall below 2/2**n (0.0078 at n=8); after Holm over 8 "
+                  "contrasts the smallest attainable adjusted p is 0.0625, so no contrast in this family can "
+                  "reach family-wise significance at 0.05 by this test. The decision rests on the interval "
+                  "and the margin, not on either p-value.")
+
 STATEMENT = (
     "Pre-specified analysis; decision rules frozen before the data existed. The independence unit is the "
     "domain. Contrasts with fewer than MINIMUM_BOOTSTRAP_UNITS domains carry no interval and no p-value. "
-    "The verdict is taken from the pooled-over-models C-Pr and F-M intervals against a margin of 0.05 TM."
+    "The headline is the achieved upper bound on C-Pr and F-M; the margin flag requires it below 0.05 TM "
+    "in each model separately. Neither p-value decides anything."
 )
 
 
@@ -126,6 +137,7 @@ def selector_scores(names, view: SelectorView, model, permutation_seed: int) -> 
 
 
 def _mean(values):
+    values = [v for v in values if v is not None]
     return float(np.mean(values)) if len(values) else None
 
 
@@ -137,7 +149,7 @@ def summarise_cell(rows) -> dict:
     tm = np.array([r["tm_score"] for r in rows], dtype=np.float64)
     admissible = ident < ADMISSIBLE_IDENTITY
     n_adm = int(admissible.sum())
-    strengths = [r["guidance_strength"]["kl_per_residue"] for r in rows if "guidance_strength" in r]
+    strengths = [r["guidance_strength"]["kl_per_residue"] for r in rows if r.get("guidance_strength")]
     if strengths and len(strengths) != len(rows):
         raise ValueError(f"{rows[0]['model']}/{rows[0]['domain']}/{rows[0]['arm']}: only some records carry guidance_strength")
     return {
@@ -208,6 +220,14 @@ def bca_interval(values) -> tuple[list[float], bool]:
     return [low, high], False
 
 
+def sign_flip_p(diffs) -> float:
+    """Exact two-sided sign-flip p-value of the mean difference: all 2**n sign patterns enumerated."""
+
+    d = np.asarray(diffs, dtype=np.float64)
+    signs = np.array(np.meshgrid(*[[-1.0, 1.0]] * len(d))).reshape(len(d), -1).T
+    return float(np.mean(np.abs((signs * d).mean(axis=1)) >= abs(d.mean()) - EPS))
+
+
 def estimate(per_domain: dict, missing: dict, *, descriptive_floor: int | None = None, label: str = "") -> dict:
     """Summarise one contrast over domains.
 
@@ -227,7 +247,8 @@ def estimate(per_domain: dict, missing: dict, *, descriptive_floor: int | None =
         "mean_msa_identity_diff": _mean([v["msa_identity_diff"] for v in per_domain.values()]),
         "favouring": {"positive": int((diffs > 0).sum()), "negative": int((diffs < 0).sum()),
                       "tied": int((diffs == 0).sum())},
-        "interval95_bca": None, "interval_zero_variance": None, "p_holm": None, "_p": None,
+        "interval95_bca": None, "interval_zero_variance": None, "interval_coverage_note": None,
+        "p_holm_ttest": None, "p_holm_signflip": None, "_p": None, "_ps": None,
     }
     if floor["degenerate"]:
         reason = f"{n} domains have a value, below the {floor_units}-domain floor"
@@ -236,10 +257,12 @@ def estimate(per_domain: dict, missing: dict, *, descriptive_floor: int | None =
         record.update(status="unestimable", reason=reason)
         return record
     record["interval95_bca"], record["interval_zero_variance"] = bca_interval(diffs)
+    record["interval_coverage_note"] = BCA_NOTE
     if descriptive_floor is None:
         sd = float(diffs.std(ddof=1))
         record["_p"] = (float(stats.ttest_1samp(diffs, 0.0).pvalue) if sd > 0.0
                         else (1.0 if float(diffs.mean()) == 0.0 else 0.0))
+        record["_ps"] = sign_flip_p(diffs)
     record.update(status="descriptive" if descriptive_floor is not None else "estimated", reason=label or None)
     return record
 
@@ -248,17 +271,16 @@ def finish_family(records: dict, family_size: int) -> dict:
     """Holm-adjust the frozen family and drop the uncorrected p-values so only the adjusted ones are reported."""
 
     names = list(records)
-    adjusted = holm_adjust([records[n]["_p"] for n in names], family_size)
-    for name, p in zip(names, adjusted):
-        records[name]["p_holm"] = p
-    for rec in records.values():
-        rec.pop("_p")
-    return records
+    for key, out in (("_p", "p_holm_ttest"), ("_ps", "p_holm_signflip")):
+        for name, p in zip(names, holm_adjust([records[n][key] for n in names], family_size)):
+            records[name][out] = p
+    return strip_p(records)
 
 
 def strip_p(records: dict) -> dict:
     for rec in records.values():
         rec.pop("_p")
+        rec.pop("_ps")
     return records
 
 
@@ -270,6 +292,10 @@ class Sources:
 
     def __init__(self, records, family_models, permutation_seed):
         self.cells = {k: summarise_cell(v) for k, v in group_cells(records).items()}
+        for (model, domain, arm, *_dose) in self.cells:
+            if arm in REFERENCE_MODEL_LABELS and model != REFERENCE_MODEL_LABELS[arm]:
+                raise ValueError(f"{domain}: {arm} records carry model {model!r}; the reference arm must be "
+                                 f"labelled {REFERENCE_MODEL_LABELS[arm]!r}, and there is no fallback")
         self.arm_cells = defaultdict(list)
         for (model, domain, arm, *_dose), summary in self.cells.items():
             self.arm_cells[(model, domain, arm)].append(summary)
@@ -291,15 +317,16 @@ class Sources:
                 self._selected[(model, domain, name)] = selected_summary(admissible, scores[name], name)
 
     def cell(self, model, domain, arm):
-        """The frozen-dose cell summary, or (None, reason). P and H have no dose and may be shared across models."""
+        """The frozen-dose cell summary, or (None, reason). P and H are keyed on their model label, not a dose."""
 
+        if arm in REFERENCE_MODEL_LABELS:
+            found = self.arm_cells.get((REFERENCE_MODEL_LABELS[arm], domain, arm), [])
+            if len(found) > 1:
+                raise ValueError(f"{domain}/{arm}: {len(found)} cells under model {REFERENCE_MODEL_LABELS[arm]!r}")
+            return (found[0], None) if found else (None, f"no {arm} cell under model {REFERENCE_MODEL_LABELS[arm]!r}")
         key = (model, domain, arm, *FROZEN_DOSES[arm][model])
         if key in self.cells:
             return self.cells[key], None
-        if arm in ("P", "H") and not self.arm_cells.get((model, domain, arm)):
-            shared = [s for m in MODELS for s in self.arm_cells.get((m, domain, arm), [])]
-            if len(shared) == 1:
-                return shared[0], None
         return None, f"no {arm} cell at dose {FROZEN_DOSES[arm][model]}"
 
     def selected(self, model, domain, name):
@@ -360,23 +387,33 @@ def contrast_table(domains, spec, metric, getter, **kw) -> dict:
 
 
 def equivalence(primary: dict) -> dict:
-    """The frozen decision: both upper 95% bounds of C-Pr and F-M strictly below +0.05, else not concluded."""
+    """Headline: achieved upper 95% bounds on C-Pr and F-M. Flag: both models' bounds strictly below +0.05.
+
+    The flag requires each model separately; the pooled stratum is supporting. Unestimable in any model
+    gives "unestimable"; otherwise any bound at or above the margin gives "inconclusive at this power".
+    """
 
     out = {"margin_tm": MARGIN, "rule": "conclude only if the upper 95% BCa bound of both C-Pr and F-M lies below "
-           "+margin; otherwise inconclusive; fewer than the unit floor is unestimable", "strata": {}}
+           "+margin in progen2-medium and in protgpt2 separately; unestimable if any of those four is "
+           "unestimable; otherwise inconclusive. The pooled stratum is supporting information only.",
+           "interval_coverage_note": BCA_NOTE, "strata": {}}
     for stratum in STRATA:
         recs = {n: primary[stratum][n] for n in EQUIVALENCE_CONTRASTS}
         upper = {n: (r["interval95_bca"][1] if r["status"] == "estimated" else None) for n, r in recs.items()}
-        below = {n: (None if u is None else bool(u < MARGIN - EPS)) for n, u in upper.items()}
-        if any(u is None for u in upper.values()):
-            verdict = VERDICT_UNESTIMABLE
-        elif all(below.values()):
-            verdict = VERDICT_CONCLUDE
-        else:
-            verdict = VERDICT_INCONCLUSIVE
-        out["strata"][stratum] = {"upper_bound": upper, "below_margin": below, "verdict": verdict}
-    out["verdict"] = out["strata"][POOLED]["verdict"]
-    out["verdict_basis"] = f"{POOLED} over models; per-model verdicts are printed, not decisive"
+        out["strata"][stratum] = {
+            "mean": {n: r["mean"] for n, r in recs.items()}, "upper_bound": upper,
+            "below_margin": {n: (None if u is None else bool(u < MARGIN - EPS)) for n, u in upper.items()}}
+    out["achieved_upper_bound"] = {n: {s: out["strata"][s]["upper_bound"][n] for s in STRATA}
+                                   for n in EQUIVALENCE_CONTRASTS}
+    bounds = [out["strata"][m]["upper_bound"][n] for m in MODELS for n in EQUIVALENCE_CONTRASTS]
+    if any(u is None for u in bounds):
+        verdict = VERDICT_UNESTIMABLE
+    elif all(u < MARGIN - EPS for u in bounds):
+        verdict = VERDICT_CONCLUDE
+    else:
+        verdict = VERDICT_INCONCLUSIVE
+    out["verdict"] = verdict
+    out["verdict_is_secondary_flag"] = True
     return out
 
 
@@ -389,7 +426,7 @@ def dose_axis(sources: Sources, arms) -> list[dict]:
     groups = defaultdict(list)
     for (model, domain, arm, lf, lc), s in sources.cells.items():
         if arms is None or arm in arms:
-            for stratum in (model, POOLED):
+            for stratum in (model, POOLED) if model in MODELS else (model,):
                 groups[(stratum, arm, lf, lc)].append(s)
     rows = []
     for (stratum, arm, lf, lc), cells in sorted(groups.items(), key=str):
@@ -449,8 +486,10 @@ def analyse(records, family_models, permutation_seed: int) -> dict:
                    "margin_tm": MARGIN, "selection_k": SELECTION_K, "selection_pool_arm": SELECTION_POOL_ARM,
                    "interval": f"{int(CONFIDENCE * 100)}% BCa bootstrap over domains, {N_RESAMPLES} resamples, "
                                f"seed {BOOTSTRAP_SEED}",
-                   "p_value": "two-sided paired t-test over domains, Holm-adjusted within the frozen family; "
-                              "unestimable contrasts count as p = 1 so the family size is fixed",
+                   "p_value": "two-sided paired t-test and exact sign-flip test over domains, each Holm-adjusted within "
+                              "the frozen family; unestimable contrasts count as p = 1 so the family size is "
+                              "fixed. " + SIGN_FLIP_NOTE,
+                   "interval_coverage_note": BCA_NOTE,
                    "doses": {a: {m: list(d) for m, d in v.items()} for a, v in FROZEN_DOSES.items()},
                    "permutation_seed": permutation_seed},
         "primary_tm": primary, "equivalence": verdict,
@@ -484,14 +523,15 @@ def render(result: dict) -> str:
                     lines.append(f"{head}UNESTIMABLE ({c['reason']}) per-domain [{per}] mean {c['mean']}")
                     continue
                 lo, hi = c["interval95_bca"]
-                p = f" p_holm={c['p_holm']:.4f}" if holm else ""
+                p = (f" p_holm t={c['p_holm_ttest']:.4f} signflip={c['p_holm_signflip']:.4f}" if holm else "")
                 lines.append(f"{head}mean {c['mean']:+.4f} CI95 [{lo:+.4f}, {hi:+.4f}] +{c['favouring']['positive']}/"
                              f"-{c['favouring']['negative']} d_id_wt {c['mean_identity_diff']:+.1f}{p} [{per}]")
     eq = result["equivalence"]
-    lines.append(f"== EQUIVALENCE (margin {eq['margin_tm']} TM) ==")
-    for stratum, e in eq["strata"].items():
-        lines.append(f"[{stratum}] upper bounds {e['upper_bound']} below margin {e['below_margin']}: {e['verdict']}")
-    lines.append(f"VERDICT: {eq['verdict']}")
+    lines.append(f"== HEADLINE: achieved upper 95% BCa bound on mean TM difference ({eq['interval_coverage_note']}) ==")
+    for name, by_stratum in eq["achieved_upper_bound"].items():
+        cells = "  ".join(f"{s}: " + ("unestimable" if u is None else f"{u:+.4f}") for s, u in by_stratum.items())
+        lines.append(f"{name:<6}{cells}   (margin {eq['margin_tm']:+.2f})")
+    lines.append(f"margin flag (secondary; both models required): {eq['verdict']}")
     return "\n".join(lines)
 
 
