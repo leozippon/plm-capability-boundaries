@@ -7,6 +7,8 @@ data-side artifacts are absent from a checkout.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+from itertools import product
 from pathlib import Path
 import json
 import sys
@@ -19,7 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.capability.context.family_potts import (  # noqa: E402
-    DEFAULT_DIRECTORY, guidance_biases, load_family_model, potts_score, sample_potts, save_family_model)
+    DEFAULT_DIRECTORY, guidance_biases, load_family_model, potts_score, sample_potts_joint,
+    sample_prefix_chain, save_family_model)
+from src.capability.context.potts_gauge import to_zero_sum  # noqa: E402
 from src.capability.core.amino_acids import AA20  # noqa: E402
 
 L = 7
@@ -78,11 +82,11 @@ def test_potts_score_matches_explicit_double_loop(exported):
     assert potts_score(model, model.wildtype) == pytest.approx(expected, abs=1e-9)
 
 
-def test_sampler_is_seed_deterministic_canonical_and_full_length(exported):
+def test_prefix_chain_is_seed_deterministic_canonical_and_full_length(exported):
     model = load_family_model("SYN", exported)
-    first = sample_potts(model, np.random.default_rng(7))
-    assert first == sample_potts(model, np.random.default_rng(7))
-    draws = {sample_potts(model, np.random.default_rng(s)) for s in range(20)}
+    first = sample_prefix_chain(model, np.random.default_rng(7))
+    assert first == sample_prefix_chain(model, np.random.default_rng(7))
+    draws = {sample_prefix_chain(model, np.random.default_rng(s)) for s in range(20)}
     assert len(draws) > 1
     assert all(len(d) == L and set(d) <= set(AA20) for d in draws | {first})
 
@@ -171,3 +175,96 @@ def test_wildtype_outscores_composition_matched_shuffles(domain):
     wt = potts_score(model, model.wildtype)
     shuffles = [potts_score(model, "".join(rng.permutation(list(model.wildtype)))) for _ in range(100)]
     assert wt > max(shuffles)
+
+
+# ----------------------------------------------- joint versus prefix-chain sampling, and the gauge
+
+
+def _tiny_model(tmp_path, length=3, seed=5, scale=0.8):
+    rng = np.random.default_rng(seed)
+    save_family_model(tmp_path, "TINY", wildtype="".join(rng.choice(list(AA20), size=length)),
+                      h=rng.normal(scale=scale, size=(length, 20)),
+                      pairs=rng.normal(scale=scale, size=(length * (length - 1) // 2, 20, 20)),
+                      profile_freq=rng.dirichlet(np.ones(20), size=length),
+                      profile_column_weight=np.full(length, 20.0), qualified=True,
+                      qualification_failures=[], extra={})
+    return load_family_model("TINY", tmp_path)
+
+
+def _exact_joint(model):
+    """Exact ``P_L`` over all 20^L sequences, as a tensor indexed by residue codes."""
+    codes = np.array(list(product(range(20), repeat=model.length)))
+    energy = np.array([potts_score(model, "".join(AA20[c] for c in row)) for row in codes])
+    p = np.exp(energy - energy.max())
+    return (p / p.sum()).reshape((20,) * model.length), energy
+
+
+def _codes(sequences):
+    return np.array([[AA20.index(a) for a in s] for s in sequences])
+
+
+def _tv(a, b):
+    return 0.5 * np.abs(a - b).sum()
+
+
+def test_gibbs_sampler_matches_the_exact_joint_marginals(tmp_path):
+    """Ground truth by enumeration: single-site and one pairwise marginal of the Gibbs draws."""
+    model = _tiny_model(tmp_path)
+    exact, _ = _exact_joint(model)
+    n = 20000
+    draws = sample_potts_joint(model, n, np.random.default_rng(1), sweeps=40, mixing_tolerance=0.05)
+    X = _codes(draws.sequences)
+    assert (draws.sweeps, draws.check_sweeps) == (40, 20)
+    for i in range(model.length):
+        empirical = np.bincount(X[:, i], minlength=20) / n
+        exact_i = exact.sum(axis=tuple(k for k in range(model.length) if k != i))
+        assert _tv(empirical, exact_i) < 0.03
+    pair = np.zeros((20, 20))
+    np.add.at(pair, (X[:, 0], X[:, 2]), 1.0)
+    assert _tv(pair / n, exact.sum(axis=1)) < 0.08
+
+
+def test_prefix_chain_is_not_the_potts_joint(tmp_path):
+    """The renamed chain samples Q, not P_L: exact Q differs from P_L and sits at lower energy."""
+    model = _tiny_model(tmp_path)
+    exact, energy = _exact_joint(model)
+    # exact chain distribution Q(x) = prod_t softmax_t(h_t + sum_{s<t} J_ts(., x_s))[x_t]
+    q = np.ones((20,) * model.length)
+    for idx in np.ndindex(*q.shape):
+        for t in range(model.length):
+            logits = guidance_biases(model, "".join(AA20[c] for c in idx[:t]))["full"]
+            q[idx] *= np.exp(logits - logits.max())[idx[t]] / np.exp(logits - logits.max()).sum()
+    assert q.sum() == pytest.approx(1.0)
+    assert _tv(q.ravel(), exact.ravel()) > 0.01
+    assert (q.ravel() * energy).sum() < (exact.ravel() * energy).sum()
+    # and the sampler really draws from Q
+    X = _codes([sample_prefix_chain(model, np.random.default_rng(s)) for s in range(3000)])
+    assert np.abs(np.bincount(X[:, 0], minlength=20) / 3000 - q.sum(axis=(1, 2))).max() < 0.03
+
+
+def test_gibbs_sampler_refuses_chains_that_have_not_mixed(exported):
+    model = load_family_model("SYN", exported)
+    with pytest.raises(RuntimeError, match="not mixed"):
+        sample_potts_joint(model, 500, np.random.default_rng(0), sweeps=2, mixing_tolerance=1e-4)
+    with pytest.raises(ValueError):
+        sample_potts_joint(model, 500, np.random.default_rng(0), sweeps=1, mixing_tolerance=0.1)
+
+
+def test_zero_sum_gauge_shifts_energy_by_a_constant_but_not_the_per_step_biases(exported):
+    """Documents the gauge dependence recorded in the module docstring; it asserts no invariance of C."""
+    model = load_family_model("SYN", exported)
+    h2, J2 = to_zero_sum(model.h, model.J)
+    moved = replace(model, h=h2, J=J2)
+    rng = np.random.default_rng(2)
+    seqs = ["".join(rng.choice(list(AA20), size=L)) for _ in range(30)]
+    shifts = np.array([potts_score(moved, x) - potts_score(model, x) for x in seqs])
+    np.testing.assert_allclose(shifts, shifts[0], atol=1e-9)  # E (hence accumulated F) invariant up to a constant
+    centred = lambda v: v - v.mean()  # noqa: E731  biases are defined up to a constant in a
+    for x in seqs:
+        for t in range(L):
+            b0, b1 = guidance_biases(model, x[:t]), guidance_biases(moved, x[:t])
+            past = model.J[t, :t].mean(axis=2).sum(axis=0)       # sum_{s<t} mean_b J_ts(a, b)
+            future = model.J[t, t + 1:].mean(axis=2).sum(axis=0)  # sum_{j>t} mean_b J_tj(a, b)
+            np.testing.assert_allclose(centred(b1["coupling"] - b0["coupling"]), centred(-past), atol=1e-9)
+            np.testing.assert_allclose(centred(b1["full"] - b0["full"]), centred(future), atol=1e-9)
+    assert np.abs(centred(past)).max() > 0  # the C shift is a real, nonzero first-order term

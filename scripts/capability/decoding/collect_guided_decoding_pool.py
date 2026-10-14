@@ -146,8 +146,9 @@ SETTLED_NATIVE_CONTRACT: dict[str, Any] = {"batch_size": 1, "budget": 1024, "dty
 
 #: The declared strength axes, one per component. The coupling term is an order of magnitude
 #: weaker per unit than the fields term on the qualified (heavily shrunk) fits, so its axis
-#: reaches 16 while the fields axis stops at 2. ``native`` sits at ``(0, 0)`` and the exact Potts
-#: prefix conditional at ``(1, 1)``; an evaluation protocol declares the single frozen point
+#: reaches 16 while the fields axis stops at 2. ``native`` sits at ``(0, 0)``. At ``(1, 1)`` the ``full`` *bias* equals
+#: the prefix-truncated Potts conditional up to a per-position constant (not the full-joint
+#: conditional), and the *arm* samples the product of that with the language model; an evaluation protocol declares the single frozen point
 #: chosen on the development domains. A protocol value off its axis is refused rather than
 #: silently swept, so a typo cannot become a dose.
 FIELDS_AXIS: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0, 2.0)

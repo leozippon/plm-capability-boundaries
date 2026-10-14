@@ -39,17 +39,25 @@ arm (code)                   ``u``                 ``C``
 **The factorial lives entirely inside one model's own decomposition.** ``N``,
 ``M``, ``C`` and ``F`` are the four corners of the Potts model's own
 fields-by-couplings factorial: ``M`` carries Potts ``h`` and *not* the profile, so
-``F - M`` and ``C - N`` are both pure coupling effects and ``F - C`` and ``M - N``
-are both pure field effects. An ``M`` that carried ``log f`` would have made
+``F - M`` and ``C - N`` are both the coupling component of the declared gauge's
+decomposition and ``F - C`` and ``M - N`` are both its field component; these are
+identities of additivity, and what each component *means* is conditional on the
+gauge (see the gauge note in ``family_potts``). An ``M`` that carried ``log f`` would have made
 ``F - M`` the effect of adding couplings *and* swapping profile fields for Potts
-fields -- two changes at once, and no isolated coupling effect. ``F`` at unit
-strengths is exactly the Potts prefix conditional.
+fields -- two changes at once, and no isolated coupling component. At unit
+strengths the ``F`` *bias* equals the prefix-truncated Potts conditional
+``log P_t(x_t = a | x_<t)`` up to a per-position additive constant, where ``P_t``
+is the Potts model restricted to the first ``t`` positions; ``P_t`` is not the
+full-joint conditional ``P_L(x_t | x_<t)``, which carries an extra
+residue-dependent future free-energy term. The bias enters as a logit bias, so
+the *arm* samples the product of experts ``p_LM(a | .) * P_t(a | x_<t)``, not the
+prefix-truncated conditional itself.
 
 ``Pr`` is the conventional profile-guidance baseline, ``lambda_fields * log
 f_t(a)`` from the frozen pseudocount-0.5 profile with no couplings. It sits
 **outside** the factorial and is read as a pairwise comparison, because "does this
 beat established practice" is a different question from "which information
-component is the model missing". ``P`` (Potts ancestral sampling) and ``H``
+component is the model missing". ``P`` (prefix-chain or Gibbs Potts sampling) and ``H``
 (held-out natural rows) involve no language model and are produced elsewhere.
 
 **Why two strengths and not one.** The fields terms are order one to three nats,
@@ -66,9 +74,10 @@ points that differ only in an inert scalar would otherwise produce byte-identica
 pools under different labels.
 
 **Why the coupling sum is not normalised by prefix length.** The raw sum is
-exactly the Potts prefix conditional, which is what makes ``full`` the
-conventional DCA-guidance baseline rather than a variant of this project's own
-invention. Dividing by ``t`` would break that correspondence. The consequence --
+the coupling component of the prefix-truncated Potts log-conditional (it omits
+``h_t`` and the normaliser), and ``full`` adds ``h_t`` to it; this is what makes
+``full`` the conventional DCA-guidance baseline rather than a variant of this
+project's own invention. Dividing by ``t`` would break that correspondence. The consequence --
 coupling influence grows along the sequence while the fields term stays flat -- is
 a genuine property of left-to-right Potts conditioning, applies identically to
 ``coupling`` and ``full``, and does not disturb the factorial. Do not "fix" it.
@@ -301,7 +310,8 @@ ARM_DECLARATIONS: dict[str, str] = {
     ),
     "full": (
         "lambda_fields * h[t,a] + lambda_coupling * sum_{s<t} J[t,s,a,a_s]; the conventional "
-        "DCA-guidance baseline, and at unit strengths exactly the Potts prefix conditional"
+        "DCA-guidance baseline; at unit strengths its bias equals the prefix-truncated Potts "
+        "conditional up to a per-position constant, and the arm samples that times the LM (a product of experts)"
     ),
     "profile": (
         "lambda_fields * log f_t(a) from the frozen pseudocount-0.5 profile; conventional "
@@ -663,8 +673,9 @@ def build_arm_bias(
         "units": "natural log",
         "gauge": model.sidecar.get("gauge_convention"),
         "coupling_normalisation": (
-            "none; the raw prefix sum is the Potts prefix conditional, which is what makes the "
-            "full arm the conventional DCA-guidance baseline"
+            "none; the raw prefix sum is the coupling component of the prefix-truncated Potts "
+            "log-conditional (it omits h_t and the normaliser), which is what makes the full arm "
+            "the conventional DCA-guidance baseline"
         ),
     }
     if arm == "permuted_coupling":

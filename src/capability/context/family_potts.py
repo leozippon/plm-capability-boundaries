@@ -13,9 +13,25 @@ coupling-only vector is not invariant to moving mass between ``h`` and ``J``. Co
 ``j`` of every array is residue ``j`` (0-based) of the wild type.
 
 Left-to-right use. Conditioned on a prefix, the next residue is scored by
-``h[t] + sum_{s<t} J[t, s, :, a_s]``. This ignores couplings to later positions, so the
-ancestral sampler draws from the prefix-conditional chain, which is not the Potts
-model's own marginal distribution.
+``h[t] + sum_{s<t} J[t, s, :, a_s]``. With ``P_t(x_1..x_t) proportional to
+exp(sum_{i<=t} h_i + sum_{i<j<=t} J_ij)`` this is ``log P_t(x_t = a | x_<t)`` up to a
+constant in ``a`` (exact to 1e-15 by enumeration): the *prefix-truncated* Potts
+conditional. It is not ``log P_L(x_t = a | x_<t)``, which carries an extra
+residue-dependent future free-energy term. :func:`sample_prefix_chain` therefore does not
+sample the Potts model; :func:`sample_potts_joint` does.
+
+Gauge. Every per-step bias is gauge-dependent. Under the zero-sum change
+(:func:`..potts_gauge.to_zero_sum`) the step-``t`` coupling-only bias changes, up to a
+constant in the candidate residue ``a``, by ``-sum_{s<t} mean_b J[t, s, a, b]``: a
+first-order term in ``a`` that depends on the prefix length and not on its content. The
+full bias changes by ``+sum_{j>t} mean_b J[t, j, a, b]``, the future half. Hence the
+accumulated full-sequence score ``E`` is gauge-invariant up to a constant (and so is the
+accumulated full-bias score), while the accumulated coupling-only score is not; "coupling
+component" and "field component" always name the decomposition of the declared gauge, not
+an intrinsic split of information. Measured magnitude in plmc's gauge (see
+``results/R6/e20_potts_gauge_20261013/gauge_diagnostic.json``): at most 0.68% of the
+coupling Frobenius norm is gauge-removable, and the gauge-carried first-order share of the
+coupling bias is 3.4-7.9% (median).
 """
 from __future__ import annotations
 
@@ -116,8 +132,17 @@ def guidance_biases(model: FamilyModel, prefix: str) -> dict[str, np.ndarray]:
     return {"marginal": model.log_profile[t].copy(), "coupling": coupling, "full": full}
 
 
-def sample_potts(model: FamilyModel, rng: np.random.Generator) -> str:
-    """Draw a length-L sequence left to right from the Potts prefix conditional alone."""
+def sample_prefix_chain(model: FamilyModel, rng: np.random.Generator) -> str:
+    """Draw a length-L sequence left to right from the prefix-truncated Potts conditionals.
+
+    This samples ``Q(x) = exp(E(x)) / prod_t Z_t(x_<t)`` with ``Z_t`` the local normaliser of
+    step ``t``, **not** the Potts model ``P_L(x) proportional to exp(E(x))``; use
+    :func:`sample_potts_joint` for that. Measured against a Gibbs sampler of ``P_L`` (2,000
+    draws each), the chain's mean Potts energy is lower: 144.06 vs 155.76 (1K1V), 159.29 vs
+    175.96 (2KWH), 206.05 vs 255.66 (3L1X), i.e. 54, 63 and 155 standard errors; the maximum
+    per-column single-site total-variation distance is 0.33 / 0.28 / 0.68 against a
+    Monte-Carlo floor of 0.03-0.07, concentrated in early columns (prefix truncation).
+    """
     chosen = ""
     for _ in range(model.length):
         logits = guidance_biases(model, chosen)["full"]
@@ -125,6 +150,55 @@ def sample_potts(model: FamilyModel, rng: np.random.Generator) -> str:
         p /= p.sum()
         chosen += model.alphabet[int(rng.choice(len(p), p=p))]
     return chosen
+
+
+@dataclass(frozen=True)
+class GibbsDraws:
+    """``n`` sequences from :func:`sample_potts_joint` with the schedule that produced them."""
+
+    sequences: list[str]
+    sweeps: int  # sweeps each chain ran before its final state was taken (burn-in = sweeps)
+    check_sweeps: int  # the earlier sweep count whose marginals were compared with the final ones
+    mixing_max_tv: float  # max over columns of TV(single-site marginals at check_sweeps vs sweeps)
+    mixing_tolerance: float
+
+
+def _site_marginals(codes: np.ndarray) -> np.ndarray:
+    q = len(AA20)
+    return np.stack([np.bincount(codes[:, i], minlength=q) for i in range(codes.shape[1])]) / codes.shape[0]
+
+
+def sample_potts_joint(model: FamilyModel, n: int, rng: np.random.Generator, *, sweeps: int,
+                       mixing_tolerance: float) -> GibbsDraws:
+    """Draw ``n`` sequences from ``P_L(x) proportional to exp(E(x))`` by random-scan Gibbs sampling.
+
+    ``n`` independent chains start from uniform random sequences and each runs ``sweeps`` sweeps
+    (one sweep resamples every column once, in a random order, from its full conditional given
+    all other columns); the final state is the draw, so the burn-in is the whole ``sweeps``.
+    Mixing check: the single-site marginals after ``sweeps // 2`` sweeps are compared with the
+    final ones, and the call raises if any column's total-variation distance exceeds
+    ``mixing_tolerance``. The tolerance must sit above the Monte-Carlo noise of ``n`` draws.
+    """
+    if n < 1 or sweeps < 2 or mixing_tolerance <= 0:
+        raise ValueError("need n >= 1, sweeps >= 2 and a positive mixing tolerance")
+    L, q = model.length, len(AA20)
+    X = rng.integers(0, q, size=(n, L))
+    check_sweeps = sweeps // 2
+    cols = np.arange(L)
+    for sweep in range(1, sweeps + 1):
+        for i in rng.permutation(L):
+            logits = model.h[i] + model.J[i][cols, :, X].sum(axis=1)  # (n, 20); J[i, i] = 0
+            p = np.exp(logits - logits.max(axis=1, keepdims=True))
+            cdf = p.cumsum(axis=1)
+            X[:, i] = (rng.random((n, 1)) * cdf[:, -1:] > cdf).sum(axis=1)
+        if sweep == check_sweeps:
+            early = _site_marginals(X)
+    tv = float(0.5 * np.abs(early - _site_marginals(X)).sum(axis=1).max())
+    if tv > mixing_tolerance:
+        raise RuntimeError(f"Gibbs chains have not mixed: max single-site TV {tv:.4f} between "
+                           f"{check_sweeps} and {sweeps} sweeps exceeds {mixing_tolerance}")
+    letters = np.array(list(model.alphabet))
+    return GibbsDraws(["".join(row) for row in letters[X]], sweeps, check_sweeps, tv, mixing_tolerance)
 
 
 def sha256_file(path: Path) -> str:

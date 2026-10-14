@@ -188,7 +188,12 @@ def _score_fn(sequence: str) -> float:
 
 
 def test_the_factorial_is_exact_inside_one_models_decomposition(short_model):
-    """F - M and C - N are the same pure coupling effect; F - C and M - N the same field one."""
+    """Additivity of the four corners: F - M == C - N and F - C == M - N.
+
+    This establishes only that the arms are built from shared additive components; the
+    identities hold for any arrays and say nothing about gauge. What "coupling" and "field"
+    mean is conditional on the declared gauge, which the gauge test below documents.
+    """
 
     native, fields, coupling, full = (build_arm_bias(arm, short_model) for arm in FACTORIAL_ARMS)
     assert FACTORIAL_ARMS == ("native", "potts_fields", "coupling", "full")
