@@ -79,7 +79,7 @@ def _emitter(ledger):
     def emit(path, pointer, *, identifier, claim, family, support, unit, kind="support_count",
              value=None, interval=None, draws=None, resampling_unit=None, reason=None,
              interval_kind="95% percentile", seed=(), level="measurement",
-             weighting_convention=None):
+             weighting_convention=None, verdict=None):
         if value is None:
             value = resolve(ledger.artifacts.json(path), pointer)
         ledger.add(Quantity(
@@ -88,7 +88,7 @@ def _emitter(ledger):
             interval_kind=interval_kind if interval is not None else None,
             resampling_unit=resampling_unit, resampling_draws=draws, no_interval_reason=reason,
             seed_set=tuple(seed), level=level, weighting_convention=weighting_convention,
-            source_path=path, source_sha256=ledger.artifacts.sha256(path),
+            verdict=verdict, source_path=path, source_sha256=ledger.artifacts.sha256(path),
             source_pointer=tuple(pointer)))
     return emit
 
