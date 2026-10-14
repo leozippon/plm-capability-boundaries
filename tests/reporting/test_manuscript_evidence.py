@@ -28,6 +28,7 @@ from src.capability.core.evidence_ledger import (  # noqa: E402
     checked_sum,
     resolve,
 )
+from scripts.capability.reporting import publication_paths  # noqa: E402
 
 
 def _module(name: str):
@@ -562,17 +563,30 @@ class ACountIsNotSummableAcrossImplementations(unittest.TestCase):
 
 
 class TheLivePipelineRuns(unittest.TestCase):
-    """The generator and the checker run on the repository as it stands.
+    """The table, the contract and the checker, on the repository as it stands.
 
-    The manuscript is another agent's and its findings move under it, so this
-    asserts the pipeline's own conditions rather than a finding count.
+    The checker is run here rather than its stored report read. Reading the
+    report asserted nothing about the checker: the report is the checker's own
+    output, so a report left behind by a directory the pipeline had since moved
+    off kept answering "pass" for a run nobody had recomputed, and the two
+    defects that produced -- a superseded evidence directory and an interval
+    notation the pattern could not read -- were invisible from inside this suite.
+
+    What is asserted is the pipeline's own conditions: the table's rows, the
+    contract's bindings, that the checker completes against the current
+    manuscript, and that the figures and the checker read one ledger. Not a
+    finding count: the manuscript is another agent's and its findings move under
+    it. Running the checker rewrites its report in the evidence directory, which
+    is exactly what the entry point does and where its output belongs.
     """
 
-    def test_the_table_and_the_contract_build_and_the_checker_reports(self):
-        directory = BUILDER.EVIDENCE_DIR
-        if not (directory / "derived-numbers.json").is_file():
+    def setUp(self) -> None:
+        self.directory = BUILDER.EVIDENCE_DIR
+        if not (self.directory / "derived-numbers.json").is_file():
             self.skipTest("no derived-number table has been built in this checkout")
-        payload = json.loads((directory / "derived-numbers.json").read_text())
+
+    def test_every_row_of_the_table_carries_what_it_needs(self):
+        payload = json.loads((self.directory / "derived-numbers.json").read_text())
         self.assertGreater(payload["counts"]["quantities"], 0)
         for row in payload["quantities"]:
             self.assertTrue(row["unit"], row["id"])
@@ -583,12 +597,40 @@ class TheLivePipelineRuns(unittest.TestCase):
                 self.assertTrue(row["weighting_convention"], row["id"])
             self.assertIn(row["support_id"], payload["supports"], row["id"])
             self.assertEqual(len(row["source_sha256"]), 64, row["id"])
-        report = json.loads((directory / "consistency-report.json").read_text())
-        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
-        contract = json.loads((directory / "figure-data-contract.json").read_text())
+
+    def test_every_figure_table_stays_bound_to_the_artifact_it_drew_from(self):
+        contract = json.loads((self.directory / "figure-data-contract.json").read_text())
         for name, bound in contract["tables"].items():
             for source, binding in bound["artifact_bindings"].items():
                 self.assertEqual(binding["status"], "bound", f"{name} -> {source}")
+
+    def test_the_checker_completes_against_the_current_manuscript(self):
+        if not any((CHECKER.MANUSCRIPT / name).is_file() for name in CHECKER.SOURCES):
+            self.skipTest("the manuscript is held locally and is not in this checkout")
+        report = CHECKER.check(self.directory)
+        # The submission location is declared once; the checker reads that one,
+        # not a path of its own that the submission moved out from under.
+        self.assertEqual(report["manuscript"],
+                         (REPO_ROOT / publication_paths.SUBMISSION).as_posix())
+        self.assertEqual(
+            report["derived_number_table"]["quantities"],
+            json.loads((self.directory / "derived-numbers.json").read_text())["counts"]["quantities"])
+        # A checker that attributed nothing would report no findings and look
+        # like agreement.
+        self.assertGreater(report["traced_numbers"], 0)
+        self.assertIn(report["status"], ("pass", "refused"))
+
+    def test_the_figures_and_the_checker_read_one_ledger(self):
+        # A plotted figure records which ledger it drew from, so the directory
+        # the checker reads is checkable rather than a literal taken on trust.
+        receipt = BUILDER.FIGURE_DIR / "main/framework_validation.json"
+        if not receipt.is_file():
+            self.skipTest("the framework composite receipt is not in this checkout")
+        cited = [path for path in json.loads(receipt.read_text())["source_sha256"]
+                 if path.startswith("results/shared/manuscript_evidence_")]
+        self.assertEqual(
+            cited,
+            [(BUILDER.EVIDENCE_DIR / "derived-numbers.csv").relative_to(REPO_ROOT).as_posix()])
 
 
 class CurrentEndpointReceiptsKeepTheirEstimands(unittest.TestCase):
