@@ -625,9 +625,9 @@ class TheTableRefusesARowWithAHoleInIt(unittest.TestCase):
 class ACountIsNotSummableAcrossImplementations(unittest.TestCase):
     """A control several units appear to share is several controls.
 
-    Two cohorts computed their baseline-identity check while the run happened
-    and a third recovered an equivalent afterwards from what the run persisted.
-    Totalling those counts would state as one measurement what three
+    Most cohorts computed their baseline-identity check while the run happened
+    and one recovered an equivalent afterwards from what the run persisted.
+    Totalling those counts would state as one measurement what two
     implementations produced differently, so the sum refuses and the caller
     records why the total does not exist.
     """

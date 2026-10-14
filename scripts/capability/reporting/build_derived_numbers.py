@@ -3128,7 +3128,104 @@ def family_domainome_endpoint(ledger: Ledger) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Family 15 --- the readout-class and depth sweeps that settle the readout
+# Family 15 --- the sequential information progression on the anchor cohort
+# --------------------------------------------------------------------------- #
+
+PROGRESSION = "results/extensions/information_progression_20261006/full/contrasts.json"
+
+#: The two sequential controls the main text claims over the whole panel:
+#: what the evolutionary profile adds to model likelihood, and what the
+#: local-window features then add on top of both. They are the predeclared
+#: primary group, so they carry the simultaneous interval the claim names; the
+#: artifact's other groups are a supplementary and a secondary-metric family
+#: with their own multiplicity, and no main-text claim reduces over them.
+PROGRESSION_GROUP = "primary_spearman"
+PROGRESSION_CONTRASTS = {
+    "P|M": "the evolutionary profile added to model likelihood",
+    "L|MP": "the local-window features added to model likelihood and the profile",
+}
+
+
+def family_information_progression(ledger: Ledger) -> None:
+    """The sequential-control progression, counted over its own contrast blocks.
+
+    The claim is a count over the whole panel --- every arm's increment
+    positive, and above zero under the predeclared simultaneous interval --- so
+    the count is taken here from the artifact's per-arm blocks rather than read
+    from a stated total, and the roster the blocks cover has to be exactly the
+    arm list the panel declares or there is no panel-wide count to state.
+    """
+    payload = ledger.artifacts.json(PROGRESSION)
+    digest = ledger.artifacts.sha256(PROGRESSION)
+    group = payload["groups"][PROGRESSION_GROUP]
+    if payload["status"] != "complete" or group["status"] != "complete":
+        raise LedgerError(f"{PROGRESSION}: the {PROGRESSION_GROUP} group is not complete, so a "
+                          "panel-wide count over it would be a count over a partial panel")
+    arms, families = payload["arms"], payload["families"]
+    seeds = tuple(int(seed) for seed in payload["seeds"])
+    support = ledger.declare_support(
+        "information_progression_anchor",
+        f"the {len(arms)}-checkpoint panel on the anchor mutation cohort's {len(families)} "
+        f"wild-type clusters, {payload['aggregation']}; increments are sequential additions to one "
+        f"fitted design. The interval is {payload['bootstrap']} draws over a "
+        f"{group['hypothesis_count']}-contrast predeclared family: "
+        f"{payload['simultaneous_method']}",
+    )
+    # The draw count, the seed set, the simultaneous family size and its
+    # critical deviation stay in the support description and the seed set the
+    # rows already carry. No claim quotes them, and an uncited row can only
+    # dilute the attribution of a number the manuscript does quote: the
+    # progression's draw count and family size are 2,000 and 66, which the
+    # manuscript writes for the interval convention and for the remote-homology
+    # close stratum.
+    for name, value, unit, kind, claim, pointer in (
+        ("arms", float(len(arms)), "checkpoints", "support_count",
+         "checkpoints the progression fits", ("arms",)),
+        ("families", float(len(families)), "wild-type clusters", "support_count",
+         "wild-type clusters the progression resamples over", ("families",)),
+    ):
+        ledger.add(Quantity(
+            id=f"information_progression/{name}", claim=claim, family="information_progression",
+            value=value, unit=unit, kind=kind, support_id=support, seed_set=seeds,
+            level="likelihood", source_path=PROGRESSION, source_sha256=digest,
+            source_pointer=pointer,
+        ))
+
+    blocks: dict[str, dict[str, dict]] = {}
+    for contrast in group["contrasts"]:
+        blocks.setdefault(contrast["contrast"], {})[contrast["arm"]] = contrast
+    for contrast, description in PROGRESSION_CONTRASTS.items():
+        covered = blocks.get(contrast, {})
+        if set(covered) != set(arms):
+            raise LedgerError(
+                f"{PROGRESSION}: the {contrast} contrast covers {len(covered)} of the panel's "
+                f"{len(arms)} arms, so no count over the whole panel can be stated")
+        positive = sum(1 for block in covered.values() if block["point"] > 0.0)
+        resolving = sum(1 for block in covered.values() if block["simultaneous"][0] > 0.0)
+        # The sign of a point carries no resolution, so only the count that
+        # resolved against zero takes a verdict, and it takes the one the
+        # vocabulary has for a count: whether anything was detected at all.
+        for name, value, verdict, claim in (
+            ("arms_with_a_positive_increment", positive, None,
+             f"checkpoints whose Spearman increment from {description} is positive"),
+            ("arms_resolving_above_zero", resolving,
+             "supported" if resolving else "not_detected",
+             f"checkpoints of those whose increment from {description} is above zero under the "
+             "predeclared simultaneous interval, which is the stronger statement"),
+        ):
+            ledger.add(Quantity(
+                id=f"information_progression/{PROGRESSION_GROUP}/{contrast}/{name}",
+                claim=claim, family="information_progression", value=float(value),
+                unit="checkpoints", kind="count", support_id=support, seed_set=seeds,
+                level="likelihood", verdict=verdict,
+                source_path=PROGRESSION, source_sha256=digest,
+                source_pointer=("groups", PROGRESSION_GROUP, "contrasts", f"<{contrast} reduction>",
+                                name),
+            ))
+
+
+# --------------------------------------------------------------------------- #
+# Family 16 --- the readout-class and depth sweeps that settle the readout
 # --------------------------------------------------------------------------- #
 
 SWEEP_EXCERPT = "results/R2/readout_sweeps_20260924/sweep_cell_excerpt.json"
@@ -3901,8 +3998,13 @@ CONSOLIDATION_FILES = (
 )
 
 
+#: Every cohort the depth-at-equal-capacity contrast was consolidated on. The
+#: cross-cohort counts are reductions over this tuple, so a staged consolidation
+#: left out of it is not merely absent from the table: it silently narrows the
+#: population the comparison is reported over.
 DEPTH_CONTRAST_FILES = (
     ("depth_contrast/consolidation_folding_stability.json", "folding_stability"),
+    ("depth_contrast/consolidation_external_confirmation.json", "external_confirmation"),
     ("depth_contrast/consolidation_remote_homology.json", "remote_homology"),
     ("depth_contrast/consolidation_residue_interactions.json", "residue_interactions"),
 )
@@ -4110,11 +4212,11 @@ def family_depth_contrast(ledger: Ledger) -> None:
 def family_depth_contrast_controls(ledger: Ledger) -> None:
     """Each cohort's control, with the provenance that makes it its own quantity.
 
-    Two cohorts checksum each arm's baseline predictions across its depths while
-    the run happens. The third never did: its adapter recorded increments and a
-    fold identity only, so its control is an equivalent recovered afterwards
-    from what the run persisted. Three controls, not one, and the table refuses
-    to total them.
+    Most cohorts checksum each arm's baseline predictions across its depths
+    while the run happens. The residue-interaction cohort never did: its adapter
+    recorded increments and a fold identity only, so its control is an
+    equivalent recovered afterwards from what the run persisted. One control per
+    cohort, not one between them, and the table refuses to total them.
     """
     controls: list[Quantity] = []
     for name, gate in DEPTH_CONTRAST_FILES:
@@ -4181,12 +4283,12 @@ def family_depth_contrast_controls(ledger: Ledger) -> None:
         except LedgerError as refusal:
             ledger.gap(
                 id="depth_contrast/controls/total",
-                claim="a single count of the control checks across the three depth cohorts",
+                claim="a single count of the control checks across the depth cohorts",
                 family="depth_contrast",
-                reason=f"{refusal}. Two cohorts' counts were computed while the run happened and the "
-                       "third's was recovered afterwards from what the run persisted, so a total "
-                       "would state as one measurement what three implementations produced "
-                       "differently",
+                reason=f"{refusal}. Most cohorts' counts were computed while the run happened and "
+                       "the residue-interaction cohort's was recovered afterwards from what the run "
+                       "persisted, so a total would state as one measurement what two "
+                       "implementations produced differently",
                 looked_in=CONSOLIDATION_DIR, reachability="not_measured",
                 searched="every cohort's consolidation for a control the same implementation "
                          "computed",
@@ -4215,7 +4317,7 @@ def family_depth_contrast_population(ledger: Ledger) -> None:
     path, digest = gates[names[0]][1], gates[names[0]][2]
     support = ledger.declare_support(
         "depth_contrast_comparison_population",
-        "the arms measured on both depth-contrast cohorts whose selected depth is not one the "
+        "the arms measured on every depth-contrast cohort whose selected depth is not one the "
         "admitted extraction already hooked, which are the arms a cross-cohort comparison can be "
         "made over",
     )
@@ -4569,6 +4671,7 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     family_unrecorded_draw_counts(ledger)
     family_remote_homology(ledger)
     family_domainome_endpoint(ledger)
+    family_information_progression(ledger)
     family_class_admission(ledger)
     family_class_axis_consolidation(ledger)
     family_class_axis_total(ledger)
