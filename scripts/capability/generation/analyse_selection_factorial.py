@@ -29,12 +29,31 @@ from src.capability.context.potts_gauge import to_zero_sum  # noqa: E402
 from src.capability.core.io import write_json  # noqa: E402
 from src.capability.decoding.guided_decoding import permutation_for, select_cross_domain_donor  # noqa: E402
 
-SCHEMA = "selection_factorial_v1"
+SCHEMA = "selection_factorial_v2"
 KS = (1, 5, 10, 25)
 #: Potts scores are computed in the zero-sum gauge; the two ``*_raw`` selectors repeat the
 #: component scores on the stored parameters so the gauge sensitivity of the contrast is visible.
 GAUGE = "zero_sum"
-SELECTORS = ("native_loglik", "profile", "potts_fields", "potts_coupling", "potts_full",
+#: Candidates below this percent identity to the wild type are the novelty-restricted stratum; a cell with
+#: fewer than ``MIN_ADMISSIBLE`` of them has no restricted value (the confirmatory analysis uses the same floor).
+NOVELTY_IDENTITY = 20.0
+MIN_ADMISSIBLE = 25
+#: Ranks by identity_to_wild_type, highest first. A sequence-level quantity, but it needs the target sequence:
+#: a diagnostic upper reference for "how much of a gain is just preferring near-native sequences", not a method.
+ORACLES = ("identity_oracle",)
+ORACLE_STATEMENT = (
+    "identity_oracle ranks candidates by identity_to_wild_type, highest first. It uses knowledge of the target "
+    "sequence that no design method has: a diagnostic upper reference for how much of a selector's gain is "
+    "explained by preferring near-native sequences. It is not a usable or proposed selector.")
+STRATA_STATEMENT = (
+    "Every selector is also scored in a novelty-restricted stratum: candidates with identity_to_wild_type < 20 only, "
+    "selection and pool mean both taken within them, reported beside the unrestricted numbers. A cell with fewer "
+    "than 25 such candidates has no restricted value and is left out of the restricted summary (counted, not "
+    "imputed). The shrinkage is 1 - restricted gain / unrestricted gain on the cross-domain means, where gain is "
+    "selected-set TM minus pool-mean TM. shrinkage_matched compares against the unrestricted gain on exactly the "
+    "cells that have a restricted value; shrinkage_vs_all_cells compares against the unrestricted summary over all "
+    "cells and so also reflects which cells dropped out.")
+SELECTORS = ("native_loglik", "profile", "identity_oracle", "potts_fields", "potts_coupling", "potts_full",
              "coupling_permuted", "coupling_cross_domain", "potts_fields_raw", "potts_coupling_raw")
 #: (name, minuend, subtrahend); each is a difference of selected-set mean TM-scores.
 CONTRASTS = (
@@ -139,23 +158,33 @@ def analyse(records, models, permutation_seed):
         scores = selector_scores(models[domain], donors[domain], permutation_seed, codes)
         scores["native_loglik"] = np.array([r["native_loglik"] for r in rows], dtype=np.float64)
         values = {m: np.array([r[m] for r in rows], dtype=np.float64) for m in METRICS}
+        scores["identity_oracle"] = values["identity_to_wild_type"]
         cell = {"model": model, "domain": domain, "arm": arm, "lambda_fields": lf, "lambda_coupling": lc,
                 "pool_size": len(rows), "pool_mean": {m: float(values[m].mean()) for m in METRICS},
                 "selectors": {}}
         for name in SELECTORS:
             if name in scores:
                 cell["selectors"][name] = {str(k): topk_means(scores[name], values, k) for k in KS}
+        keep = values["identity_to_wild_type"] < NOVELTY_IDENTITY
+        cell["n_admissible"] = int(keep.sum())
+        cell["restricted"] = None if cell["n_admissible"] < MIN_ADMISSIBLE else {
+            "pool_mean": {m: float(values[m][keep].mean()) for m in METRICS},
+            "selectors": {name: {str(k): topk_means(scores[name][keep], {m: values[m][keep] for m in METRICS}, k)
+                                 for k in KS} for name in SELECTORS if name in scores}}
         cells.append(cell)
     return cells, {d: (None if donors[d] is None else donors[d].domain) for d in donors}
 
 
-def summarise(cells, stratum):
+def summarise(cells, stratum, restricted=False):
     """Per-domain means over the stratum's generator cells, then the plain mean over domains.
 
     ``selected`` holds the selected-set means of each metric; ``gain`` is the TM-score
     advantage over the pool mean; ``identity_shift`` is the selected-minus-pool change in
     each identity, so a gain bought with near-native sequences is visible beside it.
     """
+    total = len(cells)
+    if restricted:  # a cell without enough admissible candidates has no restricted value
+        cells = [{**c, **c["restricted"]} for c in cells if c["restricted"] is not None]
     domains = sorted({c["domain"] for c in cells})
     per_domain = {d: [c for c in cells if c["domain"] == d] for d in domains}
 
@@ -169,7 +198,8 @@ def summarise(cells, stratum):
                 out[d] = {m: mean_over_cells(rows, lambda c: c["selectors"][name][str(k)][m]) for m in METRICS}
         return out
 
-    summary = {"stratum": stratum, "cells": len(cells), "domains": domains, "k": {}}
+    summary = {"stratum": stratum, "cells": len(cells), "cells_total": total, "domains": domains,
+               "novelty_restricted": restricted, "k": {}}
     for k in KS:
         pool = {d: {m: mean_over_cells(rows, lambda c: c["pool_mean"][m]) for m in METRICS}
                 for d, rows in per_domain.items()}
@@ -197,13 +227,33 @@ def summarise(cells, stratum):
     return summary
 
 
+def shrinkage(unrestricted_all, unrestricted_matched, restricted):
+    """Per k and selector: cross-domain mean gains in each stratum and the shrinkage from unrestricted to restricted."""
+
+    out = {}
+    for k, block in restricted["k"].items():
+        out[k] = {}
+        for name, sel in block["selectors"].items():
+            gain = sel["mean_gain"]["gain_tm"]
+            row = {"n_domains": sel["n_domains"], "gain_restricted": gain}
+            for tag, source in (("matched", unrestricted_matched), ("vs_all_cells", unrestricted_all)):
+                base = source["k"][k]["selectors"].get(name)
+                if base is None or abs(base["mean_gain"]["gain_tm"]) < 1e-12:
+                    row[f"gain_unrestricted_{tag}"], row[f"shrinkage_{tag}"] = None, None
+                else:
+                    row[f"gain_unrestricted_{tag}"] = base["mean_gain"]["gain_tm"]
+                    row[f"shrinkage_{tag}"] = 1.0 - gain / base["mean_gain"]["gain_tm"]
+            out[k][name] = row
+    return out
+
+
 def _mean_metrics(per_domain):
     keys = next(iter(per_domain.values())).keys()
     return {m: float(np.mean([v[m] for v in per_domain.values()])) for m in keys}
 
 
 def render(summary):
-    lines = [f"== stratum {summary['stratum']} ({summary['cells']} cells, domains {summary['domains']}) =="]
+    lines = [f"== stratum {summary['stratum']} ({summary['cells']} of {summary['cells_total']} cells, domains {summary['domains']}) =="]
     for k, block in summary["k"].items():
         pool = block["pool_mean"]["mean"]
         lines.append(f"k={k}  pool TM {pool['tm_score']:.4f}  id_wt {pool['identity_to_wild_type']:.1f}  "
@@ -238,16 +288,35 @@ def main(argv=None):
     cells, donors = analyse(records, models, args.permutation_seed)
     strata = [("all", cells)] + [(f"model={m}", [c for c in cells if c["model"] == m])
                                  for m in sorted({c["model"] for c in cells})]
-    summaries = [summarise(rows, name) for name, rows in strata]
+    summaries, shrinkages = [], {}
+    for name, rows in strata:
+        full = summarise(rows, name)
+        summaries.append(full)
+        kept = [c for c in rows if c["restricted"] is not None]
+        if kept:
+            restricted = summarise(rows, f"{name} | identity < {NOVELTY_IDENTITY:g}", restricted=True)
+            summaries.append(restricted)
+            shrinkages[name] = shrinkage(full, summarise(kept, name), restricted)
     write_json(args.out, {
         "schema": SCHEMA, "statement": STATEMENT, "ks": list(KS), "selectors": list(SELECTORS),
         "contrasts": [list(c) for c in CONTRASTS], "permutation_seed": args.permutation_seed, "gauge": GAUGE,
         "full_score_gauge_check": "potts_full agrees across gauges (constant shift, identical ranking) in every pool",
         "pool_size": cells[0]["pool_size"], "cross_domain_donors": donors,
         "records": str(args.records), "references": str(args.references),
-        "summaries": summaries, "cells": cells})
+        "oracles": list(ORACLES), "oracle_statement": ORACLE_STATEMENT, "strata_statement": STRATA_STATEMENT,
+        "novelty_identity_below": NOVELTY_IDENTITY, "minimum_admissible": MIN_ADMISSIBLE,
+        "shrinkage": shrinkages, "summaries": summaries, "cells": cells})
     for s in summaries:
         print(render(s))
+    print(ORACLE_STATEMENT)
+    for name, per_k in shrinkages.items():
+        print(f"== shrinkage, stratum {name}: restricted gain vs unrestricted on matched cells / on all cells ==")
+        for k, per in per_k.items():
+            for sel, r in per.items():
+                f = lambda v: "   n/a" if v is None else f"{v:+.4f}"
+                print(f"k={k:<3}{sel:<24} restricted {f(r['gain_restricted'])}  matched {f(r['gain_unrestricted_matched'])} "
+                      f"shrink {f(r['shrinkage_matched'])}  all-cells {f(r['gain_unrestricted_vs_all_cells'])} "
+                      f"shrink {f(r['shrinkage_vs_all_cells'])}")
     return 0
 
 
