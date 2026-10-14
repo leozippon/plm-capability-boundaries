@@ -779,6 +779,42 @@ class ACountIsNotSummableAcrossImplementations(unittest.TestCase):
                      source_sha256="d")
 
 
+class AGenericallyKeyedLeafTakesTheUnitItsFieldStates(unittest.TestCase):
+    """``point`` names no quantity of its own; the field around it does.
+
+    The controls receipt records each candidate's rank-correlation increment at
+    ``ladder/<candidate>/spearman_increment/<seed>/point``, inside a subtree
+    whose other numbers are squared kcal/mol. Reading the subtree's default onto
+    that leaf published a correlation as kcal^2/mol^2 --- one of the measured
+    scales the checker refuses to compare across --- so the nearest enclosing
+    field that names a unit has the say. The default still stands under
+    ``first_seed_interval``, where no enclosing field names one and the squared
+    scale is the artifact's own.
+    """
+
+    def setUp(self) -> None:
+        self.ledger = Ledger(Artifacts())
+        for path, _, support_id, _, _, _ in BUILDER.LEAF_SUBTREES:
+            if not self.ledger.artifacts.exists(path):
+                self.skipTest(f"{path} is not in this checkout")
+            self.ledger.declare_support(support_id, "the support this subtree is read over")
+        BUILDER.family_leaf_subtrees(self.ledger)
+        self.rows = {row.id: row for row in self.ledger.quantities}
+
+    def _units(self, block: str, *fields: str) -> set[str]:
+        return {row.unit for identifier, row in self.rows.items()
+                if identifier.startswith("stability_controls/ladder/")
+                and f"/{block}/" in identifier and identifier.rsplit("/", 1)[-1] in fields}
+
+    def test_a_correlation_increment_is_dimensionless_however_its_subtree_is_measured(self):
+        self.assertEqual(self._units("spearman_increment", "point"), {"dimensionless"})
+
+    def test_the_subtree_default_still_stands_where_no_enclosing_field_names_a_unit(self):
+        self.assertEqual(self._units("first_seed_interval",
+                                     "point", "augmented_mse", "baseline_mse"),
+                         {"kcal^2/mol^2"})
+
+
 class TheLivePipelineRuns(unittest.TestCase):
     """The table, the contract and the checker, on the repository as it stands.
 

@@ -2171,7 +2171,9 @@ def family_indel_evaluation(ledger: Ledger) -> None:
         ))
 
 
-#: Leaf keys that name no quantity of their own and take their subtree's unit.
+#: Leaf keys that name no quantity of their own. Their unit comes from the
+#: field they sit in, and from the subtree's default only where no enclosing
+#: field names one either.
 GENERIC_LEAF_KEYS = frozenset({"point", "value", "mean", "median", "low", "high", "estimate",
                                "difference", "augmented_mse", "baseline_mse"})
 
@@ -2186,7 +2188,8 @@ SKIPPED_LEAF_BRANCHES = frozenset({"dimensions", "code_sha256", "analysis_code_s
 
 
 def _leaf_unit(field: str, default: str) -> str:
-    """The unit a leaf's own field name states, or nothing.
+    """The unit a leaf's own field name states, or the caller's default when the
+    name states no quantity of its own.
 
     An unrecognised field name yields no unit and the leaf is not emitted: a
     guessed unit would put a false fact on a row the manuscript is checked
@@ -2194,6 +2197,11 @@ def _leaf_unit(field: str, default: str) -> str:
     """
     if field in GENERIC_LEAF_KEYS:
         return default
+    return _stated_unit(field)
+
+
+def _stated_unit(field: str) -> str:
+    """The unit this one field name states, or nothing."""
     lowered = field.lower()
     if lowered.endswith("_kcal2_mol2") or "kcal2" in lowered:
         return "kcal^2/mol^2"
@@ -2214,6 +2222,23 @@ def _leaf_unit(field: str, default: str) -> str:
     return ""
 
 
+def _enclosing_unit(leaf_pointer: tuple[str, ...], default: str) -> str:
+    """The unit the nearest enclosing field states, or the subtree's default.
+
+    A generically keyed leaf is the enclosing field's own number: ``point``
+    under ``spearman_increment`` is a rank correlation however the subtree
+    around it is measured, and reading the subtree's default onto it would
+    state a unit the artifact contradicts. The default stands only where no
+    enclosing field names a unit at all, which is the one case in which it
+    overrides nothing.
+    """
+    for name in reversed(leaf_pointer[:-1]):
+        unit = _stated_unit(name)
+        if unit:
+            return unit
+    return default
+
+
 def family_leaf_subtrees(ledger: Ledger) -> None:
     for path, pointer, support_id, family, level, default_unit in LEAF_SUBTREES:
         if not ledger.artifacts.exists(path):
@@ -2230,7 +2255,7 @@ def family_leaf_subtrees(ledger: Ledger) -> None:
                        reason="pointer does not resolve", looked_in=path)
             continue
         for leaf_pointer, field, value in _numeric_leaves(node, pointer):
-            unit = _leaf_unit(field, default_unit)
+            unit = _leaf_unit(field, _enclosing_unit(leaf_pointer, default_unit))
             if not unit:
                 continue
             ledger.add(Quantity(
