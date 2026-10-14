@@ -144,11 +144,48 @@ NUMBER = re.compile(r"(?<![\w.])([-+]?\d[\d,]*(?:\.\d+)?)")
 NAME = re.compile(r"(?<![\w-])[A-Za-z][A-Za-z0-9.]*(?:-[A-Za-z0-9.]+)*(?![\w-])")
 SCIENTIFIC = re.compile(r"([-+]?\d+(?:\.\d+)?)\s*\$?\s*\\times\s*10\^\{(-?\d+)\}")
 BARE_POWER = re.compile(r"10\^\{(-?\d+)\}")
-#: An interval as the manuscript writes it. The whitespace is not decorative: the
-#: scientific-notation rewrite above renders ``$-1.847\times10^{-6}$`` with spaces
-#: inside the maths delimiters, and a pattern that did not allow them read a correctly
-#: bracketed sentence as a bare point estimate.
-INTERVAL = re.compile(r"\[\s*\$?\s*([-+]?[\d.,]+)\s*\$?\s*,\s*\$?\s*([-+]?[\d.,]+)\s*\$?\s*\]")
+#: One bound and the maths delimiters it may be written inside. The whitespace is
+#: not decorative: the scientific-notation rewrite above renders
+#: ``$-1.847\times10^{-6}$`` with spaces inside the maths delimiters, and a pattern
+#: that did not allow them read a correctly bracketed sentence as a bare point
+#: estimate.
+_BOUND = r"\$?\s*([-+]?[\d.,]+)\s*\$?\s*"
+#: An interval in either notation the manuscript writes: the bracketed pair
+#: ``[a, b]`` of tables and maths, and the parenthesised ``(95\% CI, a--b)`` the
+#: prose uses throughout. A pattern that read only the first reported every
+#: sentence in the prose as a bare point estimate and every interval bound in it
+#: as a second estimate on another support --- corrections to sentences that quote
+#: their intervals exactly as the convention requires.
+#:
+#: The parenthesised form's bounds are separated by an en dash, an em dash or a
+#: double hyphen, used interchangeably. ``strip_markup`` has already blanked the
+#: hyphenated dashes to spaces, so by the time this reads them the separator is a
+#: dash or whitespace --- but it is never nothing, or ``0.0116`` would read as the
+#: two bounds 0.011 and 6. Only the declared 95\% level is read: an interval
+#: quoted at another level is not the convention the manuscript states, and the
+#: checker reporting the estimate as bare is the right way for that to surface.
+INTERVAL = re.compile(
+    r"\[\s*" + _BOUND + r",\s*" + _BOUND + r"\]"
+    r"|"
+    r"\(\s*95\s*\\%\s*CI\s*,\s*" + _BOUND + r"(?:[–—-]\s*|(?<=\s))" + _BOUND + r"\)"
+)
+
+
+def interval_bounds(match: re.Match) -> tuple[str, str]:
+    """The ordered pair of bounds, in whichever notation they were written."""
+    low, high = (group for group in match.groups() if group is not None)
+    return low, high
+
+
+def interval_extent(match: re.Match) -> tuple[int, int]:
+    """Where the bounds themselves sit, which is what makes a number an endpoint.
+
+    The notation around them is not part of the interval. The 95 in ``95\\% CI``
+    states the coverage, and counting it as a bound would report it as an endpoint
+    no recorded interval carries --- a correction to a sentence written correctly.
+    """
+    filled = [index for index, group in enumerate(match.groups(), start=1) if group is not None]
+    return match.start(filled[0]), match.end(filled[-1])
 
 
 def policy_path(directory: Path) -> Path:
@@ -320,8 +357,9 @@ class Index:
 
 def paired_interval_candidates(candidates: list[dict], interval: re.Match) -> list[dict]:
     """Attribute a point by both ordered bounds at their quoted precision."""
-    low, low_decimals = parse(interval.group(1))
-    high, high_decimals = parse(interval.group(2))
+    quoted_low, quoted_high = interval_bounds(interval)
+    low, low_decimals = parse(quoted_low)
+    high, high_decimals = parse(quoted_high)
     return [entry for entry in candidates
             if entry.get("interval_low") is not None and entry.get("interval_high") is not None
             and round(entry["interval_low"], low_decimals) == low
@@ -480,7 +518,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
     for name, text in texts.items():
         body = strip_markup(text)
         for kind, scope, block in scopes(body):
-            intervals = [match.span() for match in INTERVAL.finditer(scope)]
+            intervals = [interval_extent(match) for match in INTERVAL.finditer(scope)]
             scope_words = _words(scope)
             numeric_scope = NAME.sub(lambda m: " " * len(m.group(0)), scope)
             matched: list[tuple[str, list[dict], bool, bool]] = []

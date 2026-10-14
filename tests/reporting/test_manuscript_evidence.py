@@ -374,6 +374,96 @@ class TheCheckerRefusesTheDefectsHandTranscriptionProduced(unittest.TestCase):
         self.assertIn("provisional_not_marked", [finding["check"] for finding in report["findings"]])
 
 
+class BothIntervalNotationsCarryTheirInterval(unittest.TestCase):
+    """The manuscript writes its intervals two ways and both are intervals.
+
+    Tables and maths use the bracketed pair. The prose writes ``(95\\% CI,
+    a--b)``, separating the bounds with an en dash, an em dash or a double hyphen
+    interchangeably. A checker that read only the bracketed form accused every
+    sentence of the prose of quoting a bare point estimate, and read each bound as
+    a second estimate on another support, so the refusals that matter sat buried
+    under corrections to sentences written exactly as the convention requires.
+    Reading the second notation is not a relaxation: a parenthesis that is not
+    the declared interval, and a pair of bounds the table does not carry, are
+    still refused below.
+    """
+
+    DASHES = {"en dash": "–", "em dash": "—", "double hyphen": "--"}
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.case = Path(tempfile.mkdtemp(prefix="evidence-interval-"))
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.case, ignore_errors=True)
+
+    def _sentence(self, interval: str) -> str:
+        return (f"ProGen3-3B exceeds the profile by 0.05678 {interval}. "
+                "Intervals throughout are 95\\% percentile intervals over the resampling unit named "
+                "with each quantity.")
+
+    def _report(self, interval: str) -> dict:
+        return run(self.case, [entry()], {"support_a": "the fixture support"},
+                   self._sentence(interval))
+
+    def test_every_dash_the_prose_writes_carries_the_interval(self):
+        for name, dash in self.DASHES.items():
+            with self.subTest(separator=name):
+                report = self._report(f"(95\\% CI, 0.03601{dash}0.07894)")
+                self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+
+    def test_the_bracketed_notation_still_carries_the_interval(self):
+        report = self._report("[$+0.03601$, $+0.07894$]")
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+
+    def test_the_coverage_label_is_not_one_of_the_bounds(self):
+        text = "0.05678 (95\\% CI, 0.03601–0.07894)"
+        match = CHECKER.INTERVAL.search(text)
+        self.assertEqual(CHECKER.interval_bounds(match), ("0.03601", "0.07894"))
+        self.assertEqual(text[slice(*CHECKER.interval_extent(match))], "0.03601–0.07894")
+
+    def test_a_bound_is_not_a_second_estimate_on_another_support(self):
+        quantities = [
+            entry(),
+            entry(id="fixture/proteinglm-7b-clm/profile_contrast", value=0.07894,
+                  interval_low=0.05101, interval_high=0.09233, support_id="support_b"),
+        ]
+        report = run(
+            self.case, quantities,
+            {"support_a": "217 assays in 174 clusters", "support_b": "201 assays in 163 clusters"},
+            self._sentence("(95\\% CI, 0.03601–0.07894)"))
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+
+    def test_a_lone_value_in_the_parenthesis_is_not_read_as_two_bounds(self):
+        report = self._report("(95\\% CI, 0.03601)")
+        self.assertIn("bare_point_estimate", report["findings_by_check"])
+        self.assertEqual(report["status"], "refused")
+
+    def test_a_bracketed_pair_without_its_comma_is_not_an_interval(self):
+        report = self._report("[0.03601 0.07894]")
+        self.assertIn("bare_point_estimate", report["findings_by_check"])
+        self.assertEqual(report["status"], "refused")
+
+    def test_a_parenthesis_at_another_coverage_is_not_the_declared_interval(self):
+        report = self._report("(90\\% CI, 0.03601–0.07894)")
+        self.assertIn("bare_point_estimate", report["findings_by_check"])
+        self.assertEqual(report["status"], "refused")
+
+    def test_bounds_matching_no_recorded_interval_are_refused_in_either_notation(self):
+        quantities = [entry(), entry(id="other/contrast", value=.12345,
+                                     interval_low=.01001, interval_high=.08912)]
+        policy = dict(CHECKER.default_policy(), interval_convention_statement=None)
+        for notation in ("[0.03601, 0.08912]", "(95\\% CI, 0.03601–0.08912)"):
+            with self.subTest(notation=notation):
+                report = run(self.case, quantities, {"support_a": "fixture"},
+                             f"The contrast is 0.05678 {notation}.", policy)
+                self.assertEqual(report["findings_by_check"], {"point_interval_mismatch": 1}, report)
+                self.assertEqual(report["status"], "refused")
+
+
 class TheTableRefusesARowWithAHoleInIt(unittest.TestCase):
     """A row that cannot be quoted safely must not reach the table at all."""
 
