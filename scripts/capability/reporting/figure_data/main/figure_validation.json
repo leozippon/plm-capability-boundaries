@@ -1,68 +1,409 @@
 {
+  "schema": "figure_render_validation_v1",
   "checks": [
     {
-      "figure": "Fig1_framework",
-      "all_retained_intervals_inside_axes": true,
+      "figure": "Fig2_mutation",
       "width_inches": 5.14,
-      "height_inches": 4.74,
-      "minimum_font_points": 8.0,
-      "within_insertion_height_cap": true
+      "height_inches": 5.902777777777778,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        },
+        {
+          "svg_id": "panel-c",
+          "text": "c"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/figure-2-mutation.pdf",
+      "pdf_sha256": "95081a6ba5fcd73c9f21b1ad0bd401e6f15cd951ad6c8fa1ef3f6bb50c33a1a8",
+      "svg_path": "scripts/capability/reporting/figure_data/main/Fig2_mutation.svg",
+      "svg_sha256": "1710da1fe647740cc9bf8aaa149311fc002d592a24cda1c88e9d908705f705b5",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig2_mutation-plotted.csv",
+      "plotted_source_sha256": "2de7996d5a2983401c443514716ea9829e82b602900ecb0ca94a1182de1d00c5"
     },
     {
-      "figure": "Fig2_native_and_position",
-      "all_retained_intervals_inside_axes": true,
+      "figure": "Fig3_position",
       "width_inches": 5.14,
-      "height_inches": 4.74,
-      "minimum_font_points": 8.0,
-      "within_insertion_height_cap": true
+      "height_inches": 5.805555555555555,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        },
+        {
+          "svg_id": "panel-c",
+          "text": "c"
+        },
+        {
+          "svg_id": "panel-d",
+          "text": "d"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/figure-3-position.pdf",
+      "pdf_sha256": "c626711826c1fa51fcb9008e4de4f2d2b5fe6d5a7d046bde40f355e4bd182213",
+      "svg_path": "scripts/capability/reporting/figure_data/main/Fig3_position.svg",
+      "svg_sha256": "99f45fac45ded6e949e56a5cf2782d533ff7707bd68a487c517676d22997d0bf",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig3_position-plotted.csv",
+      "plotted_source_sha256": "941225487a14e4ce0038b9c352a3775bc7c1f1575a55522053c354de100e3061"
     },
     {
-      "figure": "Fig3_readouts_and_context",
-      "all_retained_intervals_inside_axes": true,
+      "figure": "Fig4_phenotypes_and_interactions",
       "width_inches": 5.14,
-      "height_inches": 4.74,
-      "minimum_font_points": 8.0,
-      "within_insertion_height_cap": true
+      "height_inches": 6.180555555555555,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        },
+        {
+          "svg_id": "panel-c",
+          "text": "c"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/figure-4-phenotypes-and-interactions.pdf",
+      "pdf_sha256": "bec23e5dbdb27b67529a36495773de2579c0c95db20743b0d4f88954480173e0",
+      "svg_path": "scripts/capability/reporting/figure_data/main/Fig4_phenotypes_and_interactions.svg",
+      "svg_sha256": "06755e39a76627eb898a47bda8a530dbb1575a3a7d253c3948ad947523e8ab83",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig4_phenotypes_and_interactions-plotted.csv",
+      "plotted_source_sha256": "8e72091e6914c782ca5fb2439df9acec25fd724016af57005a1d778155c6716a"
     },
     {
-      "figure": "Fig4_interactions_and_limits",
-      "all_retained_intervals_inside_axes": true,
+      "figure": "Fig5_context_and_generation",
       "width_inches": 5.14,
-      "height_inches": 4.74,
-      "minimum_font_points": 8.0,
-      "within_insertion_height_cap": true
+      "height_inches": 6.111111111111111,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/figure-5-context-and-generation.pdf",
+      "pdf_sha256": "81e9f85a7a3d6efd96e2d70688a113f55f1f066deb6d8be665336ce73bdd53f8",
+      "svg_path": "scripts/capability/reporting/figure_data/main/Fig5_context_and_generation.svg",
+      "svg_sha256": "6397db010633129157037a71a82f78806c313c057deebf88a54a5f388241a33d",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig5_context_and_generation-plotted.csv",
+      "plotted_source_sha256": "cac9ff90270f5db77049930943a663a3bb8186bd0d477eef318573d1f57db9bc"
     },
     {
-      "figure": "Fig5_generation",
-      "all_retained_intervals_inside_axes": true,
+      "figure": "native-comparators",
       "width_inches": 5.14,
-      "height_inches": 4.3,
-      "minimum_font_points": 8.0,
-      "within_insertion_height_cap": true
+      "height_inches": 3.4722222222222223,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/supplementary-figure-1-native-comparators.pdf",
+      "pdf_sha256": "ec080da428ffd6a4a4dbe7e4608be0bdfd351e71b9237b69cb2f8afa3b6a3ce4",
+      "svg_path": "scripts/capability/reporting/figure_data/ncs/native-comparators.svg",
+      "svg_sha256": "822ef3814829e37d16b1008abb58007c26999fb024fb640df6002204bcf8b86d",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/ncs/native-comparators-plotted.csv",
+      "plotted_source_sha256": "40ebfab4eb4e034fb46a3c1ac79e45d8ca6865a35335b246cc9e556604c940e7"
+    },
+    {
+      "figure": "conditional-class-yield",
+      "width_inches": 5.14,
+      "height_inches": 4.930555555555555,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/supplementary-figure-2-conditional-class-yield.pdf",
+      "pdf_sha256": "d36396c1a94a655995934f0a57f934a80cd73fa338a1188d49e2e580e3aa8540",
+      "svg_path": "scripts/capability/reporting/figure_data/ncs/conditional-class-yield.svg",
+      "svg_sha256": "de01b7cafa9e0ca801cfef295405b9306d4098a1c7e7b39643c69f3105a29da2",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/ncs/conditional-class-yield-plotted.csv",
+      "plotted_source_sha256": "4a34171fa4666e1174834d5f769927110547f0c2b2555ffe81caefd4aa4c7b71"
+    },
+    {
+      "figure": "generation-yield",
+      "width_inches": 5.14,
+      "height_inches": 3.888888888888889,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/supplementary-figure-3-generation-yield.pdf",
+      "pdf_sha256": "319c837e23c7ac4a1e3f3f7648b26477946ec8acab8183d0e9443e7b3d98c5eb",
+      "svg_path": "scripts/capability/reporting/figure_data/ncs/generation-yield.svg",
+      "svg_sha256": "ce5188e0a0adf0d5b98ce62a8fcae4b5738130e83a6308318baf5dab262c4b44",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/ncs/generation-yield-plotted.csv",
+      "plotted_source_sha256": "75d1fd15a780905c8e8ba26fc29f56d5cd4e68cd41fc79068266a8ec22adaaf5"
+    },
+    {
+      "figure": "matched-generators",
+      "width_inches": 5.14,
+      "height_inches": 4.305555555555555,
+      "minimum_font_points": 7.0,
+      "panel_letter_points": 8.0,
+      "panel_labels": [
+        {
+          "svg_id": "panel-a",
+          "text": "a"
+        },
+        {
+          "svg_id": "panel-b",
+          "text": "b"
+        }
+      ],
+      "all_retained_intervals_inside_axes": true,
+      "all_text_inside_canvas": true,
+      "pdf_path": "manuscript/submission/figures/supplementary-figure-4-matched-generators.pdf",
+      "pdf_sha256": "182abe2881b7319aa0eb2c5cf54b7d4f14dbbf48cd2dd2e7c47a6e8f86fe5566",
+      "svg_path": "scripts/capability/reporting/figure_data/ncs/matched-generators.svg",
+      "svg_sha256": "5a0fabe0f88fe8ea6e3b8a6a82469acecb2829838f09a02df16425e5e1fbc9f2",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/ncs/matched-generators-plotted.csv",
+      "plotted_source_sha256": "56a5080a360210bdf842a4e87a1f75e5e60fd85b856e8c7c445cc4d01e028879"
     }
   ],
   "source_sha256": {
-    "local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
-    "external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
-    "lineage-robustness-source.csv": "951e76c9a2f014e4978a9acc817ee90052d30270cdb215ba17f3f1171e950ca6",
-    "native-fitness-source.csv": "0e1d390f75b310ea0c8a9df193ebd07bb6296426ae97a72339e3f2673b681201",
-    "text-aa-fitness-source.csv": "d53d70fd70726f69575a4e3b92eb8c6db50d4ca036f0c825279222da839fc7f4",
-    "position-terms-replot.csv": "542f711b6b6f19b8790dc5d58beac72d01f93eda8c49e73c314cd92972bd41b2",
-    "readout-contrasts-source.csv": "b305746b992fe23977ec0eb15cc40d8f254e631c099024fb629c452708784c2d",
-    "controlled-gap-source.csv": "7dd38e3586ddabdc7a8c1b94ca2674e935ea05558eaae2a507681ce4d19f3326",
-    "depth-profile-source.csv": "bc94ac35b83f69e0c4375da8ed1270ec05b59c2531101f748ef37428598a3a0f",
-    "context-ranking-source.csv": "a56873665077a3fc95caac0b4b96fa9c84e7a7dc1c3dbb8f803abe700c79822e",
-    "interaction-panel-source.csv": "3c5911e549bd41195dcca8ceb22d41ab5a55cd03cfb45d7e44a666766d7a371e",
-    "nested-residual-source.csv": "503effd9df5af6db888cf7bc1e532742646945520ebcae8031aaa212cf892ede",
-    "residual-full-panel-source.csv": "46ebddc06bc815d9ecc6f4c38ddf0d923da380604045911da9e9df2858dcedca",
-    "endpoint-boundaries-source.csv": "9d1a12047e51d82908581bbdf05b4af826d92674a2d7ee34997126b53356b085",
-    "stability-panel-source.csv": "54eb1e7c46670dd54c7bfbf4c87012713c0b9bbe479a7f6778faf0ef0d462a50",
-    "matched-generator-source.csv": "eaab928de49096baf53f6b89755306c5c1f49f88a5c5a2bd474f593520da5da5",
-    "generation-streams-replot.csv": "a520eed7b207002edfd5fbf82e4250e907fbcdd866cbed42f087194c1d68d449",
-    "conditional-class-yield-source.csv": "a285f259f09561c6a99f978e7fe6926fd0192f4037b5317046d167e0d048f848"
+    "scripts/capability/reporting/figure_data/structure-insets/dvl1-abundance.png": "9c809dfd559edab2051be4c0dd22c5f35021ebe9c3d7c8163932e356b46823c7",
+    "scripts/capability/reporting/figure_data/structure-insets/1ufm-stability.png": "290d88c210c5b20307e468245b66b6437d101d00162d49aa5080cd0796881e97",
+    "scripts/capability/reporting/figure_data/structure-insets/1ufm-pair.png": "269be6c1de50898ad4b00ff7fda1573ef97e4f13ab5b4d2eecc502c3d8b907d7",
+    "scripts/capability/reporting/figure_data/structure-insets/manifest.json": "4cd0ef466385d94e0b78001cef3f03ba547f9825aa2cc225251ef54e860f6cb8",
+    "scripts/capability/reporting/figure_data/main/position-support-source.csv": "2ae2d1dd509b2bdce63fb7e10cd9a90ba474c4da9fdf1f85a3c8254042be812d",
+    "scripts/capability/reporting/figure_data/main/lineage-robustness-source.csv": "951e76c9a2f014e4978a9acc817ee90052d30270cdb215ba17f3f1171e950ca6",
+    "scripts/capability/reporting/figure_data/main/readout-contrasts-source.csv": "b305746b992fe23977ec0eb15cc40d8f254e631c099024fb629c452708784c2d",
+    "scripts/capability/reporting/figure_data/main/controlled-gap-source.csv": "7dd38e3586ddabdc7a8c1b94ca2674e935ea05558eaae2a507681ce4d19f3326",
+    "scripts/capability/reporting/figure_data/main/position-terms-replot.csv": "542f711b6b6f19b8790dc5d58beac72d01f93eda8c49e73c314cd92972bd41b2",
+    "scripts/capability/reporting/figure_data/main/external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
+    "scripts/capability/reporting/figure_data/main/stability-panel-source.csv": "54eb1e7c46670dd54c7bfbf4c87012713c0b9bbe479a7f6778faf0ef0d462a50",
+    "scripts/capability/reporting/figure_data/main/clean-interaction-source.csv": "0c9b4bdab20262b480a49778ce197e74fc5df9f1a26a8b091e4731ea5b54cd89",
+    "scripts/capability/reporting/figure_data/main/context-ranking-source.csv": "a56873665077a3fc95caac0b4b96fa9c84e7a7dc1c3dbb8f803abe700c79822e",
+    "scripts/capability/reporting/figure_data/main/generation-streams-replot.csv": "a520eed7b207002edfd5fbf82e4250e907fbcdd866cbed42f087194c1d68d449",
+    "scripts/capability/reporting/figure_data/main/native-fitness-source.csv": "0e1d390f75b310ea0c8a9df193ebd07bb6296426ae97a72339e3f2673b681201",
+    "scripts/capability/reporting/figure_data/main/text-aa-fitness-source.csv": "d53d70fd70726f69575a4e3b92eb8c6db50d4ca036f0c825279222da839fc7f4",
+    "scripts/capability/reporting/figure_data/main/conditional-class-yield-source.csv": "a285f259f09561c6a99f978e7fe6926fd0192f4037b5317046d167e0d048f848",
+    "scripts/capability/reporting/figure_data/main/generation-yield-source.csv": "512a013b47968e4c123ca5cbf265ab200bed0d581af37ef3de15e216478050bd",
+    "scripts/capability/reporting/figure_data/main/matched-generator-source.csv": "eaab928de49096baf53f6b89755306c5c1f49f88a5c5a2bd474f593520da5da5"
+  },
+  "auxiliary_outputs_sha256": {
+    "scripts/capability/reporting/figure_data/checkpoint-name-key.csv": "56d401bd3226f221b64a8aa5f361eea2742a112bbc1a6920e3a15feb95a8f815",
+    "manuscript/submission/checkpoint-name-key.tex": "05709e1a2c0d968da567d6e79c2cc3cb5c8a281f96e79a5e06691317eac8da24"
+  },
+  "extraction_source_sha256": {
+    "results/R1/position_terms_20260926/position_simultaneous.json": "adc04054ea5ad55b5dd5f1be2d70ca4c1d3c62b2b9371defd5cc3cd16c0752e8",
+    "results/R3/pairwise_residual_full_panel_indel_excluded_20260928/panel.json": "b41babef64c83bda80354b07481a016982d51fd141b553c7a6057631e2f6f911",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-base-en/position_controlled_bygpt5-base-en_fold20260923.json": "355f9886c9f0ce75f807f14e39056496b83b87780d9e976344432e745399cf18",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-medium-en/position_controlled_bygpt5-medium-en_fold20260923.json": "9ca78c6507d4482ca8dc679dcf421a5dd6cf1b141daa01a37aa8d1724a9d13d5",
+    "results/R1/position_terms_20260926/receipts/fits/bygpt5-small-en/position_controlled_bygpt5-small-en_fold20260923.json": "ce78b738f0d7295c2de358c02c30e317646c1d58f7b7d13e0b6f8fb86fb425a5",
+    "results/R1/position_terms_20260926/receipts/fits/dialogpt-small/position_controlled_dialogpt-small_fold20260923.json": "7469df3081fb5c20d5b6b4a47aa7c4d211ec133e0d2dc4c2ed5979c4e2f526b9",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-1.3b/position_controlled_galactica-1.3b_fold20260923.json": "a732c07c216cdf8fd3efbfc1d29be5c7c3d5f31cd75bc9e409517986ebebc3f7",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-125m/position_controlled_galactica-125m_fold20260923.json": "037bfb781ffb20ca13971c85f02149487bf0b9f06a8275e79b7b9b932acf6239",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-30b/position_controlled_galactica-30b_fold20260923.json": "e4cb1b1e26369fdcf214a5337339d9dfd159c1946ec778cd44672e87f74b2cac",
+    "results/R1/position_terms_20260926/receipts/fits/galactica-6.7b/position_controlled_galactica-6.7b_fold20260923.json": "c98182f5a81e8cbc95d7f0f034f9dfcf062a9e1f45318fb3b595370602e5009d",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-large/position_controlled_gpt2-large_fold20260923.json": "a14a467482f57f4f73821d8b1d24fa2250cf48365335478219441a1cb988bd89",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-medium/position_controlled_gpt2-medium_fold20260923.json": "0daa0b89a12b29572e970fec742e1c148459c5be3aeb7cfe4f447137324d0b75",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2-xl/position_controlled_gpt2-xl_fold20260923.json": "5b30e0e31a67ebe6ed51f04b5d4a4fd49bca46fcf5d0df0820236cf0151a900b",
+    "results/R1/position_terms_20260926/receipts/fits/gpt2/position_controlled_gpt2_fold20260923.json": "6a1a446ccd5eb03fb9a07f62f654b442a0509f72af63531e3ad215e8aba3c71d",
+    "results/R1/position_terms_20260926/receipts/fits/instructprotein/position_controlled_instructprotein_fold20260923.json": "b137e7440bd43a83af04b4febb7ff46abd2a15ba26e6550c6eec577d4483e037",
+    "results/R1/position_terms_20260926/receipts/fits/llama-2-7b/position_controlled_llama-2-7b_fold20260923.json": "d29ede142b582460850440582d987aab48779b1be9cd3c92d593ad93bfbe3e4a",
+    "results/R1/position_terms_20260926/receipts/fits/llama-3.2-3b/position_controlled_llama-3.2-3b_fold20260923.json": "cf1f4cae45cb3877a2de2e64190a1b7b7871ae6776ab1d2d385697d548178089",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-base/position_controlled_progen2-base_fold20260923.json": "461a9e16bf016ef01305eac8e1a465b7efe78c152bc60702244ac44151e523a4",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-large/position_controlled_progen2-large_fold20260923.json": "dadcc2efde09f0a32dbaa159bb22002546c500257f1e243911ea399c7ec9dcf4",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-medium/position_controlled_progen2-medium_fold20260923.json": "ca9bd45e0dfad477c94e9a4387e4be4b0c3a813d887915f303c8e8afe9d3ab27",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-small/position_controlled_progen2-small_fold20260923.json": "bab8bae31495cd3586ecc61d1edaff409234a206dfc2cf2cd74cecb834e078e5",
+    "results/R1/position_terms_20260926/receipts/fits/progen2-xlarge/position_controlled_progen2-xlarge_fold20260923.json": "fce25744bf074e329bd0dad7b128d13b038cfc789fdc0e32548e8a3f011100bb",
+    "results/R1/position_terms_20260926/receipts/fits/progen3-112m/position_controlled_progen3-112m_fold20260923.json": "4ce4e21481d736f19982287ed6e1860acef8ebc954012aee8fb05e5be96c99ba",
+    "results/R1/position_terms_20260926/receipts/fits/prollama-stage-1/position_controlled_prollama-stage-1_fold20260923.json": "d717d923d59ce07f14cac0f1cef1a60c8ae351902afd31f35c704a9c2d3a0481",
+    "results/R1/position_terms_20260926/receipts/fits/prollama/position_controlled_prollama_fold20260923.json": "67e5aa7bc3f2e5a00e6ec4241b3d166ce6c5d9a61f8a5da49869cc3907661bff",
+    "results/R1/position_terms_20260926/receipts/fits/proteinglm-7b-clm/position_controlled_proteinglm-7b-clm_fold20260923.json": "2298eb30c715d9327092989026369d2c1287070834163e5884bf407a16711ef4",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt2/position_controlled_protgpt2_fold20260923.json": "e8462c8210e3fb19128a829717415da2a5f8612f708cb29daa3d6c6dc87d4a1a",
+    "results/R1/position_terms_20260926/receipts/fits/protgpt3-1.3b/position_controlled_protgpt3-1.3b_fold20260923.json": "e31140e0e8fe61188d333e264bf9c9c534053fd327ad183756afb75a187c047e",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b-instruct/position_controlled_qwen2.5-0.5b-instruct_fold20260923.json": "2246d95b8198912d8b8d1c2377ad72e8e26a7d5c78681ad01d5bf5f9d019011d",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-0.5b/position_controlled_qwen2.5-0.5b_fold20260923.json": "e9eb7f6d938fe4a170706827ede5d314bc203a9e47ccac7c39c8239d562ca4d3",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-32b/position_controlled_qwen2.5-32b_fold20260923.json": "87604b1cb60a96c0e09b37b761b7267bb667d52bdea57b2337311cd873e3ff1f",
+    "results/R1/position_terms_20260926/receipts/fits/qwen2.5-7b/position_controlled_qwen2.5-7b_fold20260923.json": "571c78f9800b47fd7238a330070f7d30c6e974e6274673df4691d4b03fa74af4",
+    "results/R1/position_terms_20260926/receipts/fits/qwen3-8b-base/position_controlled_qwen3-8b-base_fold20260923.json": "96651cce445716dae0803bbeeab141195371911ff0e136b1774ee104504343f0",
+    "results/R1/position_terms_20260926/receipts/fits/rita-xl/position_controlled_rita-xl_fold20260923.json": "0166dcf15dea41c099560384cd24c94e0a6a4e9aae715e105d761163e3e42104",
+    "results/shared/followup_support_20260927/lineage_robustness.json": "bc9e3743e0da46f306a81c5946aa79aff7be20a89fea570722c0848769ef8b93",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923105347_9e1188dbfcda/readout_analysis_llama2_parent_common/readout_llama-2-7b_common.json": "e6914c5b1db4bcfbf023ab5223c5541128f67ebf2a144cde9968d67027022408",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923105347_9e1188dbfcda/readout_analysis_progen3_3b_common/readout_progen3-3b_common.json": "a596d4a9db6b3bfc89cd6999f445110391c916c7e0aff540f345d77d1bf98a9d",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923105347_9e1188dbfcda/readout_analysis_prollama_stage1_common/readout_prollama-stage-1_common.json": "25e44aa69dc7f722a15bdc1e2370dc57d7b145e4618b75813858a5efaeffecef",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923105347_9e1188dbfcda/readout_analysis_prollama_stage2_common/readout_prollama_common.json": "f37ac7a617ec86186ac558f5ee19c905df731080d4e06ab935bf81aaff576518",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923105347_9e1188dbfcda/readout_analysis_proteinglm_common/readout_proteinglm-7b-clm_common.json": "192074686108666dc87a92974821d36e249ce26a341b1f1b6c3c68b839465e7a",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_galactica_1_3b_common/readout_galactica-1.3b_common.json": "97223548850f8808e6d21f5bc7d8570907fe5e0108fbc5e1676dfe7b082c1cf0",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_galactica_6_7b_common/readout_galactica-6.7b_common.json": "7cbc433302f4fde38629b503b8d4419385f3586bebadbbd23346b3edb3cd033b",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_instructprotein_common/readout_instructprotein_common.json": "4e0e8e6180e9a4706ffe30a533e71c554acc9dd1675efe202443ac7f32819f2e",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen2_base_common/readout_progen2-base_common.json": "97b242a3decc19e87d970dbfbfacd052b6572422ca5329832fd4c73d891dd530",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen2_large_common/readout_progen2-large_common.json": "88c6d577d027cedce3d13838e6557d355ad79c4e3c5dd39119660c859e290459",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen2_medium_common/readout_progen2-medium_common.json": "eb6e445d842a9e4ef12b8a7b8a78ce4f3235f220d80c39aef9773c622bf49962",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen2_small_common/readout_progen2-small_common.json": "716b592f3ef787aa25263966e58f11622581c12360533bd283a49fea87c03bf8",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen2_xlarge_common/readout_progen2-xlarge_common.json": "c517db78568d438db87edcdfd784d958addbcd36d646471a1e1eb0ca66d1fa2d",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_progen3_112m_common/readout_progen3-112m_common.json": "b0c276e36810c270e756e8e27cbf9521cf700c270a66692f1001554848494df1",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_protgpt2_common/readout_protgpt2_common.json": "33b09d2630e380005e35144b8b3ef6bab8af7cc8fa9e617e5e89c3773a5f1ab7",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923122648_b8656cd05924/readout_expand_analysis_rita_xl_common/readout_rita-xl_common.json": "4f2a0433b783b14cbab3cf1833e4ee3cc197ea01eb5dbdc3d4e374231f2ba640",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_bygpt5_base_en_common/readout_bygpt5-base-en_common.json": "4e386403d47516e7fdc6316610327a88dff58065d70e85061c10e8423f8624ed",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_bygpt5_small_en_common/readout_bygpt5-small-en_common.json": "c60fe5c9f07acf1c3cf3571e2fa7468999c5673cdcc3f1c436317c3ce0b2eea2",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_gpt2_common/readout_gpt2_common.json": "b3a2fda34474c4505e39f18273dc8e8967171da9dc470d23e9e38a445893facb",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_gpt2_large_common/readout_gpt2-large_common.json": "b068cb061d680e0860e2f07e4d176e0b634a497bd206dd57b161bf6da56bd97e",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_gpt2_medium_common/readout_gpt2-medium_common.json": "3bd4810e6002d84fed19a1f66d0c341740dd0299b86993b09ede9f0e4b1eb16f",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_gpt2_xl_common/readout_gpt2-xl_common.json": "7babb9455869362e4a3e508565eb74fe6187e5a9fca73f3c396e77313781d446",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_llama_3_2_3b_common/readout_llama-3.2-3b_common.json": "53f2b351fb1ab9c722d339c5bd6329cc4282da1ee772d423dad23d0dab396ef8",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_qwen2_5_0_5b_common/readout_qwen2.5-0.5b_common.json": "3e83bb5b1b4044b330ca34bf39314009c228e2e7abe0fd1b5f02948c4db44d2f",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_qwen2_5_0_5b_instruct_common/readout_qwen2.5-0.5b-instruct_common.json": "ab1982316c94fe1b570ca2ac7d296d0ede1f100e99a62ed35e682d71ba207a5b",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923123458_7ce327eba51e/readout_expand_analysis_qwen3_8b_base_common/readout_qwen3-8b-base_common.json": "93f8f15d77f79d61698e7013b885b72b03742a09a7793a8e48766942f848e939",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_fresh3_analysis_galactica_30b_common/readout_galactica-30b_common.json": "9c94f53bc0f628806514a7eb109c081a8ce71333c87fd07b98c456b9f73dfa87",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_fresh3_analysis_qwen2_5_32b_common/readout_qwen2.5-32b_common.json": "9e09039baa637240855ca54e957fb018b729c5fa99aebf83a160c1c49f1ffbb6",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_k4_analysis_bygpt5_medium_en_common/readout_bygpt5-medium-en_common.json": "d9371fb34d5cdfbf25ec8901f350731c19aee38b9747c18fa1b162e9df3018e2",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_k4_analysis_dialogpt_small_common/readout_dialogpt-small_common.json": "4385969bf00c372cc70b154608f2c1580376bdc561f37b1400bf73102f7d0224",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_k4_analysis_galactica_125m_common/readout_galactica-125m_common.json": "599228a3d51da37b934d93082b54db6d8461583bbcf27fdd1470946538a37f35",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_retry_analysis_protgpt3_1_3b_common/readout_protgpt3-1.3b_common.json": "98c16680dc80dbc152c8d9dff2732ebf0b10ae42ae2104271d1e68b5cfdf8193",
+    "results/R2/readout_expansion_20260923/complete/results/external_baseline/20260923130346_427a4ba992c9/readout_retry_analysis_qwen2_5_7b_common/readout_qwen2.5-7b_common.json": "65ffefba80f96e9919c93823b2268273f936033be4289f67d0f7c15071400c46",
+    "results/R2/repr_behaviour_gap_20260926/gap_direct_contrast.json": "d02eb6d27d66fea0263e2499c43a35db45350fd479a14dcb1c95268258871322",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-base-en.json": "ab6fae0b6bd2a81a29bbf58db85ff9a4fb2bff4d332c2de4363f163d8a069b08",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-medium-en.json": "4b7b7f46562d8c7ef47bfc24d011e29ecb58f63e26ef8a97447881a484d1d700",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-small-en.json": "1363cfe92b0d366d7da7969835bb61409a953d50812e64d0df230cc3f6ff0ab0",
+    "results/R1/external_confirmation_20260924/fits/fit_dialogpt-small.json": "a1d720db9345d72ae278e2bc679b3ad94674afe4ab1e18b3b0eaa957673fe421",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-1.3b.json": "198acee4fb41e0a87184f46576caf1dadf53b06bb850b4a2caf1da9df8a6c47a",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-125m.json": "2275c2667227c9c436aad8c4fab6e588ecfd86c5e3a852bf70b5bb199306bcfb",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-30b.json": "c3e91916cdaf4f09612bc94f4195d084e585039b3c4c49804b470b6deafb3982",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-6.7b.json": "296042c1de9991174e5626ba8858c69ca3e2e76c2c7ceb5bb04a1110a7c4a2d7",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-large.json": "16b6ae3db2fb201ad70f1240898d7699b45e82551e529fa0030e3c05095ab6e5",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-medium.json": "85e0c171ae2d19bfd6a5e8640e569d079a045ce7c23f9aa9f290121d05952d7f",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-xl.json": "fd2190e8f6e67aca9ab510d81e03abec85d9b549c23b30c18224fd288e490b2b",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2.json": "e421adf45f3a807d918f24964c8aed8b63dc51986b4859ef0366effb2391bd85",
+    "results/R1/external_confirmation_20260924/fits/fit_instructprotein.json": "40663271b165e24aea63b650388654872d21e2a7d3052a3c016f6698299e1cf7",
+    "results/R1/external_confirmation_20260924/fits/fit_llama-2-7b.json": "93690f6214e87655e486707aceb78433261be5376c4ad0276c02240152964c78",
+    "results/R1/external_confirmation_20260924/fits/fit_llama-3.2-3b.json": "8d6f7b2a91fc01a539abc727abaeb53565a5911c746bb4740c0a7f2ffaa630ca",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-base.json": "5018aff2ba949136a5079826ed212ddfe6928fa7c4f07b2de685797ff697cb76",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-large.json": "e07f6a689e14b2659da86d001d09eaa919b0449f4f71d6e3b377689c6556fab4",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-medium.json": "d58b5159ac108a9e4ec77fbc5696133441170e420f2c933b63199852b5dec77d",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-small.json": "400d0889b04af5f15f039c1cbd52730c79422d5f8aa9e5338f8d6236575d8872",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-xlarge.json": "1f876e35c6b674d70d5609a0c0fef455b2faf7d189bf78844a6bfa34d7505743",
+    "results/R1/external_confirmation_20260924/fits/fit_progen3-112m.json": "133dc7e7d1004e0359f191b675fceb65c2d9854998e632a01f4d7c4ead4d45b6",
+    "results/R1/external_confirmation_20260924/fits/fit_progen3-3b.json": "922c123e060070a21a1676fbb190bde3a70374c79cec741d346a004b74862290",
+    "results/R1/external_confirmation_20260924/fits/fit_prollama-stage-1.json": "98a6214113b605c47df5cb08f3b712c13e3d1e5e2b14ba407765e8c2ae08fd98",
+    "results/R1/external_confirmation_20260924/fits/fit_prollama.json": "844f32fee2311de7d14be96f0aeac5e67035bc5a8c771c1c88eff9019e8590ee",
+    "results/R1/external_confirmation_20260924/fits/fit_proteinglm-7b-clm.json": "237020a44441b208fc3a7085e8c4e037c28ef793a8010034e0a028733f7f5cce",
+    "results/R1/external_confirmation_20260924/fits/fit_protgpt2.json": "cf6c5ee6a5d20a2b4a3a0df96667f04d854a56b4db678c87b77be7e17cf94d02",
+    "results/R1/external_confirmation_20260924/fits/fit_protgpt3-1.3b.json": "75f1e96e325abbad998e9b2c359565fe012e45b83d40708815852f3b7b803fb6",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-0.5b-instruct.json": "a4c5a45075410d91fedb750d5d119779057527e887ed1102befbaea105d1b74d",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-0.5b.json": "386ee4f7687790ce2d8e29cb19c1114e7c302ab12bb8040dbfbfe9b9336b58fe",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-32b.json": "6e767a45e74992643640a11112dbfc7ece0217b35155eb9d86d544001042320e",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-7b.json": "a1d1c216f30fe44524bf03fdb0c3900c20922d6eb2e164ca3f7a74c1595ff84a",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen3-8b-base.json": "544710558f1b10a196682e344760c58e99ef36159d56544a6d67c1c4702a1a9d",
+    "results/R1/external_confirmation_20260924/fits/fit_rita-xl.json": "2a646f2b6c7c7ef460fe81cd9d002d0de9df4f098ee2c5a2d8524de9cfb8979e",
+    "results/R4/stability_likelihood_replay_20260927/panel.json": "1bfd4df0dfb0d44c8b9cdcf71cb97a6c495a4f2f5120a5ce2e1bfcc840c5f004",
+    "results/R4/stability_likelihood_replay_20260927/bygpt5-base-en.json": "e4080e3ca409a1fd4980803e6b5d271fe598c9cba5dcbd967172c4e7e8450330",
+    "results/R4/stability_likelihood_replay_20260927/bygpt5-medium-en.json": "36819fcc3d9a6d1671a251955686ea97f0a7da2499239512529bb3b43b2c6c2b",
+    "results/R4/stability_likelihood_replay_20260927/bygpt5-small-en.json": "f87faf6e3e94f1c1319033c9d35dc17e70038728bd3b23460ba240f0a63d4ef8",
+    "results/R4/stability_likelihood_replay_20260927/dialogpt-small.json": "92e740ec5db74c3081c604d9caf20049b9cf2c76897b5249af74235b99d10e0f",
+    "results/R4/stability_likelihood_replay_20260927/galactica-1.3b.json": "92d0d419fb9055874263da2d5e35058557981ecba3a5bc4fc47029c4d7020f31",
+    "results/R4/stability_likelihood_replay_20260927/galactica-125m.json": "1f1a7b5625af333b3aa9af7463635c60ca1d8b5c4d9c6993c12052b0a7ec6a13",
+    "results/R4/stability_likelihood_replay_20260927/galactica-30b.json": "35cd3da54ea7ca72d9492a3753c56cc6fccfff164b449cdeb4858fc366a3cb56",
+    "results/R4/stability_likelihood_replay_20260927/galactica-6.7b.json": "67437ab2f017e79e9bfa78cd4ba12d2761a9ec6ad6e455ca13322cea4314a4bf",
+    "results/R4/stability_likelihood_replay_20260927/gpt2.json": "14d6c9ae009888eef94a31828faae25f7b4c880578846676d1811f573bc871e8",
+    "results/R4/stability_likelihood_replay_20260927/gpt2-large.json": "69c51efec6a3428349dd78b1049fa4a34ad327dfd657ee6dbf211b80aad54b2f",
+    "results/R4/stability_likelihood_replay_20260927/gpt2-medium.json": "19fa7b681b1eb78cf4885f08db4120411163bfbdcecee501c2c798e9aace3a34",
+    "results/R4/stability_likelihood_replay_20260927/gpt2-xl.json": "126d16b70f82834709b7589e8f8e7a4266e2cbd0507118d416bb87a6a5005d2c",
+    "results/R4/stability_likelihood_replay_20260927/instructprotein.json": "741cfe148225c9f2e200e3aa2c67835f99869994cdbc35cb46ba2efcc6776876",
+    "results/R4/stability_likelihood_replay_20260927/llama-2-7b.json": "189a8959fcd19dd5fea0b382fb300010aa7dc039f5cb26a41ab5dde33decc58c",
+    "results/R4/stability_likelihood_replay_20260927/llama-3.2-3b.json": "8033d8b08be1287df91b43d47e7444b84de5eeb1fc941cbb50ef2dabd5cd8b7d",
+    "results/R4/stability_likelihood_replay_20260927/progen2-base.json": "7507f8e42028da1cf0a63f8e3edcdc926783521df980fe9e441b9802d8283d14",
+    "results/R4/stability_likelihood_replay_20260927/progen2-large.json": "8350ad9a910de4ed64a79ceeff9e378694d3a7351a6ad3b9bcc2078a6f86066d",
+    "results/R4/stability_likelihood_replay_20260927/progen2-medium.json": "79af9d171b22d57cbafda74fe497f6a7b3791d87be7eaa98d9564e1d39158a32",
+    "results/R4/stability_likelihood_replay_20260927/progen2-small.json": "acc8a4d78d1b652a9d0161aa6845bf5df1242a977d7f89c534be18f68a5e475d",
+    "results/R4/stability_likelihood_replay_20260927/progen2-xlarge.json": "245587cb620821543e25f15a02f9f03aecd77c5b024713f9417c8f75546e98fe",
+    "results/R4/stability_likelihood_replay_20260927/progen3-112m.json": "da9eb551235649edaf7a67293401040f250e39ab388170fa0e345de3aa19845c",
+    "results/R4/stability_likelihood_replay_20260927/progen3-3b.json": "2631fe8675f19a931dfb828aa78a2e9960d0fff622adab2708293f95b6d299dc",
+    "results/R4/stability_likelihood_replay_20260927/prollama.json": "e29e5763d446f54591ca6491f8b8d066f4d2bab4c7d646c43369cf8915bb377c",
+    "results/R4/stability_likelihood_replay_20260927/prollama-stage-1.json": "c9024f8fa866bfebbc65367ddb7e53a0d2a440918b25cc66d1143c21dd42fe0d",
+    "results/R4/stability_likelihood_replay_20260927/proteinglm-7b-clm.json": "3e807cb9b064dde593d1e408809deca9e28fbdf891f2afe9ad2ff7ec8b40f472",
+    "results/R4/stability_likelihood_replay_20260927/protgpt2.json": "f2a1d342f31a70657360cdbffa7bb2688ffc61cd5ebca8028a61e66189db131a",
+    "results/R4/stability_likelihood_replay_20260927/protgpt3-1.3b.json": "9263455c39bb0eda6234aeaecd423069fd0bc3eb99b644c2b9d0fdb18c0ec436",
+    "results/R4/stability_likelihood_replay_20260927/qwen2.5-0.5b.json": "de6adf7dacd58cba53d34962d9f9258faec24756f7bb1c9e48a7bd240dcec85d",
+    "results/R4/stability_likelihood_replay_20260927/qwen2.5-0.5b-instruct.json": "b42672dfeaa33318d287c264ac7e8d55804486ab2ffe34305d002b3cdf6f4345",
+    "results/R4/stability_likelihood_replay_20260927/qwen2.5-32b.json": "e2dfd5c0e2d6ac79ce079fc222c51f9f4ef25d8661217a8852a1d97cdb8d2e63",
+    "results/R4/stability_likelihood_replay_20260927/qwen2.5-7b.json": "e508ef044748f29c5018998cd352aef1f7d8f547ca68b1b281722208e98bdaa8",
+    "results/R4/stability_likelihood_replay_20260927/qwen3-8b-base.json": "75e00d1e9751319fcd9af28f065380dc5af56b22cff5139b83953c909e25699d",
+    "results/R4/stability_likelihood_replay_20260927/rita-xl.json": "5201b91a3a073e33ceff4dd129bdc7bd7f61832c90b1786710243f79454e73d7",
+    "results/R5/context_profile_increment_20260923/20260923075017_68b04c315654/context_profile_increment/profile_increment.json": "bfb467db60043fd583570f941ea61c4aef1ace37be21892e312d8de648f6ed8a",
+    "results/R6/generation_replication_20260927/summary/generation_campaign_summary.json": "b4e103271a78332444407ffd9be86fe53ebf0d88d12ee991b7d8469239f308f6",
+    "results/R1/progen2_scale_20260826/scale_capability.json": "d156af6cbe25f3f76671d7a93600fb0b1e40b6fa1bbe2366c09d5d918b4284a9",
+    "results/R1/progen3_stage_20260917/second_stage_capability/second_stage_capability.json": "18cc1b4774da79f5f233a22d2bbb9d045d966efc882936d79b0518fa67ba67c2",
+    "results/R1/adaptation_lineage_20260813/adaptation_stage_capability.json": "511e40aa983c3a4ca2486a241b25dce5760d77984d21f043c4b1c1621b53bc1a",
+    "results/R1/native_dms_20260913/20260915134508_95c515bf6881/rita_xl_independent_analyse/native_dms_comparison.json": "c826865cffc1057cb0b61b9ea6e9885787f188fcb3495048c240f057a10a7377",
+    "results/R1/source_recovery_20260917/galactica_native_dms_comparison.json": "38cb2b5dd549ef3e4b9f9fbb9e362a025c9a61f7ac94b1e9c204bc48b6ff7d84",
+    "results/R1/source_recovery_20260917/proteinglm_retrieval_bound.json": "de08ee2921003c557659a33e9d305d897c0c0202b8106bc6826628fa45f1dc78",
+    "results/R1/source_recovery_20260917/text_aa_analyse.json": "c94e3c2febc3f158def049948f11eae010681dc6ae22c8b9556ca7289693c2ac",
+    "results/R6/generation_evidence_20260905/analysis/20260904232436_00129607e3c7/main/generation_biology_analysis.json": "d442aa8113b6d7ec9cbd3924358d245d2e7fe7e2cc3544551e80d45d1225f3c7",
+    "results/R6/unconditional_diversity_20260919/unconditional_diversity.json": "0c66754b910630869d24499c82ad3c4c02ca2dce83179201084799e5820d9c56",
+    "results/R6/unconditional_diversity_3b_20260919/unconditional_diversity.json": "e11b1f43f3f74eb326d71cf7469aa20783cfba8d9e90a3ed7d0bf17595f82dc2",
+    "results/R6/generative_control_20260924/gate_endpoints.json": "32e1364dbe3541ff7ed6fc101aeb6fef59a20d129ba3b64714fa2705be896be4"
+  },
+  "renderer_sha256": {
+    "scripts/capability/reporting/render_figures.py": "600515f947ca89af1b57182a4feb687d60e3fa0147f99a8b1be367f720e7218f",
+    "scripts/capability/reporting/palette.py": "635b4c1eec231211d93b579defb747596a0aed6b5a985fec3442fbb66e938c08",
+    "scripts/capability/reporting/checkpoint_labels.py": "ec58198f87d3a01b2e6b2bcf3b1ed1b70c0591ccb13dcaa13607590129f89a8c",
+    "scripts/capability/reporting/publication_paths.py": "b9b87132dc41421e6227958198f7eb7aa164db7747b7fb36d8fa30ef34cf220e"
   },
   "insertion_width_inches": 5.14,
-  "insertion_height_cap_inches": 4.74,
-  "minimum_font_points": 8.0,
-  "scope": "No inference or model training was rerun. Geometry checks do not certify scientific provenance."
+  "minimum_font_points": 7.0,
+  "panel_letter_points": 8.0,
+  "typography_policy": "Nature official specifications: 5\u20137 pt non-panel text, 8 pt bold lower-case panels; adopted 7/8 pt",
+  "typography_source": "https://research-figure-guide.nature.com/figures/preparing-figures-our-specifications",
+  "scope": "Retained estimates only; no inference, model scoring, fitting or resampling. Figure 1 is external."
 }

@@ -1,0 +1,37 @@
+{
+  "schema": "manuscript-structure-insets-v1",
+  "images": {
+    "dvl1-abundance": {
+      "file": "dvl1-abundance.png",
+      "sha256": "9c809dfd559edab2051be4c0dd22c5f35021ebe9c3d7c8163932e356b46823c7",
+      "record_id": "O14640_PF00595_246:G31V"
+    },
+    "1ufm-stability": {
+      "file": "1ufm-stability.png",
+      "sha256": "290d88c210c5b20307e468245b66b6437d101d00162d49aa5080cd0796881e97",
+      "record_id": "1UFM.pdb:F59Q"
+    },
+    "1ufm-pair": {
+      "file": "1ufm-pair.png",
+      "sha256": "269be6c1de50898ad4b00ff7fda1573ef97e4f13ab5b4d2eecc502c3d8b907d7",
+      "record_id": "1UFM.pdb:Q49E:R55E"
+    }
+  },
+  "source_selection": {
+    "path": "manuscript/assets/selection.json",
+    "sha256": "a327cc5a79737b5b24d7a1f104abc7dd33a1f3d22f10abff287da4e1fdb65bdd"
+  },
+  "coordinate_sources": {
+    "dvl1": {
+      "accession": "O14640",
+      "path": "data/alphafold/AF-O14640-F1-model_v6.pdb.gz",
+      "sha256": "0e505d000fafbb45fe77eef96e86e3d6f556340dccd303b305067125ef91a6e0"
+    },
+    "pci": {
+      "accession": "1UFM",
+      "path": "archive/logs/shared/gate_structure_contact_20260924/structures/1UFM.cif.gz",
+      "sha256": "fd3793407066da7a58bffc2284a2925883e4f931063084c057f01bf1378b34fd"
+    }
+  },
+  "provenance": "unchanged WT; illustrative; marked/no-text images"
+}

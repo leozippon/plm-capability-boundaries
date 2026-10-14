@@ -67,7 +67,7 @@ Run every entry point from the repository root and read its declared inputs from
 python scripts/capability/context/analyse_crossed_controls.py --help
 ```
 
-Three files under `scripts/capability/reporting/` are not entry points and do not answer `--help`. `current_manuscript_quantities.py` and `followup_quantities.py` are modules that `build_derived_numbers.py` imports, and `build_ncs_figures.py` runs to completion with an optional `--from-source-data`. Everything else under `scripts/` takes `--help`.
+Reporting helpers, including `current_manuscript_quantities.py`, `followup_quantities.py` and the shared palette definitions, are imported modules rather than commands. The historical `build_ncs_figures.py` extractor runs to completion with an optional `--from-source-data` instead of providing `--help`. Other entry points take `--help`.
 
 Three entry points are not category-specific:
 
@@ -81,7 +81,17 @@ Checkpoint weights, model directories and dataset paths are environment variable
 
 ## Figures
 
-`scripts/capability/reporting/figure_data/` holds the plotted source tables for the manuscript figures, with the rendered SVG and PNG previews: `main/` for the five main figures and `ncs/` for the supplementary ones. `render_figures.py` redraws the main figures from `main/`, and `render_ncs_figures.py` redraws the supplementary figures from `ncs/`. Neither rescores a checkpoint. Both write their PDFs under `manuscript/figures/`, which they create if it is absent. `build_ncs_figures.py` extracts the supplementary source tables from retained run outputs that are not distributed, so on a clone only `build_ncs_figures.py --from-source-data`, which hands over to the renderer, runs. `validate_manuscript.py` checks the manuscript sources and figure provenance against `figure_data/` and needs the manuscript directory, which is not distributed.
+`scripts/capability/reporting/figure_data/` holds the source tables and SVG/PNG previews: `main/` for the five main figures and `ncs/` for four supplementary figures. The full quantitative renderer redraws Figs. 2–5 and all four supplementary figures from distributed tables and bundled illustrative inputs, without opening raw results, rescoring checkpoints or resampling observations:
+
+```bash
+python scripts/capability/reporting/render_figures.py
+```
+
+PDFs are written under `manuscript/submission/figures/`, alongside the buildable LaTeX submission; editable handoff exports remain under `manuscript/figures/`. Short checkpoint labels share one full-name key, exported as `figure_data/checkpoint-name-key.csv` and a supplementary LaTeX table. Verified illustrative WT insets are bundled under `figure_data/structure-insets/` with image digests and coordinate provenance. `render_ncs_figures.py` remains a supplementary-only entry point; run the full renderer first after changing rendering code or shared styling. Source extraction is separate: `render_figures.py --refresh-source-tables` explicitly refreshes the clean-interaction and position-support tables from local retained receipts. `build_ncs_figures.py` extracts other supplementary sources from non-distributed run outputs; its `--from-source-data` option instead hands over to the retained-source renderer.
+
+Fig. 1 is assembled separately by `render_framework.py`: it embeds the author's current `manuscript/assets/framework-original.png` directly and adds a results-summary band. The supplied PNG is an input, never an output destination. `render_framework_structures.py` separately produces source-linked illustrations with CPU PyMOL; regenerating these requires local coordinates and retained records. Structure selection, exact residue mapping and unchanged-WT overlays are recorded with source hashes. Bundled derived insets allow the quantitative figures to render without those private inputs.
+
+Shared palette definitions keep repeated visual roles consistent across generated graphics, and signed heat maps map zero exactly to white. The supplied framework retains its original colors. Generated text uses editable 7 pt body labels and 8 pt bold panel letters at manuscript insertion size; the original framework's burned-in text is outside that certificate. Its native raster resolution is reported separately from the 450 dpi composite preview. Render receipts bind source inputs, renderer dependencies and output files. `validate_manuscript.py` checks current manuscript structure, provenance, generated-text typography and layout while reporting the supplied-raster limitations explicitly. It requires the non-distributed manuscript directory and does not certify scientific completeness or author approval.
 
 ## Tests
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the manuscript against the derived-number table.
 
-Reads ``manuscript/`` read-only and refuses when any of the
+Reads ``manuscript/submission/`` read-only and refuses when any of the
 following does not hold:
 
 * **traceability** --- every number in the manuscript's prose, tables and
@@ -42,8 +42,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.capability.core.evidence_ledger import REPO_ROOT, load_table  # noqa: E402
+from scripts.capability.reporting import publication_paths  # noqa: E402
 
-MANUSCRIPT = REPO_ROOT / "manuscript"
+MANUSCRIPT = REPO_ROOT / publication_paths.SUBMISSION
 EVIDENCE = REPO_ROOT / 'results/shared/manuscript_evidence_20260927'
 SOURCES = ("main.tex", "supplementary-information.tex")
 
@@ -318,6 +319,16 @@ class Index:
         return self.bounds.get((decimals, value), [])
 
 
+def paired_interval_candidates(candidates: list[dict], interval: re.Match) -> list[dict]:
+    """Attribute a point by both ordered bounds at their quoted precision."""
+    low, low_decimals = parse(interval.group(1))
+    high, high_decimals = parse(interval.group(2))
+    return [entry for entry in candidates
+            if entry.get("interval_low") is not None and entry.get("interval_high") is not None
+            and round(entry["interval_low"], low_decimals) == low
+            and round(entry["interval_high"], high_decimals) == high]
+
+
 def _words(text: str) -> set[str]:
     return {re.sub(r"[^a-z0-9]", "", word) for word in text.lower().split()}
 
@@ -481,8 +492,25 @@ def check(directory: Path = EVIDENCE, manuscript: Path = MANUSCRIPT) -> dict[str
                 if not token or token in "+-":
                     continue
                 matches = index.candidates(token) or index.tiny_candidates(token)
-                candidates, strong = attributable(token, matches, scope_words)
                 inside = any(start <= match.start() < end for start, end in intervals)
+                if not inside:
+                    following = re.search(r"[^\s$]", scope[match.end():])
+                    paired = INTERVAL.match(scope, match.end() + following.start()) if following else None
+                    if paired and matches:
+                        narrowed = paired_interval_candidates(matches, paired)
+                        if not narrowed:
+                            traced += 1
+                            findings.append({
+                                "check": "point_interval_mismatch", "source": name,
+                                "scope_kind": kind, "token": token,
+                                "interval": paired.group(0),
+                                "detail": "the ordered pair of quoted bounds matches no interval "
+                                          "for this point at the bounds' stated precision",
+                                "context": scope.strip()[:220],
+                            })
+                            continue
+                        matches = narrowed
+                candidates, strong = attributable(token, matches, scope_words)
                 if not candidates:
                     if attributable(token, index.bound_candidates(token), scope_words)[0]:
                         traced += 1

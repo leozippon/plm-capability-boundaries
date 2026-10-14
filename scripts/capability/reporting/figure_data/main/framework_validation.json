@@ -1,0 +1,346 @@
+{
+  "schema": "supplied-raster-composite-validation-v1",
+  "scope": "generated summary only; no inferential intervals",
+  "source_sha256": {
+    "manuscript/assets/framework-original.png": "cb80616065ab64bbc0e50df0ad25ebdc15dc4a40d5d6b8f7b21cc06b6c361300",
+    "scripts/capability/reporting/palette.py": "635b4c1eec231211d93b579defb747596a0aed6b5a985fec3442fbb66e938c08",
+    "scripts/capability/reporting/publication_paths.py": "b9b87132dc41421e6227958198f7eb7aa164db7747b7fb36d8fa30ef34cf220e",
+    "manuscript/assets/selection.json": "a327cc5a79737b5b24d7a1f104abc7dd33a1f3d22f10abff287da4e1fdb65bdd",
+    "scripts/capability/reporting/figure_data/main/local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
+    "results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/local_context_measurement.json": "6d18d2f40c99e6c969121d0806794c8dd4017af4ef3bc344093e7014b160447e",
+    "results/shared/manuscript_evidence_20261004/derived-numbers.csv": "0b5364ce77d1bda9d4baf6324a90db20afae2f3734512820cbe5cd0963748c78",
+    "results/R1/position_terms_20260926/position_simultaneous.json": "adc04054ea5ad55b5dd5f1be2d70ca4c1d3c62b2b9371defd5cc3cd16c0752e8",
+    "scripts/capability/reporting/figure_data/main/external-abundance-source.csv": "3201673259b9d85fb5acde336234d93b704b6ccb28655fcca18fa0a8c354f349",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-base-en.json": "ab6fae0b6bd2a81a29bbf58db85ff9a4fb2bff4d332c2de4363f163d8a069b08",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-medium-en.json": "4b7b7f46562d8c7ef47bfc24d011e29ecb58f63e26ef8a97447881a484d1d700",
+    "results/R1/external_confirmation_20260924/fits/fit_bygpt5-small-en.json": "1363cfe92b0d366d7da7969835bb61409a953d50812e64d0df230cc3f6ff0ab0",
+    "results/R1/external_confirmation_20260924/fits/fit_dialogpt-small.json": "a1d720db9345d72ae278e2bc679b3ad94674afe4ab1e18b3b0eaa957673fe421",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-1.3b.json": "198acee4fb41e0a87184f46576caf1dadf53b06bb850b4a2caf1da9df8a6c47a",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-125m.json": "2275c2667227c9c436aad8c4fab6e588ecfd86c5e3a852bf70b5bb199306bcfb",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-30b.json": "c3e91916cdaf4f09612bc94f4195d084e585039b3c4c49804b470b6deafb3982",
+    "results/R1/external_confirmation_20260924/fits/fit_galactica-6.7b.json": "296042c1de9991174e5626ba8858c69ca3e2e76c2c7ceb5bb04a1110a7c4a2d7",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-large.json": "16b6ae3db2fb201ad70f1240898d7699b45e82551e529fa0030e3c05095ab6e5",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-medium.json": "85e0c171ae2d19bfd6a5e8640e569d079a045ce7c23f9aa9f290121d05952d7f",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2-xl.json": "fd2190e8f6e67aca9ab510d81e03abec85d9b549c23b30c18224fd288e490b2b",
+    "results/R1/external_confirmation_20260924/fits/fit_gpt2.json": "e421adf45f3a807d918f24964c8aed8b63dc51986b4859ef0366effb2391bd85",
+    "results/R1/external_confirmation_20260924/fits/fit_instructprotein.json": "40663271b165e24aea63b650388654872d21e2a7d3052a3c016f6698299e1cf7",
+    "results/R1/external_confirmation_20260924/fits/fit_llama-2-7b.json": "93690f6214e87655e486707aceb78433261be5376c4ad0276c02240152964c78",
+    "results/R1/external_confirmation_20260924/fits/fit_llama-3.2-3b.json": "8d6f7b2a91fc01a539abc727abaeb53565a5911c746bb4740c0a7f2ffaa630ca",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-base.json": "5018aff2ba949136a5079826ed212ddfe6928fa7c4f07b2de685797ff697cb76",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-large.json": "e07f6a689e14b2659da86d001d09eaa919b0449f4f71d6e3b377689c6556fab4",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-medium.json": "d58b5159ac108a9e4ec77fbc5696133441170e420f2c933b63199852b5dec77d",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-small.json": "400d0889b04af5f15f039c1cbd52730c79422d5f8aa9e5338f8d6236575d8872",
+    "results/R1/external_confirmation_20260924/fits/fit_progen2-xlarge.json": "1f876e35c6b674d70d5609a0c0fef455b2faf7d189bf78844a6bfa34d7505743",
+    "results/R1/external_confirmation_20260924/fits/fit_progen3-112m.json": "133dc7e7d1004e0359f191b675fceb65c2d9854998e632a01f4d7c4ead4d45b6",
+    "results/R1/external_confirmation_20260924/fits/fit_progen3-3b.json": "922c123e060070a21a1676fbb190bde3a70374c79cec741d346a004b74862290",
+    "results/R1/external_confirmation_20260924/fits/fit_prollama-stage-1.json": "98a6214113b605c47df5cb08f3b712c13e3d1e5e2b14ba407765e8c2ae08fd98",
+    "results/R1/external_confirmation_20260924/fits/fit_prollama.json": "844f32fee2311de7d14be96f0aeac5e67035bc5a8c771c1c88eff9019e8590ee",
+    "results/R1/external_confirmation_20260924/fits/fit_proteinglm-7b-clm.json": "237020a44441b208fc3a7085e8c4e037c28ef793a8010034e0a028733f7f5cce",
+    "results/R1/external_confirmation_20260924/fits/fit_protgpt2.json": "cf6c5ee6a5d20a2b4a3a0df96667f04d854a56b4db678c87b77be7e17cf94d02",
+    "results/R1/external_confirmation_20260924/fits/fit_protgpt3-1.3b.json": "75f1e96e325abbad998e9b2c359565fe012e45b83d40708815852f3b7b803fb6",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-0.5b-instruct.json": "a4c5a45075410d91fedb750d5d119779057527e887ed1102befbaea105d1b74d",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-0.5b.json": "386ee4f7687790ce2d8e29cb19c1114e7c302ab12bb8040dbfbfe9b9336b58fe",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-32b.json": "6e767a45e74992643640a11112dbfc7ece0217b35155eb9d86d544001042320e",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen2.5-7b.json": "a1d1c216f30fe44524bf03fdb0c3900c20922d6eb2e164ca3f7a74c1595ff84a",
+    "results/R1/external_confirmation_20260924/fits/fit_qwen3-8b-base.json": "544710558f1b10a196682e344760c58e99ef36159d56544a6d67c1c4702a1a9d",
+    "results/R1/external_confirmation_20260924/fits/fit_rita-xl.json": "2a646f2b6c7c7ef460fe81cd9d002d0de9df4f098ee2c5a2d8524de9cfb8979e",
+    "results/R4/stability_likelihood_replay_20260927/panel.json": "1bfd4df0dfb0d44c8b9cdcf71cb97a6c495a4f2f5120a5ce2e1bfcc840c5f004",
+    "scripts/capability/reporting/figure_data/main/clean-interaction-source.csv": "0c9b4bdab20262b480a49778ce197e74fc5df9f1a26a8b091e4731ea5b54cd89",
+    "results/R3/pairwise_residual_full_panel_indel_excluded_20260928/panel.json": "b41babef64c83bda80354b07481a016982d51fd141b553c7a6057631e2f6f911",
+    "scripts/capability/reporting/figure_data/main/context-ranking-source.csv": "a56873665077a3fc95caac0b4b96fa9c84e7a7dc1c3dbb8f803abe700c79822e",
+    "results/R5/context_profile_increment_20260923/20260923075017_68b04c315654/context_profile_increment/profile_increment.json": "bfb467db60043fd583570f941ea61c4aef1ace37be21892e312d8de648f6ed8a",
+    "scripts/capability/reporting/figure_data/main/generation-streams-replot.csv": "a520eed7b207002edfd5fbf82e4250e907fbcdd866cbed42f087194c1d68d449",
+    "results/R6/generation_replication_20260927/summary/generation_campaign_summary.json": "b4e103271a78332444407ffd9be86fe53ebf0d88d12ee991b7d8469239f308f6"
+  },
+  "renderer_path": "scripts/capability/reporting/render_framework.py",
+  "renderer_sha256": "0bfa0824d48702039dd11304bbac465dd0528b4ffd70dd6aab73729bb427606b",
+  "checks": [
+    {
+      "figure": "Fig1_framework",
+      "scope": "supplied-raster-composite",
+      "inferential_intervals": false,
+      "width_inches": 5.147364051473641,
+      "height_inches": 5.903798256537984,
+      "minimum_font_points": 7,
+      "panel_letter_points": 8,
+      "all_text_inside_canvas": true,
+      "all_text_inside_panel": true,
+      "text_text_overlaps": 0,
+      "text_extents": [
+        {
+          "text": "a",
+          "font_points": 8.0,
+          "bbox_points": [
+            9.0,
+            157.68000000000006,
+            14.34,
+            166.32000000000008
+          ]
+        },
+        {
+          "text": "Mutation ranking",
+          "font_points": 7.0,
+          "bbox_points": [
+            23.000000000000004,
+            158.40000000000003,
+            83.12,
+            165.60000000000005
+          ]
+        },
+        {
+          "text": "14/33 positive at all 3 splits",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            146.40000000000006,
+            106.02,
+            153.60000000000005
+          ]
+        },
+        {
+          "text": "Beyond local/profile controls",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            134.40000000000006,
+            108.84,
+            141.60000000000005
+          ]
+        },
+        {
+          "text": "b",
+          "font_points": 8.0,
+          "bbox_points": [
+            194.30510585305112,
+            157.68000000000006,
+            200.0051058530511,
+            166.32000000000008
+          ]
+        },
+        {
+          "text": "Likelihood terms",
+          "font_points": 7.0,
+          "bbox_points": [
+            208.30510585305112,
+            158.40000000000003,
+            266.44510585305113,
+            165.60000000000005
+          ]
+        },
+        {
+          "text": "6 site + 6 downstream gains",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            146.40000000000006,
+            295.5251058530511,
+            153.60000000000005
+          ]
+        },
+        {
+          "text": "No resolved joint-over-full gain",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            134.40000000000006,
+            302.5451058530511,
+            141.60000000000005
+          ]
+        },
+        {
+          "text": "c",
+          "font_points": 8.0,
+          "bbox_points": [
+            9.0,
+            100.68000000000005,
+            13.74,
+            109.32000000000006
+          ]
+        },
+        {
+          "text": "Phenotype extension",
+          "font_points": 7.0,
+          "bbox_points": [
+            23.000000000000004,
+            101.40000000000006,
+            97.04000000000002,
+            108.60000000000007
+          ]
+        },
+        {
+          "text": "Abundance: 14/33 all-split gains",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            89.40000000000005,
+            122.39999999999999,
+            96.60000000000005
+          ]
+        },
+        {
+          "text": "Stability: 2/33 simultaneous positives",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            77.40000000000006,
+            140.7,
+            84.60000000000005
+          ]
+        },
+        {
+          "text": "d",
+          "font_points": 8.0,
+          "bbox_points": [
+            194.30510585305112,
+            100.68000000000005,
+            200.0051058530511,
+            109.32000000000006
+          ]
+        },
+        {
+          "text": "Adjusted interactions",
+          "font_points": 7.0,
+          "bbox_points": [
+            208.30510585305112,
+            101.40000000000006,
+            283.24510585305114,
+            108.60000000000007
+          ]
+        },
+        {
+          "text": "0/33 positive; 1 negative",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            89.40000000000005,
+            281.7851058530511,
+            96.60000000000005
+          ]
+        },
+        {
+          "text": "Clean two-site comparisons",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            77.40000000000006,
+            291.8651058530511,
+            84.60000000000005
+          ]
+        },
+        {
+          "text": "e",
+          "font_points": 8.0,
+          "bbox_points": [
+            9.0,
+            43.68000000000006,
+            14.46,
+            52.32000000000006
+          ]
+        },
+        {
+          "text": "Context / generalization",
+          "font_points": 7.0,
+          "bbox_points": [
+            23.000000000000004,
+            44.400000000000055,
+            107.6,
+            51.60000000000006
+          ]
+        },
+        {
+          "text": "2/4 improve over both references",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            32.400000000000055,
+            126.84,
+            39.60000000000005
+          ]
+        },
+        {
+          "text": "Remote generalization not established",
+          "font_points": 7.0,
+          "bbox_points": [
+            9.0,
+            20.400000000000055,
+            145.02,
+            27.600000000000055
+          ]
+        },
+        {
+          "text": "f",
+          "font_points": 8.0,
+          "bbox_points": [
+            194.30510585305112,
+            43.68000000000006,
+            197.7851058530511,
+            52.32000000000006
+          ]
+        },
+        {
+          "text": "Complete-domain generation",
+          "font_points": 7.0,
+          "bbox_points": [
+            208.30510585305112,
+            44.400000000000055,
+            311.62510585305114,
+            51.60000000000006
+          ]
+        },
+        {
+          "text": "3 positive / 13 negative / 4 unresolved",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            32.400000000000055,
+            329.4851058530511,
+            39.60000000000005
+          ]
+        },
+        {
+          "text": "20 cells; 3 streams; exploratory t",
+          "font_points": 7.0,
+          "bbox_points": [
+            194.30510585305112,
+            20.400000000000055,
+            311.0051058530511,
+            27.600000000000055
+          ]
+        }
+      ],
+      "measured_text_count": 24,
+      "svg_text_editable": "generated summary only",
+      "text_bounds_method": "Agg get_window_extent; strict card containment and pairwise collision checks",
+      "preview_dpi": 450,
+      "pdf_fonttype": 42,
+      "not_certified_scope": "Original supplied-raster text is not editable or font-certified; original colors are not recolored. Preview DPI is not native artwork DPI.",
+      "raster": {
+        "source_path": "manuscript/assets/framework-original.png",
+        "native_dimensions": [
+          1536,
+          1024
+        ],
+        "placement_points": [
+          0,
+          0,
+          370.6102117061022,
+          247.0734744707348
+        ],
+        "effective_dpi": 298.40516129032255,
+        "original_png_bytes_embedded": true,
+        "pixel_identity": true,
+        "interpolation": "none",
+        "native_below_450dpi": true
+      },
+      "separate_structure_selection_path": "manuscript/assets/selection.json",
+      "pdf_path": "manuscript/submission/figures/figure-1-framework.pdf",
+      "pdf_sha256": "b8f9c6a8cf935bb0f1cf8a0d3564a0f52bcaacb86ad2adf730444a9e00bda6d8",
+      "svg_path": "scripts/capability/reporting/figure_data/main/Fig1_framework.svg",
+      "svg_sha256": "3dd4b21ee9c5bae2f6d1c6e8b307fba9861464faa10d72765f037d6d281be70b",
+      "png_path": "scripts/capability/reporting/figure_data/main/Fig1_framework.png",
+      "png_sha256": "d45d01496c2ae185599d3a932e1bcef423d7acfe33adcf28bded03830fe3b058",
+      "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig1_framework-plotted.csv",
+      "plotted_source_sha256": "ef1eae5ab4a6d8fe0af1b2c22067672107a9c8b1e171ab61cac3edf7373273cb"
+    }
+  ]
+}

@@ -200,6 +200,84 @@ class TheCheckerRefusesTheDefectsHandTranscriptionProduced(unittest.TestCase):
         self.assertIn("cross_support_comparison", checks)
         self.assertEqual(report["status"], "refused")
 
+    def test_paired_bounds_disambiguate_points_before_lexical_attribution(self):
+        quantities = [
+            entry(id="campaign/recognition", family="campaign", claim="recognition", value=.05678),
+            entry(id="campaign/yield", family="campaign", claim="yield", value=.03842,
+                  interval_low=.01751, interval_high=.05923),
+            entry(id="readout/contrast", family="readout", value=.038419,
+                  claim="matched decoding recognition and yield differences",
+                  interval_low=.02001, interval_high=.06002, support_id="support_b"),
+        ]
+        words = CHECKER._words("Matched decoding recognition and yield differences")
+        selected, strong = CHECKER.attributable(
+            '0.0384', CHECKER.Index(quantities).candidates('0.0384'), words)
+        self.assertEqual(selected, [quantities[2]])
+        self.assertFalse(strong)
+        policy = dict(CHECKER.default_policy(), interval_convention_statement=None)
+        for point_and_interval in (
+                "0.0384 [0.0175,0.0592]",
+                "$0.0384$ [ $0.0175$ , $0.0592$ ]",
+                "$0.0384 [0.0175,0.0592]$"):
+            with self.subTest(expression=point_and_interval):
+                report = run(
+                    self.case, quantities,
+                    {"support_a": "217 assays in 174 clusters",
+                     "support_b": "201 assays in 163 clusters"},
+                    "Matched decoding recognition and yield differences are "
+                    f"0.0568 [0.0360,0.0789] and {point_and_interval}.", policy)
+                self.assertEqual(report['status'], 'pass', report)
+                self.assertEqual(report['traced_numbers'], 6)
+
+    def test_reversed_or_mismatched_paired_bounds_are_refused(self):
+        # All endpoints individually trace, including the wrong high bound.
+        quantities = [entry(), entry(id="other/contrast", value=.12345,
+                                    interval_low=.01001, interval_high=.08912)]
+        policy = dict(CHECKER.default_policy(), interval_convention_statement=None)
+        for bounds in ("0.07894,0.03601", "0.03601,0.08912"):
+            with self.subTest(bounds=bounds):
+                report = run(self.case, quantities, {"support_a": "fixture"},
+                             f"The contrast is 0.05678 [{bounds}].", policy)
+                self.assertEqual(report['status'], 'refused', report)
+                self.assertEqual(report['findings_by_check'], {'point_interval_mismatch': 1})
+                self.assertEqual(report['untraced_numbers'], 0)
+                self.assertEqual(report['interval_bounds_matching_no_recorded_interval'], 0)
+
+    def test_unpaired_source_value_does_not_borrow_another_records_interval(self):
+        quantities = [
+            entry(interval_low=None, interval_high=None, kind="artifact_leaf"),
+            entry(id="other/contrast", value=.12345),
+        ]
+        report = run(
+            self.case, quantities, {"support_a": "fixture"},
+            "The contrast is 0.05678 [0.03601,0.07894].",
+            dict(CHECKER.default_policy(), interval_convention_statement=None))
+        self.assertEqual(report['status'], 'refused', report)
+        self.assertEqual(report['findings_by_check'], {'point_interval_mismatch': 1})
+        self.assertEqual(report['untraced_numbers'], 0)
+        self.assertEqual(report['interval_bounds_matching_no_recorded_interval'], 0)
+
+    def test_valid_paired_bounds_do_not_permit_a_crossed_support_comparison(self):
+        quantities = [entry(), entry(id="other/contrast", value=.03842,
+                                    interval_low=.01751, interval_high=.05923,
+                                    support_id="support_b")]
+        report = run(
+            self.case, quantities,
+            {"support_a": "217 assays in 174 clusters", "support_b": "201 assays in 163 clusters"},
+            "The contrasts are 0.05678 [0.03601,0.07894] and 0.03842 [0.01751,0.05923].",
+            dict(CHECKER.default_policy(), interval_convention_statement=None))
+        self.assertEqual(report['status'], 'refused', report)
+        self.assertEqual(report['findings_by_check'], {'cross_support_comparison': 1})
+
+    def test_matching_paired_bounds_retain_multiple_candidates(self):
+        quantities = [entry(), entry(id="other/contrast", family="other")]
+        paired = CHECKER.INTERVAL.search('[0.036,0.07894]')
+        narrowed = CHECKER.paired_interval_candidates(quantities, paired)
+        self.assertEqual(narrowed, quantities)
+        selected, strong = CHECKER.attributable('0.05678', narrowed, set())
+        self.assertEqual(selected, quantities)
+        self.assertFalse(strong)
+
     def test_the_same_two_estimates_pass_once_the_comparison_is_declared(self):
         quantities = [
             entry(),

@@ -47,6 +47,8 @@ from src.capability.context.cross_measure_association import (  # noqa: E402
     SEED as CROSS_MEASURE_SEED,
 )
 
+from scripts.capability.reporting import publication_paths  # noqa: E402
+
 OUT_DIR = REPO_ROOT / 'results/shared/manuscript_evidence_20260927'
 FIGURE_DIR = REPO_ROOT / "scripts" / "capability" / "reporting" / "figure_data"
 
@@ -1732,8 +1734,8 @@ def figure_data_contract(artifacts: Artifacts, table: dict[str, object]) -> dict
     figure cannot drift from the evidence without the contract failing. The
     renderer is untouched.
     """
-    main = (REPO_ROOT / "manuscript/main.tex").read_text()
-    supplement = (REPO_ROOT / "manuscript/supplementary-information.tex").read_text()
+    main = (REPO_ROOT / publication_paths.SUBMISSION / "main.tex").read_text()
+    supplement = (REPO_ROOT / publication_paths.SUBMISSION / "supplementary-information.tex").read_text()
     included = re.findall(r"\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}", main + supplement)
 
     tables: dict[str, dict[str, object]] = {}
@@ -1751,20 +1753,15 @@ def figure_data_contract(artifacts: Artifacts, table: dict[str, object]) -> dict
 
     figures: dict[str, object] = {}
     table_root = FIGURE_DIR.relative_to(REPO_ROOT).as_posix()
+    figure_ids = {name: identifier for identifier, name in publication_paths.PDF_NAMES.items()}
     for figure in sorted(set(included)):
-        stem = Path(figure).with_suffix("")
-        # A figure is included from manuscript/figures/ or manuscript/figures/ncs/
-        # while its input tables sit under figure_data/main/ or figure_data/ncs/.
-        # The directory the figure is written to therefore selects the table
-        # directory; it does not hold the tables itself. A figure whose stem
-        # matches no table keeps an empty input list and stays unbound, because
-        # claiming every table in the directory would bind it to evidence it was
-        # not drawn from.
-        leaf = stem.parent.name
-        directory = f"{table_root}/{'main' if leaf == 'figures' else leaf}"
+        # Submission PDF names are presentation-only; retained table IDs and
+        # their main/ncs directories are unchanged. Unknown PDFs stay unbound.
+        identifier = figure_ids.get(Path(figure).name)
+        directory = f"{table_root}/{'main' if identifier and identifier.startswith('Fig') else 'ncs'}"
         inputs = sorted(name for name in tables
-                        if Path(name).parent.as_posix() == directory
-                        and Path(name).name.startswith(stem.name.split(".")[0]))
+                        if identifier is not None and Path(name).parent.as_posix() == directory
+                        and Path(name).name.startswith(identifier))
         figures[figure] = {
             "input_tables": inputs,
             "bound": bool(inputs) and all(
@@ -4502,6 +4499,7 @@ def family_class_axis_consolidation(ledger: Ledger) -> None:
 REPRESENTATION_CONDITIONS = {
     "depth_contrast": "readout_selection",
     "readout": "readout_selection",
+    "controlled_readout_gap": "readout_selection",
     "readout_sweeps": "readout_selection",
     "pairwise": "gate_representation_recomputation",
     "remote_homology": "gate_representation_recomputation",

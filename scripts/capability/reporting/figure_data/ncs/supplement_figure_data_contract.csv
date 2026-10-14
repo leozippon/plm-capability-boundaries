@@ -1,0 +1,5 @@
+figure,source,statistical_unit,uncertainty
+native-comparators,scripts/capability/reporting/figure_data/ncs/native-comparators-plotted.csv,native: checkpoint-specific groups; text: 169 groups,pointwise 95%
+conditional-class-yield,scripts/capability/reporting/figure_data/ncs/conditional-class-yield-plotted.csv,200 attempts per class and condition,descriptive census; no sampling interval
+generation-yield,scripts/capability/reporting/figure_data/ncs/generation-yield-plotted.csv,800 attempts per procedure,descriptive census; no sampling interval
+matched-generators,scripts/capability/reporting/figure_data/ncs/matched-generators-plotted.csv,800 attempts per cell; frozen near-duplicate groups,"97.5% paired percentile intervals, 4000 draws; dots show either-sign exclusion"

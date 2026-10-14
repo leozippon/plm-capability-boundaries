@@ -19,7 +19,8 @@ import glob
 import json
 import os
 
-from src.capability.core.evidence_ledger import Quantity, resolve
+from src.capability.core.evidence_ledger import LedgerError, Quantity, resolve
+from scripts.capability.reporting import publication_paths
 
 FOLLOWUP = "results/shared/followup_support_20260927"
 REPLAY = "results/R4/stability_likelihood_replay_20260927"
@@ -34,6 +35,7 @@ MANIFEST = "configs/generation_replication_manifest.json"
 NATIVE_EXPRESSION = "results/R1/native_expression_strata_20260926/native_expression_conditioned_33arm.json"
 LINEAGE_DECLARATION = f"{FOLLOWUP}/lineage_declaration.json"
 PROGEN3 = "results/R6/progen3_generation_20260905"
+CONTROLLED_GAP = "results/R2/repr_behaviour_gap_20260926/gap_direct_contrast.json"
 
 #: The three split seeds every panel here averages over before resampling.
 SPLIT_SEEDS = (20260923, 20260924, 20260925)
@@ -64,10 +66,13 @@ def add_followup_quantities(ledger) -> None:
     _pairwise_residual_panels(ledger, emit)
     _indel_exclusion(ledger, emit)
     _position_simultaneous(ledger, emit)
+    _position_support_counts(ledger, emit)
     _position_layout(ledger, emit)
     _generation_replication(ledger, emit)
     _native_expression(ledger, emit)
+    _controlled_readout_gap(ledger, emit)
     _native_completion(ledger, emit)
+    _framework_mapping_quantities(ledger, emit)
 
 
 def _emitter(ledger):
@@ -86,6 +91,80 @@ def _emitter(ledger):
             source_path=path, source_sha256=ledger.artifacts.sha256(path),
             source_pointer=tuple(pointer)))
     return emit
+
+
+def _controlled_readout_gap(ledger, emit) -> None:
+    """Bind the retained matched-control difference of increments, not a sweep."""
+    payload = ledger.artifacts.json(CONTROLLED_GAP)
+    arms = payload['gap_arms']
+    if len(arms) != 33:
+        raise LedgerError('controlled readout gap: expected 33 arms')
+    for arm, folds in sorted(arms.items()):
+        if set(folds) != {str(seed) for seed in SPLIT_SEEDS}:
+            raise LedgerError('controlled readout gap: expected three fold seeds')
+        for seed in SPLIT_SEEDS:
+            fold = folds[str(seed)]
+            block = fold['d']
+            if fold['baseline_identity']['control_set'] != 'C_P' or fold['seed'] != str(seed):
+                raise LedgerError('controlled readout gap: unmatched control or fold seed')
+            support = ledger.declare_support(
+                f'controlled_readout_gap/{fold["baseline_identity"]["cohort_sha256"]}',
+                f'Matched C_P support: {block["n_assays"]} assays, '
+                f'{block["n_units"]} wild-type clusters at 50% identity, {block["variants"]} variants; '
+                'paired difference of frozen-state and native-likelihood increments over the same C_P baseline')
+            emit(CONTROLLED_GAP, ('gap_arms', arm, str(seed), 'd', 'point'),
+                 identifier=f'controlled_readout_gap/{arm}/{seed}/d',
+                 claim='(C_P+R minus C_P) minus (C_P+M minus C_P), paired matched-support Spearman increments',
+                 family='controlled_readout_gap', support=support, unit='dimensionless Spearman',
+                 kind='estimate', interval=block['interval'], draws=block['resamples'],
+                 resampling_unit=block['unit'], seed=(seed,), level='representation',
+                 weighting_convention='paired on matched assays; aggregated over held wild-type families')
+
+
+def _framework_mapping_quantities(ledger, emit) -> None:
+    """Enumerate pinned coordinate coverage and identifiers, not biological effects."""
+    path = publication_paths.STRUCTURE_SELECTION.as_posix()
+    payload = ledger.artifacts.json(path)
+    if payload["schema"] != "framework-pinned-structures-v1":
+        raise LedgerError("framework mapping: unsupported selection schema")
+    for source in payload["inputs"].values():
+        if ledger.artifacts.sha256(source["path"]) != source["sha256"]:
+            raise LedgerError(f"framework mapping: source digest mismatch: {source['path']}")
+    support = ledger.declare_support(
+        "framework_mapping", "Pinned framework structures: enumerated mapped residues and "
+        "coordinate/model identifiers; residue indices are not residue counts or biological effects")
+    for name in ("ubc9", "dvl1", "pci"):
+        structure = payload["structures"][name]
+        base = ("structures", name)
+        residue_map = structure["residue_map"]
+        indexed = {str(row["wt_position"]): f"[{i}]" for i, row in enumerate(residue_map)}
+        keys = sorted(indexed, key=int)
+        rows: list[tuple[str, tuple[str, ...], int | None, str, str]] = [
+            ("mapped_residue_count", base + ("residue_map",), len(residue_map),
+                 "residues", "number of mapped coordinate residues, len(residue_map)")]
+        for field in (("coordinate_id", "author_id") if name == "pci" else ("coordinate_id",)):
+            for bound, key in (("first", keys[0]), ("end", keys[-1])):
+                rows.append((f"{field}_{bound}", base + ("residue_map", indexed[key], field),
+                             None, "residue index", f"mapped {field} {bound} index, not a count"))
+        if name == "dvl1":
+            positions = payload["records"][name]["selected"]["positions"]
+            if len(positions) != 1 or str(positions[0]) not in indexed:
+                raise LedgerError("framework mapping: selected DVL1 site is not uniquely mapped")
+            rows.extend([
+                ("selected_domain_position", ("records", name, "selected", "positions", "[0]"),
+                 None, "residue index", "selected substitution domain index, not a count"),
+                ("selected_coordinate_id", base + ("residue_map", indexed[str(positions[0])],
+                                                  "coordinate_id"),
+                 None, "residue index", "selected substitution coordinate index, not a count")])
+        if name == "pci":
+            rows.extend((field, base + (field,), None, unit, claim) for field, unit, claim in (
+                ("model", "model index", "selected deposited model identifier, not an ensemble count"),
+                ("models", "model count", "number of deposited ensemble models")))
+        for field, pointer, value, unit, claim in rows:
+            emit(path, pointer, identifier=f"framework_mapping/{name}/{field}",
+                 claim=f"{name.upper()} framework {claim}", family="framework_mapping",
+                 support=support, unit=unit, value=value, level="measurement",
+                 reason="enumerated mapping" if unit == "residues" else "identifier metadata")
 
 
 # --------------------------------------------------------------------------- #
@@ -465,6 +544,50 @@ def _indel_exclusion(ledger, emit) -> None:
 # --------------------------------------------------------------------------- #
 # Position terms: the simultaneous follow-up and its layout receipts.
 # --------------------------------------------------------------------------- #
+
+def _position_support_counts(ledger, emit) -> None:
+    """Bind primary-fit support extrema to verified, checkpoint-specific leaves."""
+    path = f"{POSITION}/position_simultaneous.json"
+    payload = ledger.artifacts.json(path)
+    arms = payload["arms"]
+    if not arms or len(set(arms)) != len(arms):
+        raise LedgerError(f"{path}: declared arm roster must be nonempty and unique")
+    primary_seed = payload["fold_seeds"][0]
+    records = {}
+    # The bound suffix limits reads to primary fits; the payload must confirm the seed.
+    for source, expected_digest in sorted(payload["source_sha256"].items()):
+        if not source.endswith(f"_fold{primary_seed}.json"):
+            continue
+        fit = ledger.artifacts.json(source)
+        if ledger.artifacts.sha256(source) != expected_digest:
+            raise LedgerError(f"{source}: position support source digest mismatch")
+        arm = fit["arm"]
+        if fit["fold_seed"] != primary_seed:
+            raise LedgerError(f"{source}: position support primary seed mismatch")
+        if arm not in arms or arm in records:
+            raise LedgerError(f"{source}: unexpected or duplicate primary arm {arm!r}")
+        records[arm] = (source, fit)
+    if set(records) != set(arms):
+        raise LedgerError(f"{path}: incomplete primary arm roster; missing {sorted(set(arms) - set(records))}")
+
+    rules = sorted({fit["support_rule"] for _, fit in records.values()})
+    support = ledger.declare_support(
+        "position_primary_aligned_support_range",
+        f"range across checkpoint-specific aligned supports; not a common cohort; "
+        f"{len(arms)} declared arms at primary fold seed {primary_seed}; "
+        "wild-type families at 50% identity; support rules: " + "; ".join(rules))
+    for field, unit in (("variants", "variants"), ("assays", "assays"),
+                        ("families", "wild-type families")):
+        for bound, direction in (("min", 1), ("max", -1)):
+            arm = min(records, key=lambda name: (
+                direction * records[name][1][field], name, records[name][0]))
+            source, _ = records[arm]
+            emit(source, (field,), identifier=f"position_terms/primary_support/{field}/{bound}",
+                 claim=f"{bound} {field} across checkpoint-specific aligned primary position supports",
+                 family="position_terms", support=support, unit=unit, kind="support_count",
+                 seed=(primary_seed,), level="likelihood",
+                 reason="enumerated primary-fit support count; no resampling interval")
+
 
 def _position_simultaneous(ledger, emit) -> None:
     path = f"{POSITION}/position_simultaneous.json"
