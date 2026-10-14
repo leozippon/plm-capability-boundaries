@@ -281,6 +281,7 @@ CODE_PATHS = (
     "scripts/capability/stability/extract_stability_singles.py",
     "scripts/capability/stages/context_homologue.py",
     "src/capability/decoding/guided_decoding.py",
+    "src/capability/decoding/guidance_strength.py",
     "src/capability/context/family_potts.py",
     "src/capability/context/context_homologue.py",
     "src/capability/readouts/readout_extraction.py",

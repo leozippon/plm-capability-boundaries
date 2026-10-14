@@ -195,6 +195,7 @@ from ..context.context_homologue import render_records
 from ..context.family_potts import FamilyModel, encode, guidance_biases
 from ..core.amino_acids import AA20
 from ..generation.unconditional_generation import require_admitted
+from .guidance_strength import StrengthMeter
 
 __all__ = [
     "ARM_CODES",
@@ -1116,6 +1117,32 @@ def _entropy_nats(scores: torch.Tensor) -> float:
     return float(-(probabilities * torch.where(finite, logprobs, torch.zeros_like(logprobs))).sum())
 
 
+def _observe_step(
+    meter: StrengthMeter, decoder: GuidedDecoder, logits: torch.Tensor, mask: np.ndarray,
+    bias: np.ndarray, residues: int,
+) -> None:
+    """Feed one step to the strength meter; the single call both the sampler and the replay make.
+
+    The bias is rounded to float32 first, exactly as :func:`_row_scores` adds it, so
+    the measured guided distribution is the one that was sampled from.
+    """
+
+    ids = torch.as_tensor(decoder.table.ids, dtype=torch.long, device=logits.device)
+    native = logits.index_select(0, ids).to(torch.float32).double().cpu().numpy()
+    meter.add_step(native, bias.astype(np.float32), mask, residues)
+
+
+def _prompt_ids(arm: Any, decoder: GuidedDecoder) -> list[int]:
+    prompt_ids = arm.tokenizer(
+        decoder.layout.prompt,
+        add_special_tokens=require_admitted(arm.name).add_special_tokens,
+        return_tensors=None,
+    )["input_ids"]
+    if not prompt_ids:
+        raise ValueError(f"{arm.name}: the native generation prompt tokenised to nothing")
+    return prompt_ids
+
+
 def _draw_batch(
     *, arm: Any, decoder: GuidedDecoder, seeds: Sequence[int], device: str
 ) -> list[dict[str, Any]]:
@@ -1127,13 +1154,7 @@ def _draw_batch(
     """
 
     size = len(seeds)
-    prompt_ids = arm.tokenizer(
-        decoder.layout.prompt,
-        add_special_tokens=require_admitted(arm.name).add_special_tokens,
-        return_tensors=None,
-    )["input_ids"]
-    if not prompt_ids:
-        raise ValueError(f"{arm.name}: the native generation prompt tokenised to nothing")
+    prompt_ids = _prompt_ids(arm, decoder)
     generators = []
     for seed in seeds:
         generator = torch.Generator(device=device)
@@ -1143,6 +1164,7 @@ def _draw_batch(
     prefixes: list[list[int]] = [[] for _ in range(size)]
     token_ids: list[list[int]] = [[] for _ in range(size)]
     entropies: list[list[float]] = [[] for _ in range(size)]
+    meters = [StrengthMeter() for _ in range(size)]
     applied = [0.0] * size
     done = [False] * size
 
@@ -1165,6 +1187,8 @@ def _draw_batch(
                 if position >= decoder.table.size or int(decoder.table.ids[position]) != token:
                     raise RuntimeError(f"{arm.name}: drew token {token}, which is not a candidate")
                 entropies[row].append(_entropy_nats(scores))
+                _observe_step(meters[row], decoder, logits[row], mask, bias,
+                              int(decoder.table.residue_length[position]))
                 applied[row] += float(bias[position])
                 token_ids[row].append(token)
                 span = decoder.table.residues[position, : decoder.table.residue_length[position]]
@@ -1207,6 +1231,7 @@ def _draw_batch(
                 "token_ids": token_ids[row],
                 "applied_bias": applied[row],
                 "step_entropy_nats": entropies[row],
+                "guidance_strength": meters[row].record(),
             }
         )
     return draws
@@ -1297,6 +1322,64 @@ def generate_cell(
                     "residues_per_token": len(draw["sequence"]) / steps,
                     "token_ids": draw["token_ids"],
                     "step_entropy_nats": draw["step_entropy_nats"],
+                    "guidance_strength": draw["guidance_strength"],
                 }
             )
     return records
+
+
+# --------------------------------------------------------------- the replay
+
+
+def canonical_token_ids(arm: Any, decoder: GuidedDecoder, sequence: str) -> tuple[list[int], str]:
+    """The tokeniser's canonical segmentation of a finished sequence, and how far to trust it.
+
+    A stored record holds the residue string, not the drawn token ids. When every
+    candidate token is one character the segmentation is unique, so the replay is
+    ``"exact"``. Under BPE the canonical encoding may differ from the segmentation
+    that was sampled, so the replay is ``"canonical_reapproximated"`` and measures
+    the strength along an equivalent path, not the sampled one.
+    """
+
+    text = decoder.layout.expected_text(sequence)
+    ids = [int(value) for value in arm.tokenizer(text, add_special_tokens=False)["input_ids"]]
+    if arm.tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False) != text:
+        raise ValueError(f"{arm.name}: the canonical encoding does not decode back to the native layout")
+    exact = int(decoder.table.character_length.max()) == 1
+    return ids, "exact" if exact else "canonical_reapproximated"
+
+
+def replay_strength(*, arm: Any, decoder: GuidedDecoder, token_ids: Sequence[int]) -> dict[str, Any]:
+    """The strength record of a given token path, teacher-forced through the model.
+
+    One forward pass over the prompt and the path yields every step's native
+    logits; admissibility, bias and divergence then go through the same
+    :func:`_observe_step` the sampler uses. A token that is not admissible where it
+    stands, or a path that does not fill the layout exactly, is refused.
+    """
+
+    if not len(token_ids):
+        raise ValueError("a replay needs at least one token")
+    prompt_ids = _prompt_ids(arm, decoder)
+    forced = torch.tensor([prompt_ids + [int(value) for value in token_ids[:-1]]],
+                          dtype=torch.long, device=arm.device)
+    with torch.no_grad():
+        logits = arm.model(input_ids=forced, use_cache=False).logits[0]
+    meter, prefix, offset = StrengthMeter(), [], 0
+    for step, token in enumerate(token_ids):
+        position = int(np.searchsorted(decoder.table.ids, int(token)))
+        if position >= decoder.table.size or int(decoder.table.ids[position]) != int(token):
+            raise ValueError(f"{arm.name}: token {token} at step {step} is not a candidate")
+        mask = decoder.admissible(offset)
+        if not mask[position]:
+            raise ValueError(f"{arm.name}: token {token} at step {step} does not fit the native layout")
+        bias = decoder.token_bias(int(decoder.layout.residues_before[offset]),
+                                  np.asarray(prefix, dtype=np.int64))
+        _observe_step(meter, decoder, logits[len(prompt_ids) - 1 + step], mask, bias,
+                      int(decoder.table.residue_length[position]))
+        prefix.extend(int(code) for code in
+                      decoder.table.residues[position, : decoder.table.residue_length[position]])
+        offset += int(decoder.table.character_length[position])
+    if offset != decoder.layout.characters:
+        raise ValueError(f"{arm.name}: the path covers {offset} of {decoder.layout.characters} characters")
+    return meter.record()
