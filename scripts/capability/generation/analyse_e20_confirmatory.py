@@ -386,6 +386,24 @@ def contrast_table(domains, spec, metric, getter, **kw) -> dict:
     return out
 
 
+def verdict_reason(primary: dict, strata: dict) -> str:
+    """Every condition behind the verdict, with its numbers: unestimable contrasts and over-margin bounds."""
+
+    fired, clear = [], []
+    for model in MODELS:
+        for name in EQUIVALENCE_CONTRASTS:
+            rec, upper = primary[model][name], strata[model]["upper_bound"][name]
+            if upper is None:
+                fired.append(f"{model} {name} unestimable ({rec['reason']})")
+            elif upper >= MARGIN - EPS:
+                fired.append(f"{model} {name} upper bound {upper:+.4f} exceeds margin {MARGIN} by {upper - MARGIN:+.4f}")
+            else:
+                clear.append(f"{model} {name} upper bound {upper:+.4f}")
+    if fired:
+        return "; ".join(fired) + (f". Below margin {MARGIN}: " + "; ".join(clear) if clear else "")
+    return f"all four model-level upper bounds are below margin {MARGIN}: " + "; ".join(clear)
+
+
 def equivalence(primary: dict) -> dict:
     """Headline: achieved upper 95% bounds on C-Pr and F-M. Flag: both models' bounds strictly below +0.05.
 
@@ -413,6 +431,7 @@ def equivalence(primary: dict) -> dict:
     else:
         verdict = VERDICT_INCONCLUSIVE
     out["verdict"] = verdict
+    out["verdict_reason"] = verdict_reason(primary, out["strata"])
     out["verdict_is_secondary_flag"] = True
     return out
 
@@ -532,6 +551,7 @@ def render(result: dict) -> str:
         cells = "  ".join(f"{s}: " + ("unestimable" if u is None else f"{u:+.4f}") for s, u in by_stratum.items())
         lines.append(f"{name:<6}{cells}   (margin {eq['margin_tm']:+.2f})")
     lines.append(f"margin flag (secondary; both models required): {eq['verdict']}")
+    lines.append(f"verdict_reason: {eq['verdict_reason']}")
     return "\n".join(lines)
 
 

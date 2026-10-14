@@ -279,3 +279,18 @@ def test_missing_asset_names_the_option(tmp_path):
     with pytest.raises(FileNotFoundError, match="--records"):
         ana.main(["--records", str(tmp_path / "nope.jsonl"), "--references", str(DEV_REFERENCES),
                   "--out", str(tmp_path / "o.json"), "--permutation-seed", "1"])
+
+
+def test_verdict_reason_names_every_condition_with_numbers():
+    # protgpt2 is short one F domain; progen2-medium carries an F-M effect over the margin
+    rows = [r for r in synthetic({}, model_effects={"progen2-medium": {"F": 0.06}, "protgpt2": {}})
+            if not (r["model"] == "protgpt2" and r["domain"] == "1IFY" and r["arm"] == "F")]
+    eq = run(rows)["equivalence"]
+    assert eq["verdict"] == ana.VERDICT_UNESTIMABLE  # precedence is unchanged
+    reason = eq["verdict_reason"]
+    assert "protgpt2 F-M unestimable (7 domains have a value" in reason and "1IFY" in reason
+    upper = eq["strata"]["progen2-medium"]["upper_bound"]["F-M"]
+    assert f"progen2-medium F-M upper bound {upper:+.4f} exceeds margin 0.05 by {upper - 0.05:+.4f}" in reason
+    assert "progen2-medium C-Pr upper bound" in reason  # the clear bounds are listed too
+    clean = run(synthetic({}))["equivalence"]["verdict_reason"]
+    assert clean.startswith("all four model-level upper bounds are below margin")
