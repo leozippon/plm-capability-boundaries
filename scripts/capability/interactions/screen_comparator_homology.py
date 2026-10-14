@@ -219,6 +219,13 @@ def main() -> None:
     parser.add_argument("--max-residues", type=int, default=85)
     parser.add_argument("--sample", type=int, default=20000,
                         help="seeded cap per source; 0 screens everything")
+    parser.add_argument("--sample-source", action="append", default=[], metavar="NAME=N",
+                        help="override --sample for one source, repeatable. A single global "
+                             "cap is the wrong shape once the sources differ in how much of "
+                             "them the design needs: extending a residue window needs a deep "
+                             "draw of the new source while the pools an earlier cohort was "
+                             "built from must keep the cap that drew them, or they are "
+                             "different pools and nothing is comparable")
     parser.add_argument("--database", type=Path,
                         default=ROOT / "data/homology_db/uniref50_full.dmnd")
     parser.add_argument("--corpus-fasta", type=Path, default=ROOT / "data/uniref50/uniref50.fasta")
@@ -266,13 +273,25 @@ def main() -> None:
     if not sources:
         parser.error("at least one source is required")
 
+    caps = {label: args.sample for label in sources}
+    for item in args.sample_source:
+        if "=" not in item:
+            parser.error(f"--sample-source takes NAME=N; got {item!r}")
+        label, value = item.split("=", 1)
+        if label not in sources:
+            parser.error(f"--sample-source names {label!r}, which is not a screened source")
+        try:
+            caps[label] = int(value)
+        except ValueError:
+            parser.error(f"--sample-source {label!r} needs an integer, got {value!r}")
+
     query = out / "queries.faa"
     screened: dict[str, list[tuple[str, str]]] = {}
     counts: dict[str, int] = {}
     seen: set[str] = set()
     with query.open("w") as handle:
         for label, records in sources.items():
-            drawn, available = subsample(records, limit=args.sample, label=label)
+            drawn, available = subsample(records, limit=caps[label], label=label)
             counts[label] = available
             kept = []
             for name, sequence in drawn:
@@ -366,6 +385,7 @@ def main() -> None:
         "table_sha256": sha256_file(out / TABLE),
         "sources": provenance,
         "sample_cap": args.sample,
+        "sample_cap_per_source": caps,
         "search": {
             "sensitivity": SENSITIVITY, "evalue": EVALUE,
             "max_target_seqs": args.max_target_seqs, "threads": args.threads,
