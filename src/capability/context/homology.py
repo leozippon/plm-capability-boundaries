@@ -1,6 +1,7 @@
 """Sequence search, homology strata and database inputs for capability measurements."""
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import subprocess
@@ -103,10 +104,28 @@ def prepare_diamond(tarball: Path, checksum_file: Path, destination: Path) -> Di
             raise RuntimeError(
                 f"{tarball} holds {len(binaries)} files named 'diamond'; expected exactly one"
             )
-        archive.extractall(path=destination, members=binaries, filter="data")
-    executable = destination / binaries[0].name
+        executable = destination / binaries[0].name
+        # Extract only when the binary is not already the one this tarball holds.
+        # Rewriting it in place is both unnecessary and unsafe: a search running
+        # from this path is *executing* the file, and the kernel refuses to
+        # overwrite a busy executable -- "Text file busy" is how a second stage
+        # using the same aligner fails while the first is still searching, which
+        # it did. Comparing against the member's own digest keeps the verification
+        # exactly as strong as re-extracting would.
+        expected_binary = hashlib.sha256()
+        with archive.extractfile(binaries[0]) as stream:
+            for block in iter(lambda: stream.read(1 << 20), b""):
+                expected_binary.update(block)
+        if not executable.is_file() or sha256_file(executable) != expected_binary.hexdigest():
+            archive.extractall(path=destination, members=binaries, filter="data")
     if not executable.is_file():
         raise RuntimeError(f"extraction did not produce {executable}")
+    if sha256_file(executable) != expected_binary.hexdigest():
+        raise RuntimeError(
+            f"{executable} does not match the binary {tarball} holds; it is in use by "
+            "another process or has been replaced, and this stage will not search with "
+            "an aligner it cannot identify"
+        )
     executable.chmod(0o755)
 
     completed = subprocess.run(
