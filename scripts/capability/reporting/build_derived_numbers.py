@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.capability.core.evidence_ledger import (  # noqa: E402
+    EVIDENCE_DIR,
     REPO_ROOT,
     Artifacts,
     Ledger,
@@ -49,7 +50,6 @@ from src.capability.context.cross_measure_association import (  # noqa: E402
 
 from scripts.capability.reporting import publication_paths  # noqa: E402
 
-OUT_DIR = REPO_ROOT / 'results/shared/manuscript_evidence_20260927'
 FIGURE_DIR = REPO_ROOT / "scripts" / "capability" / "reporting" / "figure_data"
 
 PERCENTILE_95 = "95% percentile"
@@ -4522,7 +4522,7 @@ def assign_representation_conditions(ledger: Ledger) -> None:
         quantity.conditioning = REPRESENTATION_CONDITIONS[quantity.family]
 
 
-def build(out_dir: Path = OUT_DIR) -> dict[str, object]:
+def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     artifacts = Artifacts()
     ledger = Ledger(artifacts)
     admission = f"{READOUT_ROOT}/final_admission.json"
@@ -4588,7 +4588,7 @@ def build(out_dir: Path = OUT_DIR) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, default=OUT_DIR,
+    parser.add_argument("--out-dir", type=Path, default=EVIDENCE_DIR,
                         help="where the derived-number table and figure-data contract are written")
     options = parser.parse_args()
     result = build(options.out_dir)

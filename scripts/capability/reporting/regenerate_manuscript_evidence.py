@@ -30,8 +30,8 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.capability.core.evidence_ledger import REPO_ROOT  # noqa: E402
-from scripts.capability.reporting.build_derived_numbers import OUT_DIR, build  # noqa: E402
+from src.capability.core.evidence_ledger import EVIDENCE_DIR, REPO_ROOT  # noqa: E402
+from scripts.capability.reporting.build_derived_numbers import build  # noqa: E402
 from scripts.capability.reporting.check_manuscript_evidence import check  # noqa: E402
 
 COMPARED_FIELDS = ("value", "unit", "interval_low", "interval_high", "interval_kind",
@@ -90,7 +90,7 @@ def diff_contract(before: dict | None, after: dict) -> dict[str, object]:
     }
 
 
-def regenerate(out_dir: Path = OUT_DIR, *, dry_run: bool = False) -> dict[str, object]:
+def regenerate(out_dir: Path = EVIDENCE_DIR, *, dry_run: bool = False) -> dict[str, object]:
     table_path = out_dir / "derived-numbers.json"
     contract_path = out_dir / "figure-data-contract.json"
     report_path = out_dir / "consistency-report.json"
@@ -132,7 +132,7 @@ def regenerate(out_dir: Path = OUT_DIR, *, dry_run: bool = False) -> dict[str, o
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
+    parser.add_argument("--out-dir", type=Path, default=EVIDENCE_DIR)
     parser.add_argument("--dry-run", action="store_true",
                         help="rebuild into a scratch directory and report the diff only")
     options = parser.parse_args()

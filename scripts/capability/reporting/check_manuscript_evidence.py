@@ -41,11 +41,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.capability.core.evidence_ledger import REPO_ROOT, load_table  # noqa: E402
+from src.capability.core.evidence_ledger import EVIDENCE_DIR, REPO_ROOT, load_table  # noqa: E402
 from scripts.capability.reporting import publication_paths  # noqa: E402
 
 MANUSCRIPT = REPO_ROOT / publication_paths.SUBMISSION
-EVIDENCE = REPO_ROOT / 'results/shared/manuscript_evidence_20260927'
 SOURCES = ("main.tex", "supplementary-information.tex")
 
 #: LaTeX constructs whose numbers are markup rather than evidence. Each is
@@ -447,7 +446,7 @@ def unit_named(unit: str, scope: str) -> bool:
     return False
 
 
-def check(directory: Path = EVIDENCE, manuscript: Path = MANUSCRIPT) -> dict[str, object]:
+def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict[str, object]:
     table = load_table(directory / "derived-numbers.json")
     policy = load_policy(directory)
     index = Index(table["quantities"])
@@ -718,7 +717,7 @@ def _tally(findings: list[dict]) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE)
+    parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE_DIR)
     options = parser.parse_args()
     report = check(options.evidence_dir)
     print(json.dumps({key: report[key] for key in

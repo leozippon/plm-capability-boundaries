@@ -479,7 +479,7 @@ class TheLivePipelineRuns(unittest.TestCase):
     """
 
     def test_the_table_and_the_contract_build_and_the_checker_reports(self):
-        directory = BUILDER.OUT_DIR
+        directory = BUILDER.EVIDENCE_DIR
         if not (directory / "derived-numbers.json").is_file():
             self.skipTest("no derived-number table has been built in this checkout")
         payload = json.loads((directory / "derived-numbers.json").read_text())

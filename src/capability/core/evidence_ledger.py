@@ -25,6 +25,13 @@ import json
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+#: Where the current derived-number table, its figure-data contract and the
+#: checker's report live. Named once, because a generator and a checker that
+#: each carry their own directory literal drift apart silently: the checker then
+#: passes an older table against today's manuscript and reports agreement that
+#: was never computed. Moving the evidence forward is this one line.
+EVIDENCE_DIR = REPO_ROOT / 'results/shared/manuscript_evidence_20261004'
+
 #: The four outcomes the manuscript keeps apart. ``unresolved`` is a statement
 #: about an instrument and ``not_detected`` a statement about a measurement that
 #: resolved against zero; merging them manufactures a result in either
