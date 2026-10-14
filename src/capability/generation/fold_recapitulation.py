@@ -16,7 +16,9 @@ key, a wrong type or an inconsistent record is refused, never skipped.
 ``schema_version``  the literal contract name.
 ``id``              unique non-empty string.
 ``domain``          one of the twelve domains (``1E0L`` or ``1E0L.pdb``).
-``model``           non-empty string (the PLM; ``none`` for arms P and H).
+``model``           non-empty string: the PLM, except that arms P and H are model-independent and
+                    carry exactly ``potts-joint`` and ``natural`` (``MODEL_FREE_ARMS``), labels no
+                    other arm may use.
 ``arm``             one of ``N M C F Pr Cx Cd P H``. Factorial: N native, M Potts
                     fields only, C couplings only, F fields and couplings. Outside it:
                     Pr independent-site profile guidance, Cx permuted-column couplings
@@ -25,7 +27,9 @@ key, a wrong type or an inconsistent record is refused, never skipped.
 ``lambda``          finite number; exactly 0 for N, P, H and > 0 for M, C, F, Pr, Cx, Cd.
 ``seed``            integer.
 ``sequence``        canonical 20-letter residues, length equal to the wild type.
-``native_loglik``   finite number: full-sequence native log-likelihood; null only for P, H.
+``native_loglik``   finite number: full-sequence native log-likelihood; null only for P, H
+                    (they have no language model, so also no ``lambda_fields`` /
+                    ``lambda_coupling``: both null).
 ``guidance_score``  finite number; null only for N, P, H.
 ``mean_step_entropy`` finite number >= 0: mean per-step entropy; null only for P, H.
 ``attempt_budget``  integer >= 1; identical for every record of a (model, domain, arm).
@@ -36,8 +40,11 @@ doses of a guided setting, finite and >= 0. ``lambda`` is then their nominal sin
 must be consistent with the arm. The development sweep runs one arm at several strengths,
 so a **cell** is ``(model, domain, arm, lambda_fields, lambda_coupling)``; ``lambda`` and
 ``attempt_budget`` must be constant within it. Without a pair the key carries ``None``s.
-The evaluation phase has one frozen strength per (model, arm): ``require_frozen_strength``
-refuses more than one, because reading sealed domains at several strengths is selection.
+The evaluation phase has one frozen strength per (model, arm), declared by the protocol's
+``strengths`` list (``parse_strength_declaration``): ``frozen_strength`` is the only pair the primary
+contrasts read; ``dose_response_strengths`` are extra pairs that are descriptive only.
+``require_frozen_strength`` refuses any strength the protocol did not declare, because reading sealed
+domains at an undeclared strength is selection, and ``frozen_rows`` is the only way to the primary rows.
 
 Measured quantities are three distinct endpoints and are never combined:
 ``tm_score`` (primary), ``plddt_mean`` and ``ptm`` (secondary).
@@ -65,6 +72,10 @@ SCHEMA_VERSION = "e20_generated_sequence_v1"
 AA = se.AA_ORDER
 assert AA == "ARNDCQEGHILKMFPSTWYV"
 ARMS = ("N", "M", "C", "F", "Pr", "Cx", "Cd", "P", "H")
+#: Model-independent reference arms and the one ``model`` label each must carry. They have no
+#: language model, hence no native score, entropy or strength pair; ``NULL_OK`` and
+#: ``validate_records`` derive every null exemption from this mapping and from nothing else.
+MODEL_FREE_ARMS = {"P": "potts-joint", "H": "natural"}
 GUIDED_ARMS = ("M", "C", "F", "Pr", "Cx", "Cd")
 FIELDS = (
     "schema_version", "id", "domain", "model", "arm", "lambda", "seed", "sequence",
@@ -72,9 +83,9 @@ FIELDS = (
 )
 #: Arms for which a field is legitimately null (no PLM, or no guidance).
 NULL_OK = {
-    "native_loglik": {"P", "H"},
-    "mean_step_entropy": {"P", "H"},
-    "guidance_score": {"N", "P", "H"},
+    "native_loglik": set(MODEL_FREE_ARMS),
+    "mean_step_entropy": set(MODEL_FREE_ARMS),
+    "guidance_score": {"N", *MODEL_FREE_ARMS},
 }
 
 #: A MSA row is a candidate homolog for novelty only if it covers this fraction
@@ -83,6 +94,13 @@ NULL_OK = {
 MIN_MSA_COVERAGE = 0.5
 #: Declared novelty ceiling: percent identity to every MSA row at or below this.
 NOVELTY_CEILING = 70.0
+#: Declared primary-endpoint stratum: candidates with identity to the wild type strictly below this
+#: percent. Sequence recovery against the wild type is essentially complete by about 64% identity, so
+#: the 70% MSA ceiling above admits copies of the target and does not decontaminate the endpoint.
+IDENTITY_TO_WT_CEILING = 20.0
+#: A domain-cell with fewer admissible candidates than this has no value in that stratum: it is
+#: reported missing, never imputed and never silently included.
+MIN_ADMISSIBLE_PER_CELL = 25
 #: Two sequences of one cell are near-duplicates at or above this identity.
 NEAR_DUPLICATE_IDENTITY = 90.0
 
@@ -119,18 +137,82 @@ def cell_key(row: Mapping[str, Any]) -> tuple:
     return (row["model"], row["domain"], row["arm"], *strength_pair(row))
 
 
-def require_frozen_strength(rows: Iterable[Mapping[str, Any]]) -> None:
-    """Evaluation guard: one strength pair per (model, arm), else the strength was not frozen."""
+def _declared_pair(value: Any, where: str) -> tuple:
+    if not isinstance(value, Mapping) or set(value) != set(OPTIONAL_FIELDS):
+        raise ContractError(f"{where}: a strength is an object with exactly {list(OPTIONAL_FIELDS)}")
+    pair = tuple(value[k] for k in OPTIONAL_FIELDS)
+    if pair == (None, None):
+        return pair
+    if not all(_finite(v) and v >= 0 for v in pair):
+        raise ContractError(f"{where}: a strength pair is two finite numbers >= 0, or two nulls")
+    return tuple(float(v) for v in pair)
 
-    pairs: dict[tuple, set] = defaultdict(set)
+
+def parse_strength_declaration(entries: Any) -> dict[tuple, tuple]:
+    """``(model, arm) -> (frozen pair, dose-response pairs)`` from the protocol's ``strengths`` list.
+
+    Each entry is ``{"model", "arm", "frozen_strength", "dose_response_strengths"?}``. The single
+    ``frozen_strength`` is the only pair eligible for the primary contrasts;
+    ``dose_response_strengths`` are descriptive only. Refused: a repeated (model, arm), a missing
+    or non-object ``frozen_strength``, a repeated dose, and a pair in both places.
+    """
+
+    if not isinstance(entries, list) or not entries:
+        raise ContractError("protocol.strengths must be a non-empty list of per-(model, arm) declarations")
+    out: dict[tuple, tuple] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping) or not {"model", "arm", "frozen_strength"} <= set(entry) \
+                or set(entry) - {"model", "arm", "frozen_strength", "dose_response_strengths"}:
+            raise ContractError(f"protocol.strengths entry {entry!r}: keys must be model, arm, frozen_strength "
+                                "and optionally dose_response_strengths")
+        key = (entry["model"], entry["arm"])
+        where = f"protocol.strengths[{key[0]}|{key[1]}]"
+        if key[1] not in ARMS or key in out:
+            raise ContractError(f"{where}: unknown arm or declared twice")
+        frozen = _declared_pair(entry["frozen_strength"], f"{where}.frozen_strength")
+        doses = entry.get("dose_response_strengths", [])
+        if not isinstance(doses, list):
+            raise ContractError(f"{where}.dose_response_strengths must be a list")
+        doses = tuple(_declared_pair(d, f"{where}.dose_response_strengths") for d in doses)
+        if len(set(doses)) != len(doses):
+            raise ContractError(f"{where}: a dose-response strength is declared twice")
+        if frozen in doses:
+            raise ContractError(f"{where}: strength {frozen} is both the frozen strength and a dose-response strength")
+        out[key] = (frozen, doses)
+    return out
+
+
+def require_frozen_strength(rows: Iterable[Mapping[str, Any]], declared: Any) -> None:
+    """Evaluation guard: every strength in the records was declared, and each arm's frozen one is present.
+
+    A (model, arm) without a declaration, a strength outside ``{frozen_strength} + dose_response_strengths``
+    and a frozen strength with no records are all refused: a dose that the protocol did not pre-declare
+    as frozen can never reach the primary contrasts, however the records were produced.
+    """
+
+    declaration = parse_strength_declaration(declared)
+    seen: dict[tuple, set] = defaultdict(set)
     for row in rows:
-        pairs[(row["model"], row["arm"])].add(strength_pair(row))
-    many = {k: sorted(v, key=str) for k, v in pairs.items() if len(v) > 1}
-    if many:
-        raise ContractError(
-            f"the strength was not frozen: {len(many)} (model, arm) carry more than one strength "
-            f"pair, e.g. {next(iter(many.items()))}; evaluation domains must not be read at several strengths"
-        )
+        seen[(row["model"], row["arm"])].add(strength_pair(row))
+    for key, pairs in sorted(seen.items(), key=str):
+        if key not in declaration:
+            raise ContractError(f"(model, arm) {key} has records but no declared frozen_strength")
+        frozen, doses = declaration[key]
+        undeclared = sorted(pairs - {frozen, *doses}, key=str)
+        if undeclared:
+            raise ContractError(
+                f"the strength was not frozen: (model, arm) {key} carries undeclared strength pair(s) "
+                f"{undeclared}; evaluation domains must not be read at a strength the protocol did not declare"
+            )
+        if frozen not in pairs:
+            raise ContractError(f"(model, arm) {key}: no records at its frozen_strength {frozen}")
+
+
+def frozen_rows(rows: Iterable[Mapping[str, Any]], declared: Any) -> list[Mapping[str, Any]]:
+    """The rows at each (model, arm)'s frozen strength: the only rows a primary contrast may read."""
+
+    declaration = parse_strength_declaration(declared)
+    return [r for r in rows if strength_pair(r) == declaration[(r["model"], r["arm"])][0]]
 
 
 def domain_id(name: str) -> str:
@@ -163,6 +245,15 @@ def load_wild_types(fasta: Path, option: str = "--wild-type-fasta") -> dict[str,
     if len(wild) != 12:
         raise ValueError(f"expected twelve wild-type domains, found {len(wild)}")
     return wild
+
+
+def load_strengths(protocol: Path, option: str = "--protocol") -> Any:
+    """The protocol's ``strengths`` declaration, raw; ``parse_strength_declaration`` validates it."""
+
+    declared = json.loads(require_asset(protocol, option).read_text()).get("strengths")
+    if declared is None:
+        raise ContractError(f"{protocol} declares no ``strengths``; the evaluation phase needs a frozen_strength per arm")
+    return declared
 
 
 def load_roles(protocol: Path, option: str = "--protocol") -> dict[str, str]:
@@ -206,6 +297,10 @@ def validate_records(rows: Sequence[Mapping[str, Any]], wild_types: Mapping[str,
         arm = row["arm"]
         if arm not in ARMS:
             raise ContractError(f"{where}: arm {arm!r} not in {ARMS}")
+        if row["model"] != MODEL_FREE_ARMS.get(arm, row["model"]) or (
+                arm not in MODEL_FREE_ARMS and row["model"] in MODEL_FREE_ARMS.values()):
+            raise ContractError(f"{where}: model {row['model']!r} is reserved for, and required by, the "
+                                f"model-independent arms {MODEL_FREE_ARMS}")
         if not _finite(row["lambda"]) or (row["lambda"] > 0) != (arm in GUIDED_ARMS) or row["lambda"] < 0:
             raise ContractError(f"{where}: lambda {row['lambda']!r} inconsistent with arm {arm}")
         if not isinstance(row["seed"], int) or isinstance(row["seed"], bool):
@@ -232,6 +327,8 @@ def validate_records(rows: Sequence[Mapping[str, Any]], wild_types: Mapping[str,
         pair = [row.get(k) for k in OPTIONAL_FIELDS]
         if (pair[0] is None) != (pair[1] is None):
             raise ContractError(f"{where}: lambda_fields and lambda_coupling come together or not at all")
+        if arm in MODEL_FREE_ARMS and pair[0] is not None:
+            raise ContractError(f"{where}: arm {arm} has no language model, so its strength pair must be null")
         if pair[0] is not None:
             if not all(_finite(v) and v >= 0 for v in pair):
                 raise ContractError(f"{where}: strength pair must be finite and >= 0")

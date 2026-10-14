@@ -79,21 +79,24 @@ def test_controls_match_hand_values():
 
 
 def _rows(values, n_dom=8, ceiling_copy=None):
-    """values[arm][domain_index] -> one sequence row each; optional copies above ceiling."""
+    """values[arm][domain_index] -> MIN_ADMISSIBLE_PER_CELL identical rows each; optional copies above ceiling."""
     rows = []
     for arm, per_domain in values.items():
         for k in range(n_dom):
-            rows.append({"model": "m", "domain": f"d{k}", "arm": arm, "tm_score": per_domain[k],
-                         "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0})
+            rows += [{"model": "m", "domain": f"d{k}", "arm": arm, "tm_score": per_domain[k],
+                      "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0, "identity_to_wild_type": 10.0}
+                     for _ in range(fr.MIN_ADMISSIBLE_PER_CELL)]
     return rows
 
 
 ROLES = {f"d{k}": "evaluation" for k in range(12)}
+NO_DOSE = {"lambda_fields": None, "lambda_coupling": None}
+STRENGTHS = [{"model": "m", "arm": a, "frozen_strength": NO_DOSE} for a in fr.ARMS]
 
 
 def test_factorial_contrasts_values_and_interval():
     v = {"N": [0.2] * 8, "C": [0.4] * 8, "M": [0.3] * 8, "F": [0.7] * 8}
-    out = fri.analyse(_rows(v), roles=ROLES, role="evaluation")
+    out = fri.analyse(_rows(v), roles=ROLES, role="evaluation", strengths=STRENGTHS)
     f = out["results"]["m|tm_score|unstratified"]["factorial"]
     assert f["C-N"]["mean_over_domains"] == pytest.approx(0.2)
     assert f["F-M"]["mean_over_domains"] == pytest.approx(0.4)
@@ -109,17 +112,17 @@ def test_stratified_contrast_drops_sequences_above_ceiling():
     rows = _rows(v)
     # in every domain a homolog copy in arm C scores perfectly
     rows += [{"model": "m", "domain": f"d{k}", "arm": "C", "tm_score": 1.0, "plddt_mean": 50.0,
-              "ptm": 0.5, "max_msa_identity": 95.0} for k in range(8)]
-    out = fri.analyse(rows, roles=ROLES, role="evaluation")["results"]
+              "ptm": 0.5, "max_msa_identity": 95.0, "identity_to_wild_type": 10.0} for k in range(8)]
+    out = fri.analyse(rows, roles=ROLES, role="evaluation", strengths=STRENGTHS)["results"]
     un = out["m|tm_score|unstratified"]["factorial"]["C-N"]["mean_over_domains"]
     st = out["m|tm_score|novelty_restricted"]["factorial"]["C-N"]["mean_over_domains"]
-    assert un == pytest.approx(0.7 - 0.2) and st == pytest.approx(0.2)
+    assert un == pytest.approx((25 * 0.4 + 1.0) / 26 - 0.2) and st == pytest.approx(0.2)
 
 
 def test_partial_factorial_coverage_is_excluded_and_floor_refused():
     v = {"N": [0.2] * 8, "C": [0.4] * 8, "M": [0.3] * 8, "F": [0.7] * 8}
     rows = [r for r in _rows(v) if not (r["domain"] == "d7" and r["arm"] == "F")]
-    out = fri.analyse(rows, roles=ROLES, role="evaluation")
+    out = fri.analyse(rows, roles=ROLES, role="evaluation", strengths=STRENGTHS)
     block = out["results"]["m|tm_score|unstratified"]
     assert block["factorial_domains_excluded_partial_coverage"] == ["d7"]
     for c in block["factorial"].values():  # same pairings for simple, main and interaction contrasts
@@ -221,7 +224,7 @@ def test_new_arms_accepted_and_c_minus_pr_emitted():
     with pytest.raises(fr.ContractError, match="lambda"):
         fr.validate_records([_rec(1, arm="Pr", **{"lambda": 0.0})], WT)
     v = {"N": [0.2] * 8, "C": [0.5] * 8, "M": [0.3] * 8, "F": [0.7] * 8, "Pr": [0.4] * 8}
-    pw = fri.analyse(_rows(v), roles=ROLES, role="evaluation")["results"]["m|tm_score|unstratified"]["pairwise"]
+    pw = fri.analyse(_rows(v), roles=ROLES, role="evaluation", strengths=STRENGTHS)["results"]["m|tm_score|unstratified"]["pairwise"]
     assert pw["C-Pr"]["mean_over_domains"] == pytest.approx(0.1)
     assert pw["Pr-N"]["mean_over_domains"] == pytest.approx(0.2)
 
@@ -249,17 +252,62 @@ def test_two_strengths_of_one_arm_validate_and_cells_are_keyed_by_pair():
         fr.validate_records([_pair(1, "M", 0.5, 0.0, 0.5), _pair(2, "M", 0.5, 0.0, 0.5) | {"attempt_budget": 9}], WT)
 
 
-def test_evaluation_refuses_several_strengths_of_an_arm():
-    recs = fr.validate_records([_pair(1, "M", 0.25, 0.0, 0.25), _pair(2, "M", 0.5, 0.0, 0.5)], WT)
-    with pytest.raises(fr.ContractError, match="not frozen"):
-        fr.require_frozen_strength(recs)
-    fr.require_frozen_strength(recs[:1] + [_pair(3, "C", 0.0, 0.5, 0.5)])
+def _decl(arm, frozen, doses=None, model="m"):
+    pair = lambda p: {"lambda_fields": p[0], "lambda_coupling": p[1]}
+    entry = {"model": model, "arm": arm, "frozen_strength": pair(frozen)}
+    if doses is not None:
+        entry["dose_response_strengths"] = [pair(d) for d in doses]
+    return entry
+
+
+def test_strength_guard_accepts_only_declared_strengths():
+    recs = fr.validate_records([_pair(1, "C", 0.0, 0.5, 0.5), _pair(2, "C", 0.0, 2.0, 2.0)], WT)
+    ok = [_decl("C", (0.0, 0.5), [(0.0, 2.0)])]
+    fr.require_frozen_strength(recs, ok)
+    assert [r["id"] for r in fr.frozen_rows(recs, ok)] == ["r1"]  # the dose is structurally not primary
+    with pytest.raises(fr.ContractError, match="undeclared strength"):  # dose not pre-declared
+        fr.require_frozen_strength(recs, [_decl("C", (0.0, 0.5))])
+    with pytest.raises(fr.ContractError, match="both the frozen strength and a dose-response"):
+        fr.require_frozen_strength(recs, [_decl("C", (0.0, 0.5), [(0.0, 0.5), (0.0, 2.0)])])
+    with pytest.raises(fr.ContractError, match="no declared frozen_strength"):  # arm C has records, entry is for M
+        fr.require_frozen_strength(recs, [_decl("M", (0.5, 0.0))])
+    with pytest.raises(fr.ContractError, match="keys must be"):  # no frozen_strength key at all
+        fr.require_frozen_strength(recs, [{"model": "m", "arm": "C", "dose_response_strengths": []}])
+    with pytest.raises(fr.ContractError, match="exactly"):  # several frozen strengths
+        fr.require_frozen_strength(recs, [dict(ok[0], frozen_strength=[ok[0]["frozen_strength"]] * 2)])
+    with pytest.raises(fr.ContractError, match="twice"):
+        fr.require_frozen_strength(recs, ok + ok)
+    with pytest.raises(fr.ContractError, match="no records at its frozen_strength"):
+        fr.require_frozen_strength(recs[1:], ok)
+
+
+def test_analyse_reads_only_the_frozen_strength_and_counts_the_dose_rows():
     rows = _rows({"N": [0.2] * 8, "C": [0.4] * 8, "M": [0.3] * 8, "F": [0.7] * 8})
     for r in rows:
-        r["lambda_fields"], r["lambda_coupling"] = (0.25, 0.0)
-    rows.append(dict(rows[0], arm="M", lambda_fields=0.5, lambda_coupling=0.0))
-    with pytest.raises(fr.ContractError, match="not frozen"):
-        fri.analyse(rows, roles=ROLES, role="evaluation")
+        r["lambda_fields"], r["lambda_coupling"] = (None, None)
+    rows += [dict(r, arm="C", lambda_fields=0.0, lambda_coupling=4.0, tm_score=0.9) for r in rows if r["arm"] == "C"]
+    for r in rows:
+        if r["arm"] == "C" and r["lambda_coupling"] is None:
+            r["lambda_fields"], r["lambda_coupling"] = 0.0, 1.0
+    strengths = [e for e in STRENGTHS if e["arm"] != "C"] + [_decl("C", (0.0, 1.0), [(0.0, 4.0)])]
+    out = fri.analyse(rows, roles=ROLES, role="evaluation", strengths=strengths)
+    assert out["n_dose_response_rows_excluded"] == 8 * fr.MIN_ADMISSIBLE_PER_CELL
+    assert out["results"]["m|tm_score|unstratified"]["factorial"]["C-N"]["mean_over_domains"] == pytest.approx(0.2)
+    with pytest.raises(fr.ContractError, match="undeclared strength"):
+        fri.analyse(rows, roles=ROLES, role="evaluation", strengths=[e for e in strengths if e["arm"] != "C"] + [_decl("C", (0.0, 1.0))])
+
+
+def test_identity_stratum_has_a_per_cell_floor_and_reports_admissibility():
+    rows = _rows({"N": [0.2] * 8, "C": [0.4] * 8, "M": [0.3] * 8, "F": [0.7] * 8})
+    for r in rows:
+        if r["domain"] == "d0" and r["arm"] == "C":  # d0/C: only 24 of its 25 below 20% identity
+            r["identity_to_wild_type"] = 50.0 if r is [x for x in rows if x["domain"] == "d0" and x["arm"] == "C"][0] else 10.0
+    block = fri.analyse(rows, roles=ROLES, role="evaluation", strengths=STRENGTHS)["results"]["m|tm_score|identity_restricted"]
+    assert block["cell_admissibility"]["d0|C"] == {"admissible": 24, "depth": 25, "feasibility_rate": 24 / 25,
+                                                   "floor": 25, "meets_floor": False}
+    assert block["factorial_domains_excluded_partial_coverage"] == ["d0"]
+    assert "d0" not in block["factorial"]["C-N"]["per_domain"]
+    assert block["factorial"]["C-N"]["n_domains"] == 7
 
 
 def test_development_selects_a_strength_without_contrasts():
@@ -268,9 +316,9 @@ def test_development_selects_a_strength_without_contrasts():
     for k in range(4):
         for lf, v in ((0.25, 0.3), (0.5, 0.6), (1.0, 0.4)):
             rows.append({"model": "m", "domain": f"d{k}", "arm": "M", "lambda_fields": lf, "lambda_coupling": 0.0,
-                         "tm_score": v + 0.01 * k, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0})
+                         "tm_score": v + 0.01 * k, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0, "identity_to_wild_type": 10.0})
         rows.append({"model": "m", "domain": f"d{k}", "arm": "N", "lambda_fields": 0.0, "lambda_coupling": 0.0,
-                     "tm_score": 0.2, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0})
+                     "tm_score": 0.2, "plddt_mean": 50.0, "ptm": 0.5, "max_msa_identity": 40.0, "identity_to_wild_type": 10.0})
     out = fri.analyse_development(rows, roles=roles, component_scale=[{"model": "m"}])
     sel = out["selection"]["unstratified"]
     assert sel["m|M"]["lambda_fields"] == 0.5 and sel["m|N"]["lambda_fields"] == 0.0
@@ -279,4 +327,21 @@ def test_development_selects_a_strength_without_contrasts():
     assert set(best["endpoints"]) == {"tm_score", "plddt_mean", "ptm"} and out["component_scale"] == [{"model": "m"}]
     assert "factorial" not in json.dumps(out) and "interval" not in json.dumps(out).replace("cross-domain interval", "")
     with pytest.raises(ValueError, match="evaluation-role only"):
-        fri.analyse(rows, roles=roles, role="development")
+        fri.analyse(rows, roles=roles, role="development", strengths=STRENGTHS)
+
+
+def test_reference_arms_take_null_language_model_fields_and_no_other_arm_does():
+    ref = lambda arm, **kw: _rec(1, arm=arm, model=fr.MODEL_FREE_ARMS[arm], native_loglik=None,
+                                 mean_step_entropy=None, guidance_score=None, **kw)
+    for arm in ("P", "H"):
+        assert fr.validate_records([ref(arm, lambda_fields=None, lambda_coupling=None)], WT)
+    with pytest.raises(fr.ContractError, match="native_loglik is null for arm C"):
+        fr.validate_records([_rec(1, arm="C", native_loglik=None)], WT)
+    with pytest.raises(fr.ContractError, match="mean_step_entropy is null for arm N"):
+        fr.validate_records([_rec(1, arm="N", mean_step_entropy=None)], WT)
+    with pytest.raises(fr.ContractError, match="reserved"):  # P must be labelled potts-joint
+        fr.validate_records([ref("P") | {"model": "natural"}], WT)
+    with pytest.raises(fr.ContractError, match="reserved"):  # a language-model arm may not borrow the label
+        fr.validate_records([_rec(1, arm="C", model="natural")], WT)
+    with pytest.raises(fr.ContractError, match="must be null"):
+        fr.validate_records([ref("H", lambda_fields=0.0, lambda_coupling=0.0)], WT)

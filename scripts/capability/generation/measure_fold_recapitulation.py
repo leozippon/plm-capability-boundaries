@@ -41,7 +41,8 @@ def main() -> None:
     parser.add_argument("--msa-dir", type=Path, default=REPO_ROOT / fr.DEFAULT_MSA_DIR,
                         help="directory of <DOMAIN>.pdb.fasta MSAs (novelty and family composition)")
     parser.add_argument("--protocol", type=Path, default=REPO_ROOT / fr.DEFAULT_PROTOCOL,
-                        help="diagnostic_protocol.json holding the development/evaluation roles")
+                        help="protocol holding the development/evaluation roles and, for --role evaluation, "
+                             "the per-(model, arm) frozen_strength declaration (``strengths``)")
     parser.add_argument("--component-scale", type=Path,
                         help="component_scale.json written by merge_e20_cells.py; required for --role development")
     parser.add_argument("--role", choices=("development", "evaluation"), required=True)
@@ -55,15 +56,16 @@ def main() -> None:
     wild = fr.load_wild_types(args.wild_type_fasta)
     roles = fr.load_roles(args.protocol)
     records = [r for r in fr.load_records(args.records, wild) if roles[r["domain"]] == args.role]
-    if args.role == "evaluation":
-        fr.require_frozen_strength(records)
+    strengths = fr.load_strengths(args.protocol) if args.role == "evaluation" else None
+    if strengths is not None:
+        fr.require_frozen_strength(records, strengths)
     if not records:
         raise SystemExit(f"no records in role {args.role}")
     msas = {d: fr.load_msa(args.msa_dir, d, len(wild[d])) for d in {r["domain"] for r in records}}
     measured = fr.measure_records(records, wild_types=wild, msas=msas, tree=args.structure,
                                   reference_manifest=args.references)
     if args.role == "evaluation":
-        report = fri.analyse(measured, roles=roles, role=args.role, seed=args.seed)
+        report = fri.analyse(measured, roles=roles, role=args.role, strengths=strengths, seed=args.seed)
     else:
         if args.component_scale is None:
             raise SystemExit("--role development needs --component-scale (from merge_e20_cells.py)")

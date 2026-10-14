@@ -170,6 +170,15 @@ class GibbsDraws:
     mixing_tolerance: float
 
 
+class MixingError(RuntimeError):
+    """The Gibbs chains failed the mixing check; carries the measured distance for the cell record."""
+
+    def __init__(self, message: str, *, mixing_max_tv: float, check_sweeps: int, sweeps: int, mixing_tolerance: float):
+        super().__init__(message)
+        self.mixing_max_tv, self.check_sweeps = mixing_max_tv, check_sweeps
+        self.sweeps, self.mixing_tolerance = sweeps, mixing_tolerance
+
+
 def _site_marginals(codes: np.ndarray) -> np.ndarray:
     q = len(AA20)
     return np.stack([np.bincount(codes[:, i], minlength=q) for i in range(codes.shape[1])]) / codes.shape[0]
@@ -202,8 +211,9 @@ def sample_potts_joint(model: FamilyModel, n: int, rng: np.random.Generator, *, 
             early = _site_marginals(X)
     tv = float(0.5 * np.abs(early - _site_marginals(X)).sum(axis=1).max())
     if tv > mixing_tolerance:
-        raise RuntimeError(f"Gibbs chains have not mixed: max single-site TV {tv:.4f} between "
-                           f"{check_sweeps} and {sweeps} sweeps exceeds {mixing_tolerance}")
+        raise MixingError(f"Gibbs chains have not mixed: max single-site TV {tv:.4f} between "
+                          f"{check_sweeps} and {sweeps} sweeps exceeds {mixing_tolerance}",
+                          mixing_max_tv=tv, check_sweeps=check_sweeps, sweeps=sweeps, mixing_tolerance=mixing_tolerance)
     letters = np.array(list(model.alphabet))
     return GibbsDraws(["".join(row) for row in letters[X]], sweeps, check_sweeps, tv, mixing_tolerance)
 

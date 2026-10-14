@@ -268,3 +268,44 @@ def test_zero_sum_gauge_shifts_energy_by_a_constant_but_not_the_per_step_biases(
             np.testing.assert_allclose(centred(b1["coupling"] - b0["coupling"]), centred(-past), atol=1e-9)
             np.testing.assert_allclose(centred(b1["full"] - b0["full"]), centred(future), atol=1e-9)
     assert np.abs(centred(past)).max() > 0  # the C shift is a real, nonzero first-order term
+
+
+def test_guidance_bias_is_the_prefix_truncated_conditional_and_not_the_full_joint_conditional(tmp_path):
+    """``guidance_biases(...)["full"]`` is ``log P_t(x_t=a | x_<t)`` of the model restricted to columns 0..t.
+
+    Checked by brute-force enumeration of a synthetic L=4 model (20^4 sequences): after removing one constant over
+    the twenty residues the residual is at machine precision. It is not ``log P_L(x_t=a | x_<t)``, which also
+    sums out the later columns. A synthetic model suffices because the claim is arithmetic and holds for any h, J;
+    a real reference has L >= 37, so only a few columns of one could be enumerated and that is the same model.
+    Not asserted here: that the realised step distribution is the product of the language model and this
+    conditional, which needs a loaded language model (see tests/decoding).
+    """
+    model = _tiny_model(tmp_path, length=4, seed=11, scale=0.8)
+    idx = np.arange(4)
+    all_codes = np.array(list(product(range(20), repeat=4)))
+    energy = (model.h[idx, all_codes].sum(axis=1)
+              + sum(model.J[i, j, all_codes[:, i], all_codes[:, j]] for i in range(4) for j in range(i + 1, 4)))
+    rng = np.random.default_rng(0)
+    for t in (1, 2, 3):
+        prefix = rng.integers(0, 20, size=t)
+        match = (all_codes[:, :t] == prefix).all(axis=1)
+        full = np.zeros(20)  # log P_L(x_t = a | x_<t): marginalise columns t+1..L-1 over all 20^(L-1-t)
+        for a in range(20):
+            full[a] = np.logaddexp.reduce(energy[match & (all_codes[:, t] == a)])
+        # restricted model: drop every column after t, enumerate columns 0..t
+        sub = all_codes[:, :t + 1]
+        sub = sub[np.unique(sub, axis=0, return_index=True)[1]]
+        e_sub = (model.h[np.arange(t + 1), sub].sum(axis=1)
+                 + sum(model.J[i, j, sub[:, i], sub[:, j]] for i in range(t + 1) for j in range(i + 1, t + 1)))
+        in_prefix = (sub[:, :t] == prefix).all(axis=1)
+        truncated = np.array([np.logaddexp.reduce(e_sub[in_prefix & (sub[:, t] == a)]) for a in range(20)])
+        truncated -= np.logaddexp.reduce(truncated)
+        bias = guidance_biases(model, "".join(AA20[c] for c in prefix))["full"]
+        residual = (bias - truncated) - (bias - truncated).mean()
+        assert np.abs(residual).max() < 1e-12
+        full -= np.logaddexp.reduce(full)
+        spread = (bias - full) - (bias - full).mean()
+        if t < 3:  # the full-joint conditional differs, so the distinction is real ...
+            assert np.abs(spread).max() > 1e-3
+        else:  # ... except at the last column, where no later column is left to sum out
+            assert np.abs(spread).max() < 1e-12

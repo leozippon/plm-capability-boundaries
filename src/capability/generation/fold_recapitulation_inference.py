@@ -23,7 +23,7 @@ pairwise only: Pr (profile guidance), Cx (permuted-column couplings) and Cd
 (cross-domain couplings) each against N and against C; P and H against N.
 
 Every contrast, for every endpoint (tm_score primary; plddt_mean and ptm
-secondary, never combined), is emitted twice: unstratified, and restricted to
+secondary, never combined), is emitted per stratum (STRATA): unstratified; the primary identity-to-wild-type stratum; and the superseded 70% ceiling, restricted to
 sequences with max MSA identity <= the novelty ceiling. A domain enters a
 contrast only if every arm that contrast uses has sequences in that stratum; the
 factorial family shares one domain set (all of N, M, C, F), and the excluded
@@ -38,7 +38,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor, paired_group_bootstrap
-from .fold_recapitulation import NOVELTY_CEILING, cell_key, require_frozen_strength
+from .fold_recapitulation import (IDENTITY_TO_WT_CEILING, MIN_ADMISSIBLE_PER_CELL, NOVELTY_CEILING, cell_key, frozen_rows, require_frozen_strength)
 
 ENDPOINTS = ("tm_score", "plddt_mean", "ptm")  # first is primary
 FACTORIAL_ARMS = ("N", "M", "C", "F")
@@ -66,21 +66,60 @@ PAIRWISE = {
     "P-N": {"P": 1, "N": -1},
     "H-N": {"H": 1, "N": -1},
 }
+#: stratum -> (admits a row?, minimum admissible rows for a domain-cell to have a value). The primary
+#: endpoint is ``identity_restricted``; ``novelty_restricted`` is the superseded 70% MSA ceiling, kept
+#: because the development record and other artifacts reference it.
+STRATA = {
+    "unstratified": (lambda r: True, 1),
+    "novelty_restricted": (lambda r: r["max_msa_identity"] <= NOVELTY_CEILING, 1),
+    "identity_restricted": (lambda r: r["identity_to_wild_type"] < IDENTITY_TO_WT_CEILING, MIN_ADMISSIBLE_PER_CELL),
+}
+STRATUM_NOTES = {
+    "unstratified": "all sequences",
+    "novelty_restricted": (
+        f"SUPERSEDED: max MSA identity <= {NOVELTY_CEILING}%. Kept for the development record only; it "
+        "does not decontaminate the endpoint, since wild-type recovery is essentially complete by about "
+        "64% identity and this ceiling admits copies of the target."
+    ),
+    "identity_restricted": (
+        f"PRIMARY: identity to wild type < {IDENTITY_TO_WT_CEILING}%; a domain-cell with fewer than "
+        f"{MIN_ADMISSIBLE_PER_CELL} admissible candidates has no value (reported missing, never imputed)."
+    ),
+}
 READING_NOTE = (
     "The factorial increments carry the claim. N is the floor reference; "
     "guidance beating N is not the finding. No arm ranking or composite is reported."
 )
 
 
-def domain_means(rows: Sequence[Mapping[str, Any]], endpoint: str, *, restrict: bool) -> dict:
-    """(model, domain, arm) -> (mean, n). Restricted drops rows above the ceiling."""
+def cell_admissibility(rows: Sequence[Mapping[str, Any]], stratum: str) -> dict:
+    """(model, domain, arm) -> admissible count, the cell's own depth and their rate.
 
+    Depth is the number of sequences the cell actually holds, so pool depths may differ between cells
+    (200 for primary-family cells, 100 for dose-response and reference cells) and each rate is against
+    its own cell.
+    """
+
+    admits, floor = STRATA[stratum]
+    depth: dict[tuple, int] = defaultdict(int)
+    count: dict[tuple, int] = defaultdict(int)
+    for r in rows:
+        key = (r["model"], r["domain"], r["arm"])
+        depth[key] += 1
+        count[key] += bool(admits(r))
+    return {k: {"admissible": count[k], "depth": depth[k], "feasibility_rate": count[k] / depth[k],
+                "floor": floor, "meets_floor": count[k] >= floor} for k in depth}
+
+
+def domain_means(rows: Sequence[Mapping[str, Any]], endpoint: str, *, stratum: str = "unstratified") -> dict:
+    """(model, domain, arm) -> (mean, n) over the stratum; a cell below the stratum's floor is absent."""
+
+    admits, floor = STRATA[stratum]
     cells: dict[tuple, list[float]] = defaultdict(list)
     for r in rows:
-        if restrict and r["max_msa_identity"] > NOVELTY_CEILING:
-            continue
-        cells[(r["model"], r["domain"], r["arm"])].append(float(r[endpoint]))
-    return {k: (float(np.mean(v)), len(v)) for k, v in cells.items()}
+        if admits(r):
+            cells[(r["model"], r["domain"], r["arm"])].append(float(r[endpoint]))
+    return {k: (float(np.mean(v)), len(v)) for k, v in cells.items() if len(v) >= floor}
 
 
 def cross_domain_interval(values: Mapping[str, float], *, seed: int, n_bootstrap: int = 2000) -> dict:
@@ -103,7 +142,7 @@ def contrast(means: Mapping, model: str, name: str, coefs: Mapping[str, float], 
     for d in domains:
         missing = [a for a in coefs if (model, d, a) not in means]
         if missing:
-            excluded[d] = f"no sequences for arm(s) {missing} in this stratum"
+            excluded[d] = f"no value for arm(s) {missing} in this stratum (no admissible sequences, or fewer than its floor)"
         else:
             per_domain[d] = float(sum(c * means[(model, d, a)][0] for a, c in coefs.items()))
     out: dict[str, Any] = {
@@ -120,9 +159,13 @@ def contrast(means: Mapping, model: str, name: str, coefs: Mapping[str, float], 
     return out
 
 
-def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role: str,
+def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role: str, strengths: Any,
             seed: int = 20261013, with_interval: bool = True) -> dict[str, Any]:
     """All contrasts for one role, per model, endpoint and stratum.
+
+    ``strengths`` is the protocol's per-(model, arm) declaration. Every contrast reads only the rows
+    at each arm's ``frozen_strength``; ``dose_response_strengths`` rows are checked against the
+    declaration and then left out here (their description is not a contrast), and counted in the output.
 
     ``role`` is "development" or "evaluation"; rows of other roles are dropped
     and the output records the role it covers. A contrast with fewer than eight domains yields per-domain values and an
@@ -136,19 +179,26 @@ def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role
     rows = [r for r in rows if roles[r["domain"]] == role]
     if not rows:
         raise ValueError(f"no records in role {role}")
-    require_frozen_strength(rows)
+    require_frozen_strength(rows, strengths)
+    n_dose_response = len(rows)
+    rows = frozen_rows(rows, strengths)
+    n_dose_response -= len(rows)
     domains = sorted({r["domain"] for r in rows})
     models = sorted({r["model"] for r in rows})
     result: dict[str, Any] = {
         "role": role, "domains": domains, "novelty_ceiling_percent": NOVELTY_CEILING,
+        "identity_to_wild_type_ceiling_percent": IDENTITY_TO_WT_CEILING,
+        "min_admissible_per_cell": MIN_ADMISSIBLE_PER_CELL, "primary_stratum": "identity_restricted",
+        "stratum_notes": STRATUM_NOTES,
         "independence_unit": "domain", "minimum_domains": MINIMUM_BOOTSTRAP_UNITS,
+        "n_dose_response_rows_excluded": n_dose_response,
         "reading_note": READING_NOTE, "endpoints": list(ENDPOINTS), "primary_endpoint": ENDPOINTS[0],
         "results": {},
     }
     for model in models:
         for endpoint in ENDPOINTS:
-            for stratum, restrict in (("unstratified", False), ("novelty_restricted", True)):
-                means = domain_means(rows, endpoint, restrict=restrict)
+            for stratum in STRATA:
+                means = domain_means(rows, endpoint, stratum=stratum)
                 complete = [d for d in domains if all((model, d, a) in means for a in FACTORIAL_ARMS)]
                 block = {
                     "factorial": {
@@ -160,6 +210,8 @@ def analyse(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str, str], role
                         for n, c in PAIRWISE.items()
                     },
                     "cell_means": {f"{d}|{a}": means[(model, d, a)] for (m, d, a) in sorted(means) if m == model},
+                    "cell_admissibility": {f"{d}|{a}": v for (m, d, a), v in sorted(cell_admissibility(rows, stratum).items())
+                                           if m == model},
                     "factorial_domains_complete": complete,
                     "factorial_domains_excluded_partial_coverage": [d for d in domains if d not in complete],
                 }
@@ -192,18 +244,21 @@ def analyse_development(rows: Sequence[Mapping[str, Any]], *, roles: Mapping[str
     out: dict[str, Any] = {
         "role": "development", "domains": domains, "primary_endpoint": ENDPOINTS[0],
         "novelty_ceiling_percent": NOVELTY_CEILING, "settings": [], "selection": {},
+        "identity_to_wild_type_ceiling_percent": IDENTITY_TO_WT_CEILING,
+        "min_admissible_per_cell": MIN_ADMISSIBLE_PER_CELL, "stratum_notes": STRATUM_NOTES,
         "component_scale": list(component_scale),
         "note": "selection only; no arm contrast and no cross-domain interval at four domains",
     }
-    for stratum, restrict in (("unstratified", False), ("novelty_restricted", True)):
+    for stratum, (admits, floor) in STRATA.items():
         cells: dict[tuple, dict[str, dict]] = defaultdict(lambda: defaultdict(dict))
         for endpoint in ENDPOINTS:
             groups: dict[tuple, list[float]] = defaultdict(list)
             for r in rows:
-                if restrict and r["max_msa_identity"] > NOVELTY_CEILING:
-                    continue
-                groups[cell_key(r)].append(float(r[endpoint]))
+                if admits(r):
+                    groups[cell_key(r)].append(float(r[endpoint]))
             for (model, domain, arm, lf, lc), v in groups.items():
+                if len(v) < floor:
+                    continue
                 cells[(model, arm, lf, lc)][endpoint][domain] = (float(np.mean(v)), len(v))
         for setting, per_endpoint in sorted(cells.items(), key=str):
             model, arm, lf, lc = setting

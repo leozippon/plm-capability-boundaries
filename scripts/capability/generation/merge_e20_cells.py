@@ -59,7 +59,7 @@ def discover_cells(paths: list[Path]) -> list[Path]:
 
 
 def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], roles: dict[str, str] | None, role: str | None,
-                  expect_cells: int | None = None) -> dict:
+                  expect_cells: int | None = None, strengths=None) -> dict:
     cells = discover_cells(cells)
     if expect_cells is not None and len(cells) != expect_cells:
         raise ValueError(f"found {len(cells)} complete cells, expected {expect_cells}; a failed cell is not discovered")
@@ -74,10 +74,10 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         if sha256_file(sequences) != completion["artifacts"]["sequences"]["sha256"]:
             raise ValueError(f"{cell}: sequences.jsonl differs from its completion record")
         protocols.add(completion["protocol"]["sha256"])
-        recipes.add(json.dumps([completion["sampling"], completion["native_contract"],
-                                completion["cell"]["sequences_per_cell"], completion["cell"]["attempt_budget"]],
-                               sort_keys=True))
         info = completion["cell"]
+        if info["arm_code"] not in fr.MODEL_FREE_ARMS:  # reference arms have no sampling recipe to share
+            recipes.add(json.dumps([completion["sampling"], completion["native_contract"],
+                                    info["sequences_per_cell"], info["attempt_budget"]], sort_keys=True))
         seeds.append(info["stream_seed"])
         tally[(info["model_arm"], info["domain"], info["arm_code"], info["lambda_fields"], info["lambda_coupling"])] += 1
         if roles is not None and roles[fr.domain_id(info["domain"])] != role:
@@ -88,7 +88,7 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
         for line in sequences.read_text().splitlines():
             if line.strip():
                 lines.append(json.dumps({**json.loads(line), **pair}) + "\n")
-    if len(recipes) != 1:
+    if len(recipes) > 1:
         raise ValueError(f"cells carry {len(recipes)} different sampling recipes, pool sizes or native contracts")
     if len(set(seeds)) != len(seeds):
         raise ValueError("two cells share a stream seed")
@@ -101,7 +101,9 @@ def merge_records(cells: list[Path], out: Path, wild_types: dict[str, str], role
     records.write_text("".join(lines))
     validated = fr.load_records(records, wild_types)
     if role == "evaluation":
-        fr.require_frozen_strength(validated)
+        if strengths is None:
+            raise ValueError("--role evaluation needs the protocol's strengths declaration (--protocol)")
+        fr.require_frozen_strength(validated, strengths)
     write_json(out / SCALE, scale)
     write_json(out / RECORDS_COMPLETION, {
         "schema_version": "e20_merged_records_v1", "protocol_sha256": sorted(protocols),
@@ -151,7 +153,9 @@ def main(argv: list[str] | None = None) -> None:
         if args.wild_type_fasta is None or bool(args.protocol) != bool(args.role):
             parser.error("--cells needs --wild-type-fasta, and --protocol together with --role")
         roles = fr.load_roles(args.protocol) if args.protocol else None
-        summary = merge_records(args.cells, args.out, fr.load_wild_types(args.wild_type_fasta), roles, args.role, args.expect_cells)
+        strengths = fr.load_strengths(args.protocol) if args.role == "evaluation" else None
+        summary = merge_records(args.cells, args.out, fr.load_wild_types(args.wild_type_fasta), roles, args.role,
+                                args.expect_cells, strengths)
     else:
         summary = merge_shards(args.shards, args.out)
     print(json.dumps(summary))
