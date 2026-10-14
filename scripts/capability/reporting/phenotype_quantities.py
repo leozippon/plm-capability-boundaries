@@ -2,13 +2,29 @@
 
 R3 reports four phenotype cohorts beyond mutation ranking --- Venus activity,
 SKEMPI binding ranking and quantitative binding, and saturation-genome-editing
-cellular fitness --- the matched phenotype-pair panel, and the three abilities
-the refitted MegaScale stability grid separates: ranking, within-family
-calibrated prediction and transfer to unseen families. Every row here is read
-out of a retained artifact of those campaigns, or computed from them by the
-arithmetic its claim states. No fit is run and no interval is resampled: a
-simultaneous band is copied as the bound the artifact records, and a reduction
-over a set of columns is the smallest and largest member of that set.
+cellular fitness --- the matched phenotype-pair panel, the three abilities the
+refitted MegaScale stability grid separates (ranking, within-family calibrated
+prediction and transfer to unseen families), and what the evolutionary profile
+is worth against all of them. Every row here is read out of a retained artifact
+of those campaigns, or computed from them by the arithmetic its claim states. No
+fit is run and no interval is resampled: a simultaneous band is copied as the
+bound the artifact records, and a reduction over a set of columns is the
+smallest and largest member of that set.
+
+The profile comparator is the section's organising contrast, and it is read one
+way on each source rather than one way overall, because each source's baseline
+is its own. What the profile is worth is the profile block's own held-out
+contribution to that source's standing control set: on ProteinGym the
+composition control, read from the local-context measurement's model-independent
+designs, which are bit-identical across arms and checked to be; on Domainome and
+on folding stability the ``prof`` and ``prof2`` entries of each gate's own
+control ladder. What the profile absorbs is read with the other blocks held
+fixed --- on ProteinGym the qualified seven-residue window is in both designs,
+so the share is the profile's and not the window's --- and the share of the
+profile's worth that the largest surviving likelihood increment reaches is taken
+over each source's own profile-inclusive baseline. Those three shares sit on
+three supports, which is why the span over them is emitted as ``range_bound``
+rows carrying each end's own support and never as an estimate.
 
 Three derived quantities carry arithmetic, stated on the row and verified here:
 
@@ -88,6 +104,16 @@ GRID_ROOT = ("results/external_baseline/20261008095614_7e8ae4b18a4d/"
 GRID = f"{GRID_ROOT}/panel.json"
 GRID_FITS = f"{GRID_ROOT}/fits"
 ABUNDANCE = "results/R1/external_confirmation_20260924/panel/panel.json"
+#: The two gates' own control ladders, where each candidate block carries its
+#: own held-out contribution over the standing set it was offered against. This
+#: is what "the profile on its own is worth" reads: a contribution to a control
+#: set, not a model result.
+ABUNDANCE_LADDER = "results/R1/external_confirmation_20260924/controls_qualification.json"
+STABILITY_LADDER = "results/R4/gate_stability_20260924/controls/controls_qualification.json"
+#: The ProteinGym cohort R1 and R3 share, where the profile contrast is read
+#: between control designs that differ in the profile block alone.
+LOCAL_CONTEXT = ("results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/"
+                 "local_context_measurement.json")
 
 #: The stability grid's protein-specialized or adapted checkpoints. No artifact
 #: field records this: a corpus is not a panel column, and ProLLaMA and
@@ -129,6 +155,18 @@ GRID_UNITS = {
 #: The grid's own verdict vocabulary, which is not the ledger's four outcomes.
 RESOLVED_ABOVE = "above_zero"
 
+#: The ProteinGym control designs the profile contrast is read between: the
+#: composition control alone, which is what "on its own" adds the profile to,
+#: and the pair that holds the qualified window block fixed, which is what the
+#: absorbed share is read over.
+PROFILE_WORTH_DESIGNS = ("C", "C_P")
+WINDOW_HELD_DESIGNS = ("C_wall", "C_P_wall")
+#: Which block each gate's ladder offers as the fitted independent-site profile.
+#: Domainome offers ``prof`` and then ``prof2`` sequentially; the stability gate
+#: offers both against the same standing set, and its profile-inclusive design
+#: carries ``prof2``, so that is the entry its worth is read from.
+LADDER_PROFILE_BLOCK = {"abundance": "prof", "stability": "prof2"}
+
 
 def add_phenotype_quantities(ledger) -> None:
     emit = _emitter(ledger)
@@ -139,6 +177,7 @@ def add_phenotype_quantities(ledger) -> None:
     _stability_grid(ledger, emit)
     _abundance_ranking(ledger, emit)
     _activity_precision_ratio(ledger, emit, cells)
+    _profile_comparator(ledger, emit)
 
 
 # --------------------------------------------------------------------------- #
@@ -464,15 +503,20 @@ def _calibrated_baseline(ledger, payload: dict) -> float:
     return fmean(levels.values())
 
 
-def _stability_grid(ledger, emit) -> None:
-    payload = _grid(ledger)
-    support = ledger.declare_support(
+def _grid_support(ledger, payload: dict) -> str:
+    """The grid's measured support, declared once for every reading on it."""
+    return ledger.declare_support(
         "stability_ranking_error_grid",
         f"{len(payload['arms'])} checkpoints on the MegaScale single-substitution cohort: "
         f"{payload['support']['groups']} wild-type family groups over "
         f"{payload['support']['sites']} sites and {payload['support']['rows']} rows, three split "
         f"seeds averaged inside the family before resampling; the endpoint is "
         f"{payload['endpoint']}; {payload['multiplicity']}")
+
+
+def _stability_grid(ledger, emit) -> None:
+    payload = _grid(ledger)
+    support = _grid_support(ledger, payload)
     emit(GRID, ("arms",), identifier="stability_grid/arms",
          claim="checkpoints the refitted stability grid scores on every contrast",
          family="stability_grid", support=support, unit="checkpoints", kind="support_count",
@@ -706,3 +750,311 @@ def _activity_precision_ratio(ledger, emit, cells: dict[tuple[str, str], dict]) 
                 "them",
           family="phenotype_breadth", support=cell["support"], unit="dimensionless ratio",
           values={arm: half_width / gains[arm]["point"] for arm in shared})
+
+
+# --------------------------------------------------------------------------- #
+# The evolutionary profile: what it is worth, and what it absorbs.
+# --------------------------------------------------------------------------- #
+
+def _profile_comparator(ledger, emit) -> None:
+    """What the profile is worth on each source, and how much it absorbs.
+
+    Each source contributes one reading of the profile's own worth and one
+    largest surviving likelihood increment over its own profile-inclusive
+    baseline. The worths are emitted; the three shares are compared and only
+    their smallest and largest member is emitted, because that pair is what the
+    manuscript quotes and the middle one is quoted nowhere.
+    """
+    sources = {"ProteinGym": _proteingym_profile(ledger, emit),
+               "Domainome abundance": _abundance_profile(ledger, emit),
+               "folding stability": _stability_profile(ledger, emit)}
+    _stability_absorbed_share(ledger, emit)
+    _largest_increment_share(emit, sources)
+
+
+def _local_context(ledger) -> tuple[dict, tuple[str, ...], tuple[str, ...]]:
+    """The ProteinGym measurement, with its roster and its fold seeds covered."""
+    payload = ledger.artifacts.json(LOCAL_CONTEXT)
+    if payload["schema_version"] != "d1_local_context_measurement_v1" or \
+            payload["status"] != "admitted":
+        raise LedgerError(f"{LOCAL_CONTEXT}: not an admitted local-context measurement")
+    summaries = payload["summaries"]
+    arms = tuple(sorted({key.split("/")[0] for key in summaries}))
+    seeds = tuple(sorted({key.split("/")[1] for key in summaries}))
+    declared = PROTEIN_SPECIALIZED + TEXT_AND_GALACTICA
+    if set(arms) != set(declared):
+        raise LedgerError(
+            f"{LOCAL_CONTEXT}: the declared rosters and this cohort's {len(arms)} arms are not the "
+            "same set, so an absorbed share over the protein-specialized models would be a share "
+            "over an unstated subset")
+    if seeds != tuple(sorted(str(seed) for seed in payload["fold_seeds"])) or \
+            len(summaries) != len(arms) * len(seeds):
+        raise LedgerError(f"{LOCAL_CONTEXT}: the measured cells are not every arm at every "
+                          "declared fold seed")
+    return payload, arms, seeds
+
+
+def _proteingym_support(ledger, payload: dict) -> str:
+    support = payload["support"]
+    return ledger.declare_support(
+        "proteingym_profile_contrast",
+        f"the ProteinGym mutation cohort: {support['n_variants']} variants from "
+        f"{support['n_assays']} assays in {support['n_families']} wild-type clusters at 50% "
+        f"identity, held out by cluster at three split seeds; the profile contrast is read between "
+        f"control designs differing in the mutation-local independent-site profile block alone, "
+        f"and those designs carry no model quantity and are identical for every arm")
+
+
+def _design_ranking(payload: dict, arms: tuple[str, ...], seeds: tuple[str, ...],
+                    design: str) -> float:
+    """One model-independent control design's held-out ranking, three-seed mean.
+
+    The measurement states that every model-independent design is predicted
+    bit-identically for every arm. That is what makes the design's ranking a
+    property of the controls rather than of an arm, so it is checked here and a
+    design that differs across arms is not read as one control reading.
+    """
+    if design not in payload["model_independent_designs"]:
+        raise LedgerError(f"{LOCAL_CONTEXT}: {design} is not a model-independent design, so its "
+                          "ranking is not the controls' own")
+    field = f"{design}_spearman"
+    per_arm = {arm: tuple(round(payload["summaries"][f"{arm}/{seed}"][field]["point"], 12)
+                          for seed in seeds)
+               for arm in arms}
+    if len(set(per_arm.values())) != 1:
+        raise LedgerError(f"{LOCAL_CONTEXT}: the {design} design's held-out ranking differs across "
+                          "arms, so it is not one control reading")
+    return fmean(payload["summaries"][f"{arms[0]}/{seed}"][field]["point"] for seed in seeds)
+
+
+def _arm_increment(payload: dict, arm: str, seeds: tuple[str, ...],
+                   design: str) -> tuple[float, bool]:
+    """One arm's likelihood increment over a design, and whether it holds."""
+    cells = [payload["summaries"][f"{arm}/{seed}"][f"increment_M_{design}"] for seed in seeds]
+    point = fmean(float(cell["point"]) for cell in cells)
+    return point, all(cell["excludes_zero"] and cell["point"] > 0.0 for cell in cells)
+
+
+def _proteingym_profile(ledger, emit) -> dict:
+    """The profile's worth on ProteinGym, and the share it absorbs there."""
+    payload, arms, seeds = _local_context(ledger)
+    support = _proteingym_support(ledger, payload)
+    bare, with_profile = PROFILE_WORTH_DESIGNS
+    worth = _design_ranking(payload, arms, seeds, with_profile) - \
+        _design_ranking(payload, arms, seeds, bare)
+    if worth <= 0.0:
+        raise LedgerError(f"{LOCAL_CONTEXT}: the profile block does not raise the composition "
+                          "control's held-out ranking, so it is worth nothing to divide by")
+    emit(LOCAL_CONTEXT, ("summaries", "<model-independent designs>",
+                         f"<{with_profile} minus {bare}>", "point"),
+         identifier="evolutionary_profile/proteingym/own_worth",
+         claim="what the fitted independent-site profile block is worth on its own on ProteinGym: "
+               "the held-out mutation-ranking increment it adds to the composition control, as the "
+               "three-seed mean of two model-independent control designs; no local window is in "
+               "either",
+         family="evolutionary_profile", support=support, unit=RANKING_UNIT, kind="estimate",
+         value=worth, level="control",
+         reason="the measurement carries a cluster-bootstrap interval for each design's own "
+                "ranking and none for the difference between two designs, so none is copied and "
+                "none is fitted here")
+
+    held_bare, held_profile = WINDOW_HELD_DESIGNS
+    shares = {}
+    for arm in PROTEIN_SPECIALIZED:
+        before, _ = _arm_increment(payload, arm, seeds, held_bare)
+        after, _ = _arm_increment(payload, arm, seeds, held_profile)
+        if before <= 0.0:
+            raise LedgerError(f"{LOCAL_CONTEXT}: {arm}'s likelihood increment over "
+                              f"{held_bare} is not positive, so no share of it is absorbed")
+        shares[arm] = 100.0 * (1.0 - after / before)
+    _span(emit, LOCAL_CONTEXT, ("summaries", "<protein-specialized or adapted>",
+                                f"<increment_M_{held_profile} over increment_M_{held_bare}>"),
+          prefix="evolutionary_profile/proteingym/absorbed_share_window_held",
+          claim=f"share of the ProteinGym likelihood increment the profile block absorbs with the "
+                f"qualified local window held fixed in both baselines, across the "
+                f"{len(PROTEIN_SPECIALIZED)} protein-specialized or adapted checkpoints",
+          family="evolutionary_profile", support=support, unit="percent", values=shares)
+
+    best, increment = max(
+        ((arm, _arm_increment(payload, arm, seeds, held_profile)) for arm in arms),
+        key=lambda entry: entry[1][0])
+    if not increment[1]:
+        raise LedgerError(f"{LOCAL_CONTEXT}: the largest likelihood increment over "
+                          f"{held_profile} is {best}'s and it does not hold at every split, so it "
+                          "is not an increment this section reports")
+    return {"worth": worth, "support": support, "increment": increment[0], "arm": best,
+            "path": LOCAL_CONTEXT, "baseline": "profile- and window-inclusive",
+            "pointer": ("summaries", f"<{best}>", f"<increment_M_{held_profile} over the "
+                        "profile's own worth>", "point")}
+
+
+def _ladder_entry(ledger, path: str, source: str, partner_digest: str) -> tuple[dict, dict, float]:
+    """One gate ladder's profile entry, on the cohort its partner panel reads.
+
+    The ladder and the panel it is quoted beside have to be the same cohort, or
+    a contribution measured on one population would be divided into an
+    increment measured on another.
+    """
+    payload = ledger.artifacts.json(path)
+    if payload["cohort_sha256"] != partner_digest:
+        raise LedgerError(f"{path}: the ladder's cohort is not the panel's, so the profile's worth "
+                          "and the increment over it are two populations")
+    block = LADDER_PROFILE_BLOCK[source]
+    entries = {entry["candidate"]: entry for entry in payload["ladder"]}
+    if block not in entries:
+        raise LedgerError(f"{path}: the ladder offers {sorted(entries)} and not {block}, so the "
+                          "profile block has no own contribution here")
+    entry = entries[block]
+    if block in entry["standing_set"]:
+        raise LedgerError(f"{path}: {block} is already in the set it is offered against")
+    seeds = sorted(str(seed) for seed in payload["split_seeds"])
+    increments = entry["spearman_increment"]
+    if sorted(increments) != seeds:
+        raise LedgerError(f"{path}: {block}'s ranking contribution does not cover the gate's "
+                          "split seeds")
+    points = []
+    for seed in seeds:
+        cell = increments[seed]
+        low, high = cell["interval"]
+        if not low <= cell["point"] <= high:
+            raise LedgerError(f"{path}: {block}'s interval at {seed} does not bracket its point")
+        points.append(float(cell["point"]))
+    worth = fmean(points)
+    if worth <= 0.0:
+        raise LedgerError(f"{path}: {block} does not raise the standing set's held-out ranking, so "
+                          "it is worth nothing to divide by")
+    return payload, entry, worth
+
+
+def _ladder_worth_row(ledger, emit, *, path: str, source: str, name: str, reading: str,
+                      support: str, payload: dict, entry: dict, worth: float) -> None:
+    block = LADDER_PROFILE_BLOCK[source]
+    emit(path, ("ladder", f"<{block}>", "spearman_increment", "<three-seed mean>", "point"),
+         identifier=f"evolutionary_profile/{source}/own_worth",
+         claim=f"what the fitted independent-site profile block ({block}) is worth on its own on "
+               f"{name}: its held-out {reading} increment over the standing "
+               f"{'+'.join(entry['standing_set'])} control set, as the three-seed mean of the gate "
+               f"ladder's own contribution; the gate "
+               f"{'kept' if entry['qualified'] else 'discarded'} it under its squared-error "
+               "qualification rule",
+         family="evolutionary_profile", support=support, unit=RANKING_UNIT, kind="estimate",
+         value=worth, level="control",
+         reason="the ladder carries a group-bootstrap interval for each split seed's own "
+                "contribution and none for their mean; split seeds are a sensitivity and not "
+                "replicates, so no interval is copied onto the mean")
+
+
+def _abundance_profile(ledger, emit) -> dict:
+    """The profile's worth on Domainome, and the increment that survives it."""
+    panel = ledger.artifacts.json(ABUNDANCE)
+    payload, entry, worth = _ladder_entry(ledger, ABUNDANCE_LADDER, "abundance",
+                                          panel["cohort_sha256"])
+    units = payload["effective_units"]
+    support = ledger.declare_support(
+        "domain_abundance_profile_contrast",
+        f"the Domainome cohort's control ladder, on the cohort digest its fitted panel reads: "
+        f"{units['variants']} substitutions over {units['domains']} domains in {units['groups']} "
+        f"family groups, held out by group at three split seeds; a candidate block's own "
+        f"within-domain ranking contribution over the standing set it is offered against, and the "
+        f"likelihood increment over the full qualified set, on that one cohort")
+    _ladder_worth_row(ledger, emit, path=ABUNDANCE_LADDER, source="abundance",
+                      name="Domainome abundance", reading="within-domain abundance ranking",
+                      support=support, payload=payload, entry=entry, worth=worth)
+    best, increment = None, 0.0
+    for arm, block in sorted(panel["arms"].items()):
+        cell = block["cells"]["primary_likelihood_spearman"]
+        if cell["three_seed_mean"] > increment:
+            best, increment, verdict = arm, float(cell["three_seed_mean"]), cell["verdict"]
+    if best is None or verdict != "above zero":
+        raise LedgerError(f"{ABUNDANCE}: the largest abundance ranking increment is {best}'s and "
+                          "its verdict is not above zero, so it is not an increment this section "
+                          "reports")
+    return {"worth": worth, "support": support, "increment": increment, "arm": best,
+            "path": ABUNDANCE, "baseline": "full qualified control set",
+            "pointer": ("arms", f"<{best}>", "cells", "primary_likelihood_spearman",
+                        "<three_seed_mean over the profile's own worth>")}
+
+
+def _stability_profile(ledger, emit) -> dict:
+    """The profile's worth on folding stability, and what survives it there."""
+    grid = _grid(ledger)
+    payload, entry, worth = _ladder_entry(ledger, STABILITY_LADDER, "stability",
+                                          grid["support"]["cohort_sha256"])
+    support = ledger.declare_support(
+        "stability_profile_contrast",
+        f"the MegaScale single-substitution cohort's frozen control ladder, on the cohort digest "
+        f"the refitted grid reads: {payload['rows']} rows over {payload['sites']} sites in "
+        f"{payload['groups']} family groups, held out by group at three split seeds; a candidate "
+        f"block's own within-background ranking contribution over the standing set it is offered "
+        f"against, and the likelihood increment over the profile-inclusive design, on that one "
+        f"cohort")
+    _ladder_worth_row(ledger, emit, path=STABILITY_LADDER, source="stability",
+                      name="folding stability", reading="within-background stability ranking",
+                      support=support, payload=payload, entry=entry, worth=worth)
+    columns = _contrast(grid, "profile_ranking")
+    best = max(columns, key=lambda arm: columns[arm]["point"])
+    if columns[best]["verdict"] != RESOLVED_ABOVE:
+        raise LedgerError(f"{GRID}: the largest beyond-profile stability increment is {best}'s and "
+                          "it does not resolve above zero, so it is not an increment this section "
+                          "reports")
+    return {"worth": worth, "support": support, "increment": columns[best]["point"], "arm": best,
+            "path": GRID, "baseline": "profile-inclusive design",
+            "pointer": ("families", "profile_ranking", "bands", "point",
+                        f"<{best} over the profile's own worth>")}
+
+
+def _stability_absorbed_share(ledger, emit) -> None:
+    """How much of the stability ranking gain the profile-inclusive design takes.
+
+    The grid's profile-inclusive design adds the independent-site profile block
+    and composition over the matched baseline, so the claim names both: on this
+    endpoint the frozen ladder measures composition's own ranking contribution
+    at a fiftieth of the profile block's, but the grid carries no
+    composition-only design to decompose the share with.
+    """
+    payload = _grid(ledger)
+    support = _grid_support(ledger, payload)
+    matched = _contrast(payload, "matched_ranking")
+    profile = _contrast(payload, "profile_ranking")
+    resolved = sorted(arm for arm, column in matched.items() if column["low"] > 0.0)
+    total = sum(matched[arm]["point"] for arm in resolved)
+    if not resolved or total <= 0.0:
+        raise LedgerError(f"{GRID}: the resolved stability ranking gain is not positive, so no "
+                          "share of it is absorbed")
+    kept = sum(profile[arm]["point"] for arm in resolved)
+    emit(GRID, ("families", "<profile_ranking over matched_ranking>", "bands", "point",
+                "<resolved above zero>"),
+         identifier="evolutionary_profile/stability/absorbed_share",
+         claim=f"share of the stability ranking gain the profile-inclusive design absorbs, as one "
+               f"minus the ratio of the two designs' summed increments over the {len(resolved)} "
+               f"checkpoints that resolve beyond the matched baseline; the design adds the "
+               f"independent-site profile block and composition, and the grid carries no "
+               f"composition-only design to separate them",
+         family="evolutionary_profile", support=support, unit="percent", kind="ratio",
+         value=100.0 * (1.0 - kept / total), level="likelihood")
+
+
+def _largest_increment_share(emit, sources: dict[str, dict]) -> None:
+    """The largest surviving increment as a share of the profile's own worth.
+
+    One share per source, each a quantity of that source alone: the largest
+    likelihood increment any checkpoint holds over that source's own
+    profile-inclusive baseline, divided by what the profile block is worth
+    there. The span over the three is what the manuscript quotes, so each end
+    carries the support and the artifact of the source it comes from.
+    """
+    shares = {name: 100.0 * info["increment"] / info["worth"]
+              for name, info in sources.items()}
+    if len(shares) < 3:
+        raise LedgerError("the span over the phenotype sources needs all three of them")
+    for bound, name in (("min", min(shares, key=shares.get)),
+                        ("max", max(shares, key=shares.get))):
+        info = sources[name]
+        emit(info["path"], info["pointer"],
+             identifier="evolutionary_profile/largest_increment_over_profile_worth/"
+                        f"{bound}",
+             claim=f"largest likelihood increment any checkpoint holds over the {info['baseline']} "
+                   f"baseline on {name} ({info['arm']}), as a share of what the profile block is "
+                   f"worth on that source; the {bound} of the three phenotype sources",
+             family="evolutionary_profile", support=info["support"], unit="percent",
+             kind="range_bound", value=shares[name], level="likelihood")

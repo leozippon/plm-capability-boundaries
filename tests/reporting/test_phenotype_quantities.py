@@ -17,6 +17,12 @@ reproduce its own published point or the share would pair two readings. And the
 calibrated reading has to resolve for exactly the models the ranking reading
 resolves for, because "the same 12 models" is the claim.
 
+The profile comparator adds three more. A control design whose held-out ranking
+is not identical across arms is not the controls' own reading; a ladder measured
+on another cohort cannot be divided into an increment measured on this one; and
+the largest increment a source carries has to be one that holds at every split,
+or the share is taken over a number the section does not report.
+
 The last test runs on the retained artifacts and asserts the numbers the
 manuscript quotes, at the precision it quotes them to.
 """
@@ -147,7 +153,7 @@ def grid_payload(*, resolving: tuple[str, ...] = RESOLVING,
             "families": families, "endpoint": "ddG in kcal/mol",
             "multiplicity": "one 33-column maximum-statistic family per contrast",
             "support": {"groups": groups, "sites": 5664, "rows": 25856,
-                        "split_seeds": list(SEEDS)}}
+                        "cohort_sha256": COHORT, "split_seeds": list(SEEDS)}}
 
 
 def fit_payload(arm: str, point: float, *, baseline: float = BASELINE,
@@ -164,12 +170,76 @@ def fit_payload(arm: str, point: float, *, baseline: float = BASELINE,
     }
 
 
+COHORT = "cohort-digest"
+#: The control designs' held-out ranking, so the profile is worth 0.15 on its
+#: own and 0.145 with the qualified window held fixed in both designs.
+DESIGN_RANKING = {"C": 0.30, "C_P": 0.45, "C_wall": 0.335, "C_P_wall": 0.48}
+#: Three absorbed shares over the protein-specialized arms: 75, 80 and 85%.
+WINDOW_HELD_AFTER = {"progen3-3b": 0.025, "protgpt2": 0.015}
+LADDER_WORTH = {"abundance": 0.10, "stability": 0.05}
+
+
+def local_context_payload(*, designs: dict[str, float] | None = None,
+                          drifting_design: str | None = None,
+                          flat_increment: str | None = None,
+                          unresolved_best: bool = False) -> dict:
+    designs = designs or DESIGN_RANKING
+    arms = GRID_ARMS
+    summaries = {}
+    for index, arm in enumerate(arms):
+        for seed in SEEDS:
+            cell = {}
+            for design, level in designs.items():
+                point = level
+                if design == drifting_design and arm == arms[0]:
+                    point += 0.01
+                cell[f"{design}_spearman"] = {"point": point, "interval": [point - 0.02,
+                                                                           point + 0.02]}
+            protein = arm in phenotype.PROTEIN_SPECIALIZED
+            before = 0.10 if protein else 0.001
+            if arm == flat_increment:
+                before = 0.0
+            after = WINDOW_HELD_AFTER.get(arm, 0.02) if protein else 0.0005
+            cell["increment_M_C_wall"] = {"point": before, "excludes_zero": protein}
+            cell["increment_M_C_P_wall"] = {
+                "point": after,
+                "excludes_zero": protein and not (unresolved_best and arm == "progen3-3b"),
+            }
+            summaries[f"{arm}/{seed}"] = cell
+    return {"schema_version": "d1_local_context_measurement_v1", "status": "admitted",
+            "fold_seeds": list(SEEDS),
+            "model_independent_designs": sorted(designs),
+            "support": {"n_assays": 201, "n_families": 163, "n_variants": 25728},
+            "summaries": summaries}
+
+
+def ladder_payload(source: str, *, cohort: str = COHORT, block: str | None = None,
+                   worth: float | None = None) -> dict:
+    block = block if block is not None else phenotype.LADDER_PROFILE_BLOCK[source]
+    worth = LADDER_WORTH[source] if worth is None else worth
+    standing = ["ident", "geom", "comp", "chem"] if source == "abundance" else \
+        ["ident", "geom", "chem"]
+    entry = {"candidate": block, "standing_set": standing, "qualified": source == "abundance",
+             "disposition": "kept" if source == "abundance" else "discarded",
+             "spearman_increment": {str(seed): {"point": worth, "interval": [worth / 2,
+                                                                             worth * 1.5],
+                                                "excludes_zero": True, "groups": 96}
+                                    for seed in SEEDS}}
+    payload = {"cohort_sha256": cohort, "split_seeds": list(SEEDS), "ladder": [entry],
+               "qualification_rule": "positive at every split seed"}
+    if source == "abundance":
+        payload["effective_units"] = {"variants": 109568, "domains": 428, "groups": 96}
+    else:
+        payload.update({"rows": 25856, "sites": 5664, "groups": 101})
+    return payload
+
+
 def abundance_payload(*, resolved: tuple[str, ...] = ("progen2-xlarge", "instructprotein"),
                       inconsistent: str | None = None) -> dict:
     arms = {}
     for arm in GRID_ARMS:
         above = arm in resolved
-        point = 0.005 if above else 0.0001
+        point = (0.005 if arm == "progen2-xlarge" else 0.004) if above else 0.0001
         excludes = above or arm == inconsistent
         arms[arm] = {"cells": {"primary_likelihood_spearman": {
             "licensed_for_a_verdict": True,
@@ -179,7 +249,7 @@ def abundance_payload(*, resolved: tuple[str, ...] = ("progen2-xlarge", "instruc
                          for seed in SEEDS},
         }}}
     return {"schema": "nested_gate_panel_v1", "roster_complete": True,
-            "arms_fitted": len(GRID_ARMS), "arms": arms,
+            "arms_fitted": len(GRID_ARMS), "arms": arms, "cohort_sha256": COHORT,
             "qualified_control_set": ["ident", "geom", "prof2"],
             "verdict_rule": "above zero only when all three per-seed intervals exclude zero",
             "effective_units": {"variants": 109568, "domains": 428, "groups": 96}}
@@ -187,15 +257,22 @@ def abundance_payload(*, resolved: tuple[str, ...] = ("progen2-xlarge", "instruc
 
 def stage(tmp_path, *, panels: dict | None = None, breadth: dict | None = None,
           matched: dict | None = None, grid: dict | None = None, fits: dict | None = None,
-          abundance: dict | None = None) -> Ledger:
+          abundance: dict | None = None, context: dict | None = None,
+          ladders: dict[str, dict] | None = None) -> Ledger:
     panels = panels if panels is not None else {
         key: panel_payload(key[0], key[1], groups, resolved)
         for key, (groups, resolved) in CELLS.items()}
+    ladders = ladders if ladders is not None else {
+        source: ladder_payload(source) for source in ("abundance", "stability")}
     payloads = {phenotype.BREADTH: breadth if breadth is not None else breadth_payload(panels),
                 phenotype.MATCHED: matched if matched is not None else matched_payload(),
                 phenotype.GRID: grid if grid is not None else grid_payload(),
                 phenotype.ABUNDANCE: abundance if abundance is not None
-                else abundance_payload()}
+                else abundance_payload(),
+                phenotype.LOCAL_CONTEXT: context if context is not None
+                else local_context_payload(),
+                phenotype.ABUNDANCE_LADDER: ladders["abundance"],
+                phenotype.STABILITY_LADDER: ladders["stability"]}
     for key, panel in panels.items():
         payloads[phenotype.PANELS[key]] = panel
     published = payloads[phenotype.GRID]["families"]["matched_calibrated_error"]
@@ -393,6 +470,7 @@ def test_the_derived_shares_follow_the_arithmetic_their_claims_state(tmp_path):
 def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
     artifacts = Artifacts()
     needed = [phenotype.BREADTH, phenotype.MATCHED, phenotype.GRID, phenotype.ABUNDANCE,
+              phenotype.LOCAL_CONTEXT, phenotype.ABUNDANCE_LADDER, phenotype.STABILITY_LADDER,
               *phenotype.PANELS.values()]
     for relative in needed:
         if not artifacts.exists(relative):
@@ -452,3 +530,92 @@ def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
 
     assert (quoted("domainome/primary_ranking/resolved_improvement/min", 3),
             quoted("domainome/primary_ranking/resolved_improvement/max", 3)) == (0.001, 0.008)
+
+    assert quoted("evolutionary_profile/proteingym/own_worth", 3) == 0.149
+    # The three-seed mean, which is the convention the other two sources' quoted
+    # figures are only reproducible under. The Domainome ladder's primary split
+    # alone is 0.1134, and it carries a group-bootstrap interval of its own.
+    assert quoted("evolutionary_profile/abundance/own_worth", 3) == 0.114
+    assert quoted("evolutionary_profile/stability/own_worth", 3) == 0.049
+    assert (quoted("evolutionary_profile/proteingym/absorbed_share_window_held/min", 0),
+            quoted("evolutionary_profile/proteingym/absorbed_share_window_held/max", 0)) == \
+        (77.0, 86.0)
+    assert (quoted("evolutionary_profile/largest_increment_over_profile_worth/min", 0),
+            quoted("evolutionary_profile/largest_increment_over_profile_worth/max", 0)) == \
+        (7.0, 17.0)
+    # "about three quarters" of the stability ranking gain.
+    assert quoted("evolutionary_profile/stability/absorbed_share", 0) == 75.0
+
+
+def test_the_profile_comparator_reads_each_source_on_its_own_baseline(tmp_path):
+    emitted = rows(stage(tmp_path))
+    worth = emitted["evolutionary_profile/proteingym/own_worth"]
+    assert round(worth.value, 9) == round(DESIGN_RANKING["C_P"] - DESIGN_RANKING["C"], 9)
+    assert worth.kind == "estimate" and worth.interval is None and worth.no_interval_reason
+    assert worth.level == "control"
+    for source in ("abundance", "stability"):
+        assert round(emitted[f"evolutionary_profile/{source}/own_worth"].value, 9) == \
+            LADDER_WORTH[source]
+    # The window is in both designs, so the share is the profile's own.
+    held = DESIGN_RANKING["C_P_wall"] - DESIGN_RANKING["C_wall"]
+    assert round(worth.value, 9) != round(held, 9)
+    span = (emitted["evolutionary_profile/proteingym/absorbed_share_window_held/min"].value,
+            emitted["evolutionary_profile/proteingym/absorbed_share_window_held/max"].value)
+    assert tuple(round(bound, 6) for bound in span) == (75.0, 85.0)
+    assert emitted["evolutionary_profile/stability/absorbed_share"].unit == "percent"
+
+
+def test_the_increment_share_span_carries_each_ends_own_source(tmp_path):
+    emitted = rows(stage(tmp_path))
+    low = emitted["evolutionary_profile/largest_increment_over_profile_worth/min"]
+    high = emitted["evolutionary_profile/largest_increment_over_profile_worth/max"]
+    # Abundance is the smallest share and stability the largest in this staging,
+    # and each end is on the support and the artifact of its own source.
+    assert round(low.value, 6) == round(100.0 * 0.005 / LADDER_WORTH["abundance"], 6)
+    assert round(high.value, 6) == round(100.0 * POINTS["progen3-3b"] / LADDER_WORTH["stability"],
+                                         6)
+    assert low.support_id != high.support_id
+    assert low.source_path == phenotype.ABUNDANCE and high.source_path == phenotype.GRID
+    assert low.kind == high.kind == "range_bound" and low.unit == high.unit == "percent"
+
+
+def test_a_control_design_that_differs_across_arms_is_not_one_reading(tmp_path):
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, context=local_context_payload(drifting_design="C_P"))
+    assert "differs across arms" in str(refusal.value)
+
+
+def test_an_arm_with_no_gain_to_absorb_refuses_the_share(tmp_path):
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, context=local_context_payload(flat_increment="progen2-base"))
+    assert "no share of it is absorbed" in str(refusal.value)
+
+
+def test_a_largest_increment_that_does_not_hold_at_every_split_refuses(tmp_path):
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, context=local_context_payload(unresolved_best=True))
+    assert "does not hold at every split" in str(refusal.value)
+
+
+def test_a_ladder_measured_on_another_cohort_refuses(tmp_path):
+    ladders = {"abundance": ladder_payload("abundance", cohort="another-cohort"),
+               "stability": ladder_payload("stability")}
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, ladders=ladders)
+    assert "two populations" in str(refusal.value)
+
+
+def test_a_ladder_without_the_profile_block_refuses(tmp_path):
+    ladders = {"abundance": ladder_payload("abundance"),
+               "stability": ladder_payload("stability", block="chem")}
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, ladders=ladders)
+    assert "has no own contribution here" in str(refusal.value)
+
+
+def test_a_profile_block_worth_nothing_refuses_the_division(tmp_path):
+    ladders = {"abundance": ladder_payload("abundance", worth=0.0),
+               "stability": ladder_payload("stability")}
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, ladders=ladders)
+    assert "worth nothing to divide by" in str(refusal.value)
