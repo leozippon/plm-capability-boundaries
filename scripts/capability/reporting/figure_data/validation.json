@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-15T18:25:23.478173+00:00",
+  "date": "2026-10-15T19:00:47.302902+00:00",
   "journal": "Nature Computational Science",
   "article_type": "Analysis",
   "status": "format_and_provenance_checks_qualified_pass",
@@ -27,19 +27,19 @@
   "pdfs": {
     "main": {
       "pages": 25,
-      "sha256": "33147f5f5f9e88e744f9aad2fcac46a9eba08ecb121ee86a5c981729f2c8268d",
+      "sha256": "9c658a83c2329c53c4c7616036b35e04ed154110f12fd2ac1deb6627ab052b98",
       "footer_faults": []
     },
     "supplementary-information": {
       "pages": 16,
-      "sha256": "118aa8d7c8956e506997290beffc4ee2c18ba19cf0829084c862058fa3ceae0b",
+      "sha256": "b78540005782951a32c36539385c991c348f1854efd90b0edcdb6ac7521b8b2d",
       "footer_faults": []
     }
   },
   "failures": [],
   "files_sha256": {
-    "main.tex": "b3853cf2a29e32ecd5a4ec3818330d2422d325136ba7d79263d051c6b5e152d3",
-    "supplementary-information.tex": "40177702e23c2eab702ad3a388cc345d9b263ecef93eafdae78bdfe24d807bc7",
+    "main.tex": "9cd5bf01abedc56aee4eb21fe0465ff8fe2724e6ac5743310984934fe5e63c26",
+    "supplementary-information.tex": "46949163f5539c65f5b307466db5521e85f18561c905787ff56bf68d7d57995e",
     "references.bib": "559e3e7c365dcb01f5f01c2bdebea8de56b40d4ecdc9779463cf498679d377fb",
     "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
     "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",
@@ -77,7 +77,7 @@
   "source_provenance_sha256": "b3607f1b8965f5d37af5e65ae1ad87cf76e8d9083074b2a24c10979de38e1836",
   "render_receipts_sha256": {
     "scripts/capability/reporting/figure_data/main/figure_validation.json": "d5676e6860a9adc3c4c312cd930c1944ce2ad3bf5d52928be2c7bb06db54797f",
-    "scripts/capability/reporting/figure_data/main/framework_validation.json": "40c713305f6b320b26296e3b66489e0fb1df66fb4c92b17ed0c5e100ded38455"
+    "scripts/capability/reporting/figure_data/main/framework_validation.json": "41e0e0d6e35ad3d643d9392ebce5ea66792229e3602e77e7f9b046d7b14e4e09"
   },
   "scientific_completeness_certified": false,
   "evidence_boundary": "Structural predictor-confidence evidence is supplementary and calibration-limited; aggregate provenance is distinct from full raw-run replay.",
