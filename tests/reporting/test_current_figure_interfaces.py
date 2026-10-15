@@ -274,14 +274,17 @@ def test_placed_7_8_typography_is_measured_with_explicit_panel_ids():
             validator.placed_scale(option, 370.08, 144)
 
 
-def test_new_deliberate_section_structure_and_six_results():
-    text = r'\section{Results}' + r'\subsection{Result}' * 6
+def test_new_deliberate_section_structure_and_seven_results():
+    text = r'\section{Results}' + r'\subsection{Result}' * 7
     text += r'\section{Discussion}\section{Limitations}\section{Methods}\subsection{Method}'
     sections = validator.arguments(text, 'section')
-    subsections = {'Results': 6, 'Discussion': 0, 'Limitations': 0, 'Methods': 1}
+    subsections = {'Results': 7, 'Discussion': 0, 'Limitations': 0, 'Methods': 1}
     assert validator.section_faults(sections, subsections) == []
     assert validator.section_faults([s for s in sections if s != 'Limitations'], subsections)
-    assert validator.section_faults(sections, dict(subsections, Results=5))
+    # The count is exact in both directions: the generative-guidance section is
+    # the seventh, and neither six nor eight titles may pass.
+    assert validator.section_faults(sections, dict(subsections, Results=6))
+    assert validator.section_faults(sections, dict(subsections, Results=8))
     # Concrete support counts remain retained data, not specimen uncertainty.
     table = pd.DataFrame({'arm': ['x'], 'assays': [3], 'source_path': ['fit.json'],
                           'source_sha256': ['0' * 64], 'source_pointer': ['assays']})

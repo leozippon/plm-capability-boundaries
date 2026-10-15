@@ -472,8 +472,8 @@ def section_faults(sections, subsections):
     faults = []
     if sections != EXPECTED_SECTIONS:
         faults.append('Expected unheaded introduction, Results, Discussion, Limitations, Methods')
-    if subsections.get('Results') != 6:
-        faults.append('Results must contain the six deliberate result titles')
+    if subsections.get('Results') != 7:
+        faults.append('Results must contain the seven deliberate result titles')
     if not subsections.get('Methods', 0):
         faults.append('Methods needs topical subheadings')
     for section in ['Discussion', 'Limitations']:
