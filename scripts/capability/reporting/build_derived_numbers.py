@@ -4714,10 +4714,13 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     from scripts.capability.reporting.followup_quantities import add_followup_quantities
     from scripts.capability.reporting.propagation_quantities import add_propagation_quantities
     from scripts.capability.reporting.phenotype_quantities import add_phenotype_quantities
+    from scripts.capability.reporting.coupling_guidance_quantities import (
+        add_coupling_guidance_quantities)
     add_current_quantities(ledger)
     add_followup_quantities(ledger)
     add_propagation_quantities(ledger)
     add_phenotype_quantities(ledger)
+    add_coupling_guidance_quantities(ledger)
     assign_representation_conditions(ledger)
     payload = ledger.write(out_dir, scope=(
         "Every quantity the manuscript cites that a retained artifact or gate record "
