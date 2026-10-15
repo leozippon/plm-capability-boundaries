@@ -527,6 +527,16 @@ def validate(source_only=False):
     main_tables = len(re.findall(r"\\begin\{table\}", main))
     require(len(main_figures) + main_tables <= 6, "More than six main displays")
     require(len(main_figures) == 5 and len(supp_figures) == 4, 'Expected five main and four supplementary figures')
+
+    # A note number declared in the shared numbering source but never rendered
+    # is invisible: LaTeX ignores a \supnote placed after \end{document} and
+    # the build still succeeds, so the note silently vanishes from the PDF.
+    declared_notes = set(re.findall(r'\\defnote\{([^}]*)\}', (ROOT / 'supplementary-notes.tex').read_text()))
+    rendered_notes = set(re.findall(r'\\supnote\{([^}]*)\}', supp.split(r'\end{document}')[0]))
+    require(declared_notes == rendered_notes,
+            f'Declared and rendered Supplementary Notes differ: '
+            f'declared-not-rendered {sorted(declared_notes - rendered_notes)}, '
+            f'rendered-not-declared {sorted(rendered_notes - declared_notes)}')
     subsections = {}
     for index, section in enumerate(sections):
         chunk = main.split(r"\section{" + section + "}", 1)[1]
