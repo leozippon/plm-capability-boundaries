@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_pdf_names_and_current_asset_locations():
-    assert len(paths.PDF_NAMES) == len(set(paths.PDF_NAMES.values())) == 9
+    assert len(paths.PDF_NAMES) == len(set(paths.PDF_NAMES.values())) == 10
     assert paths.figure_pdf('Fig1_framework') == Path('manuscript/submission/figures/figure-1-framework.pdf')
     assert paths.figure_pdf('matched-generators').name == 'supplementary-figure-4-matched-generators.pdf'
     assert paths.FRAMEWORK_SOURCE == Path('manuscript/assets/framework-original.png')

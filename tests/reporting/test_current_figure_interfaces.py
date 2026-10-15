@@ -53,7 +53,7 @@ def test_full_render_uses_public_tables_without_results_and_routes_supplements(i
     renderer.main_figures()
     renderer.supplementary_figures()
     assert not (root / 'results').exists()
-    assert len(renderer.CHECKS) == 8
+    assert len(renderer.CHECKS) == 9
     for check in renderer.CHECKS:
         supplement = not check['figure'].startswith('Fig')
         for kind in ['pdf', 'svg', 'plotted_source']:

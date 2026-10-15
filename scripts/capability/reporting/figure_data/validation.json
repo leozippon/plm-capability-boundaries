@@ -1,49 +1,47 @@
 {
-  "date": "2026-10-14T13:34:09.856895+00:00",
+  "date": "2026-10-15T18:03:12.890912+00:00",
   "journal": "Nature Computational Science",
   "article_type": "Analysis",
-  "status": "format_and_provenance_checks_qualified_pass",
+  "status": "fail",
   "not_certified_scope": [
     "Original supplied-raster text is not editable or font-certified; original colors are not recolored. Preview DPI is not native artwork DPI."
   ],
   "warnings": [
     "Supplied raster: native [1536, 1024] at 298.41 DPI; burned-in text not certified; 450-DPI preview does not raise native resolution."
   ],
-  "main_word_count": 3495,
-  "abstract_word_count": 141,
+  "main_word_count": 3497,
+  "abstract_word_count": 150,
   "count_convention": "Whitespace-separated prose after removing display environments, section headings and citation/reference commands; excludes abstract, Methods, references and legends. Hyphenated tokens count once; tildes and inline-math delimiters are normalized.",
   "main_figures": 5,
   "main_tables": 0,
   "main_display_count": 5,
   "supplementary_figures": 4,
   "subsections_by_section": {
-    "Results": 6,
+    "Results": 7,
     "Discussion": 0,
     "Limitations": 0,
-    "Methods": 9
+    "Methods": 10
   },
   "references": 37,
   "maximum_main_legend_words": 133,
   "pdfs": {
     "main": {
-      "pages": 23,
-      "sha256": "c1a08cb3a98e65f2605851af36660adf5cf098672f4503083187ffcc0b8cf2a0",
-      "footer_faults": []
+      "status": "not_checked_source_only"
     },
     "supplementary-information": {
-      "pages": 15,
-      "sha256": "8fd360b1abac6b37d257d2e35e61f32c100637f63585d80626276281b9254cd8",
-      "footer_faults": []
+      "status": "not_checked_source_only"
     }
   },
-  "failures": [],
+  "failures": [
+    "Render receipt contains figures not included in the manuscript"
+  ],
   "files_sha256": {
-    "main.tex": "f4626fb8a3ccac13946806197a9af2165f5a20ebb81290eeb44959a76b10597f",
-    "supplementary-information.tex": "9e67a3507eae2ec75cb89e9a0644bbf2f06363504a743abbbe34bad7e5d6776f",
+    "main.tex": "e45896880b0626d33e55a10217425921a864718221fafdf84c4c437108801784",
+    "supplementary-information.tex": "40177702e23c2eab702ad3a388cc345d9b263ecef93eafdae78bdfe24d807bc7",
     "references.bib": "559e3e7c365dcb01f5f01c2bdebea8de56b40d4ecdc9779463cf498679d377fb",
     "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
     "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",
-    "validate_manuscript.py": "a5daac93c21e4184eea3c29967510f98fe51f8caef547ecb7db02531ab0fcd10"
+    "validate_manuscript.py": "9d86dd11e7c052d1d2773f14d7cf2ad13db7587ad107467488908fb57eec62b2"
   },
   "source_tables_sha256": {
     "capability-map-source.csv": "5a349f70229b04618cb91bc638d8c71f145ddb0967e3235e437386306d236b67",
@@ -76,8 +74,8 @@
   },
   "source_provenance_sha256": "b3607f1b8965f5d37af5e65ae1ad87cf76e8d9083074b2a24c10979de38e1836",
   "render_receipts_sha256": {
-    "scripts/capability/reporting/figure_data/main/figure_validation.json": "57a2817705c6d8eba96d08f8c3339c9c16efb7eeb41b014b72f03211c9ce82ae",
-    "scripts/capability/reporting/figure_data/main/framework_validation.json": "94e7eb5debe240097c3d73bb487347194cce5c8fdc5460a8bb1780c5b2cbb416"
+    "scripts/capability/reporting/figure_data/main/figure_validation.json": "0bf6e24eb6e15652ca4710124dd3cc1cfdb9015de68d93742718dd4fdec84cf4",
+    "scripts/capability/reporting/figure_data/main/framework_validation.json": "40c713305f6b320b26296e3b66489e0fb1df66fb4c92b17ed0c5e100ded38455"
   },
   "scientific_completeness_certified": false,
   "evidence_boundary": "Structural predictor-confidence evidence is supplementary and calibration-limited; aggregate provenance is distinct from full raw-run replay.",

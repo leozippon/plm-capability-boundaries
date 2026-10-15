@@ -3,6 +3,7 @@ Fig2_mutation,scripts/capability/reporting/figure_data/main/Fig2_mutation-plotte
 Fig3_position,scripts/capability/reporting/figure_data/main/Fig3_position-plotted.csv,153–156 available families per checkpoint,simultaneous 95%; 10000 shared family draws
 Fig4_phenotypes_and_interactions,scripts/capability/reporting/figure_data/main/Fig4_phenotypes_and_interactions-plotted.csv,a: 96; b: 101; c: 64 biological groups,a: pointwise 95%; b/c: simultaneous 95% across 33 checkpoints; different targets/scales
 Fig5_context_and_generation,scripts/capability/reporting/figure_data/main/Fig5_context_and_generation-plotted.csv,a: 134 biological groups; b: three generation streams,"a: pointwise 95%; b: 95% Student-t, df=2, not panel simultaneous"
+Fig6_guidance_and_selection,scripts/capability/reporting/figure_data/main/Fig6_guidance_and_selection-plotted.csv,eight sealed evaluation domains; the domain is the independence unit,"95% BCa over domains, 9999 resamples; realised coverage near 0.89 at eight units, so bounds read optimistic; unestimable cells carry no interval"
 native-comparators,scripts/capability/reporting/figure_data/ncs/native-comparators-plotted.csv,native: checkpoint-specific groups; text: 169 groups,pointwise 95%
 conditional-class-yield,scripts/capability/reporting/figure_data/ncs/conditional-class-yield-plotted.csv,200 attempts per class and condition,descriptive census; no sampling interval
 generation-yield,scripts/capability/reporting/figure_data/ncs/generation-yield-plotted.csv,800 attempts per procedure,descriptive census; no sampling interval

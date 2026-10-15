@@ -1,5 +1,5 @@
 {
-  "status": "qualified_pass",
+  "status": "fail",
   "not_certified_scope": [
     "Original supplied-raster text is not editable or font-certified; original colors are not recolored. Preview DPI is not native artwork DPI."
   ],
@@ -28,8 +28,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "1710da1fe647740cc9bf8aaa149311fc002d592a24cda1c88e9d908705f705b5",
-      "pdf_sha256": "95081a6ba5fcd73c9f21b1ad0bd401e6f15cd951ad6c8fa1ef3f6bb50c33a1a8"
+      "svg_sha256": "3996f1cf7c7681f45bdba3c6608667b58115ed6c8bac00213c39a4280780f4e0",
+      "pdf_sha256": "a6fb49fc67a89a7d20bec4bbf8bf28bfab3c6b0a14e8c1375e78a4b71705293e"
     },
     {
       "figure": "figures/figure-3-position.pdf",
@@ -41,8 +41,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "99f45fac45ded6e949e56a5cf2782d533ff7707bd68a487c517676d22997d0bf",
-      "pdf_sha256": "c626711826c1fa51fcb9008e4de4f2d2b5fe6d5a7d046bde40f355e4bd182213"
+      "svg_sha256": "0b1abefb98bf8b826d594261d9376e3ee7f118478f64cff4c0c023aaf2144f15",
+      "pdf_sha256": "2556635f719c44b07cc29633c210bf693558b1703faeaa047d04fd8b4fac4ba0"
     },
     {
       "figure": "figures/figure-4-phenotypes-and-interactions.pdf",
@@ -54,8 +54,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "06755e39a76627eb898a47bda8a530dbb1575a3a7d253c3948ad947523e8ab83",
-      "pdf_sha256": "bec23e5dbdb27b67529a36495773de2579c0c95db20743b0d4f88954480173e0"
+      "svg_sha256": "b23cffe75a7e6a8957cbe48307ee3002c5d17092e8d0a094beb57f3e5a9d70ba",
+      "pdf_sha256": "218302a70a36104e1e17dda07bdcc00c1e168dd540ed918aeac5417709a7aaa2"
     },
     {
       "figure": "figures/figure-5-context-and-generation.pdf",
@@ -67,8 +67,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "6397db010633129157037a71a82f78806c313c057deebf88a54a5f388241a33d",
-      "pdf_sha256": "81e9f85a7a3d6efd96e2d70688a113f55f1f066deb6d8be665336ce73bdd53f8"
+      "svg_sha256": "b931c0080161f9cdde93a16b76ea8f844e94c840ded870fb7b6b86127dc59465",
+      "pdf_sha256": "89ed5f42c8a7a41faded5c81e7d9506c5e65cd87db274a2ebf39aa1ce7028d2f"
     },
     {
       "figure": "figures/supplementary-figure-1-native-comparators.pdf",
@@ -80,8 +80,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "822ef3814829e37d16b1008abb58007c26999fb024fb640df6002204bcf8b86d",
-      "pdf_sha256": "ec080da428ffd6a4a4dbe7e4608be0bdfd351e71b9237b69cb2f8afa3b6a3ce4"
+      "svg_sha256": "ebdecf7796719a32f140428f6123f6bc041a02da10380487f9e51b27f8f3fe0e",
+      "pdf_sha256": "f8c7e74a12803172fac0c008f42e89331a0e957a58982f9ac0857bf0468bae20"
     },
     {
       "figure": "figures/supplementary-figure-2-conditional-class-yield.pdf",
@@ -93,8 +93,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "de01b7cafa9e0ca801cfef295405b9306d4098a1c7e7b39643c69f3105a29da2",
-      "pdf_sha256": "d36396c1a94a655995934f0a57f934a80cd73fa338a1188d49e2e580e3aa8540"
+      "svg_sha256": "87f4b2eafe8e528253d5704a06ab9fd97124ef3fb0b5b537d1a94c1fb1fd1e42",
+      "pdf_sha256": "6c5b440beefeb8fef198aa8ebff4cb9cec14317c3131e83161948b398f4c248d"
     },
     {
       "figure": "figures/supplementary-figure-3-generation-yield.pdf",
@@ -106,8 +106,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "ce5188e0a0adf0d5b98ce62a8fcae4b5738130e83a6308318baf5dab262c4b44",
-      "pdf_sha256": "319c837e23c7ac4a1e3f3f7648b26477946ec8acab8183d0e9443e7b3d98c5eb"
+      "svg_sha256": "64198ac0d06bb55e0b7356f9bb2de5b711692fca6be15da2782f733ff5257e63",
+      "pdf_sha256": "f2ba7a23cce652275fefbc29e1e8b0de062a363203e18d827139e28ed4f455bf"
     },
     {
       "figure": "figures/supplementary-figure-4-matched-generators.pdf",
@@ -119,8 +119,8 @@
       "label_layout_faults": [],
       "not_certified_scope": null,
       "native_raster_effective_dpi": null,
-      "svg_sha256": "5a0fabe0f88fe8ea6e3b8a6a82469acecb2829838f09a02df16425e5e1fbc9f2",
-      "pdf_sha256": "182abe2881b7319aa0eb2c5cf54b7d4f14dbbf48cd2dd2e7c47a6e8f86fe5566"
+      "svg_sha256": "c5cec60ebefd2735b5aec5363b50201405ec4023691900a833b54ea5c8536d9d",
+      "pdf_sha256": "512849076f78222d40fc7c1e423db1d44ba2a43f2e15dce5cf501354af5cc525"
     }
   ]
 }

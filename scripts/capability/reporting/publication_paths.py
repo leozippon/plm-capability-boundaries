@@ -15,6 +15,7 @@ PDF_NAMES = {
     'Fig3_position': 'figure-3-position.pdf',
     'Fig4_phenotypes_and_interactions': 'figure-4-phenotypes-and-interactions.pdf',
     'Fig5_context_and_generation': 'figure-5-context-and-generation.pdf',
+    'Fig6_guidance_and_selection': 'figure-6-guidance-and-selection.pdf',
     'native-comparators': 'supplementary-figure-1-native-comparators.pdf',
     'conditional-class-yield': 'supplementary-figure-2-conditional-class-yield.pdf',
     'generation-yield': 'supplementary-figure-3-generation-yield.pdf',

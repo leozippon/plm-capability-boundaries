@@ -4,7 +4,7 @@
   "source_sha256": {
     "manuscript/assets/framework-original.png": "cb80616065ab64bbc0e50df0ad25ebdc15dc4a40d5d6b8f7b21cc06b6c361300",
     "scripts/capability/reporting/palette.py": "635b4c1eec231211d93b579defb747596a0aed6b5a985fec3442fbb66e938c08",
-    "scripts/capability/reporting/publication_paths.py": "b9b87132dc41421e6227958198f7eb7aa164db7747b7fb36d8fa30ef34cf220e",
+    "scripts/capability/reporting/publication_paths.py": "77932ab45f2fa66ed6b4ae2b1b8067cfeaac0ea50b9409b0743e7c0a7d53ea49",
     "manuscript/assets/selection.json": "a327cc5a79737b5b24d7a1f104abc7dd33a1f3d22f10abff287da4e1fdb65bdd",
     "scripts/capability/reporting/figure_data/main/local-increments-source.csv": "91c3f1b5d79fc7bb1a02299e0f2e0ee7e792d86e08ac6ef3aa9bee6a4ceb3c05",
     "results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/local_context_measurement.json": "6d18d2f40c99e6c969121d0806794c8dd4017af4ef3bc344093e7014b160447e",

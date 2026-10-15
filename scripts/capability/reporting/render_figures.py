@@ -2,7 +2,7 @@
 """Draw the six-result manuscript from retained estimates, without new inference.
 
 Fig. 1 is assembled separately from authenticated illustration assets. This renderer
-never opens or overwrites the author's framework-original.png. It draws Figs. 2–5 and
+never opens or overwrites the author's framework-original.png. It draws Figs. 2–6 and
 four supplementary figures. Editable PDF/SVG text uses embedded TrueType fonts.
 The 7 pt body / 8 pt panel policy follows Nature's official figure specifications;
 this explicitly supersedes the previous project-only 8 pt minimum for all text.
@@ -49,6 +49,35 @@ TXT = ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl', 'dialogpt-small', 'bygpt5
        'qwen2.5-7b', 'qwen2.5-32b', 'qwen3-8b-base', 'llama-3.2-3b']
 ORDER = GEN + TXT
 PRIMARY = 20260923
+# R6 guided generation and candidate selection. Both analyses are frozen aggregate
+# records; this renderer copies their estimates and intervals and derives nothing.
+R6_CONFIRMATORY = 'results/R6/e20_confirmatory_analysis_20261014/confirmatory.json'
+R6_ROBUSTNESS = 'results/R6/progen3_robustness_analysis_20261015/robustness.json'
+# The two guidance contrasts Fig. 6a/b read, and the strata each analysis declares.
+# The second co-primary endpoint is the share of candidates clearing the identity
+# restriction. The confirmatory artifact carries it under the frozen field name
+# `coprimary_feasibility`, which the robustness artifact records as a misnomer: no
+# predicted structural confidence enters it. Every label here says what it measures.
+GUIDANCE_CONTRASTS = [('Pr-N', 'Profile − unguided'), ('C-Pr', 'Coupling − profile')]
+CONFIRMATORY_STRATA = ['pooled', 'progen2-medium', 'protgpt2']
+ROBUSTNESS_STRATA = ['pooled_bfloat16', 'progen3-3b-bfloat16',
+                     'progen3-112m-bfloat16', 'progen3-112m-float16']
+GUIDANCE_STRATA = CONFIRMATORY_STRATA + ROBUSTNESS_STRATA
+PRECISION_LABELS = {'bfloat16': 'bf16', 'float16': 'fp16'}
+PRIMARY_TM = 'primary_tm'
+NOVELTY_RATE = 'novelty_admissibility_rate'
+ENDPOINT_LABELS = {PRIMARY_TM: 'Mean TM-score of admissible candidates',
+                   NOVELTY_RATE: 'Novelty-admissibility rate'}
+CONFIRMATORY_FIELDS = {PRIMARY_TM: 'primary_tm', NOVELTY_RATE: 'coprimary_feasibility'}
+# The admissible scorer roster, in one fixed plotting order that is not a ranking.
+# The TM oracle is deliberately absent: it ranks by the measured endpoint, which no
+# method may read, so it measures the ceiling and is not a selector.
+SELECTORS = [('potts_full', 'Potts full'), ('potts_fields', 'Potts fields'),
+             ('potts_coupling', 'Potts couplings'),
+             ('coupling_permuted', 'Permuted couplings'),
+             ('native_loglik', 'Native likelihood')]
+POOLS = [('N', 'Unguided'), ('Pr', 'Profile'), ('C', 'Coupling')]
+DOMAIN_UNIT = 'sealed evaluation domain'
 HASHES, CHECKS, CONTRACTS = {}, [], []
 EXPECTED_HASHES = {}
 EXTRACTION_HASHES = {}
@@ -57,7 +86,13 @@ plt.rcParams.update({'font.family': 'DejaVu Sans', 'font.size': BASE, 'axes.titl
                      'legend.fontsize': BASE, 'axes.linewidth': .55, 'pdf.fonttype': 42,
                      'ps.fonttype': 42, 'svg.fonttype': 'none', 'text.color': INK,
                      'axes.labelcolor': INK, 'xtick.color': INK, 'ytick.color': INK,
-                     'xtick.major.size': 2, 'ytick.major.size': 2, 'axes.grid': False})
+                     'xtick.major.size': 2, 'ytick.major.size': 2, 'axes.grid': False,
+                     # A receipt binds a figure only while the figure can be reproduced from
+                     # the same retained tables. Matplotlib otherwise stamps a wall-clock date
+                     # into the PDF and the SVG and salts SVG element IDs at random, so two
+                     # renders of identical data differed in bytes and no digest could be
+                     # rechecked. The salt is fixed here and the dates are dropped in save().
+                     'svg.hashsalt': 'plm-capability-boundaries/render_figures'})
 
 
 def digest(path):
@@ -157,8 +192,8 @@ def save(fig, name, frames, unit, uncertainty, supplement=False):
         raise ValueError(('text outside figure', name, clipped))
     paths = {'pdf': destination / publication_paths.PDF_NAMES[name], 'svg': previews / f'{name}.svg',
              'plotted_source': previews / f'{name}-plotted.csv'}
-    fig.savefig(paths['pdf'])
-    fig.savefig(paths['svg'])
+    fig.savefig(paths['pdf'], metadata={'CreationDate': None})
+    fig.savefig(paths['svg'], metadata={'Date': None})
     paths['svg'].write_text('\n'.join(line.rstrip() for line in paths['svg'].read_text().splitlines()) + '\n')
     fig.savefig(previews / f'{name}.png', dpi=450)
     pd.concat(frames, ignore_index=True).to_csv(paths['plotted_source'], index=False, lineterminator='\n')
@@ -238,6 +273,238 @@ def position_support(refresh=False):
     EXTRACTION_HASHES[str(panel_path.relative_to(REPO))] = digest(panel_path)
     EXPECTED_HASHES[str((DATA / 'position-support-source.csv').relative_to(REPO))] = digest(DATA / 'position-support-source.csv')
     return position_support()
+
+
+def validate_retained_estimates(table, count, keys, interval=True):
+    """Retained R6 rows only: one row per key, provenance on each, ordered intervals.
+
+    A row either carries an estimate with an ordered interval or records itself as
+    unestimable with the artifact's own reason. A missing interval beside an
+    "estimated" status, or an interval beside an unestimable one, is a defect; no
+    cell is ever interpolated to fill the gap.
+    """
+    required = {'n_units', 'unit', 'source_path', 'source_sha256', 'source_pointer', *keys}
+    if interval:
+        required |= {'estimate', 'ci_low', 'ci_high', 'status', 'unestimable_reason'}
+    if not required <= set(table.columns) or len(table) != count:
+        raise ValueError(f'Invalid retained {count}-row R6 table')
+    if len(table.drop_duplicates(subset=list(keys))) != count:
+        raise ValueError(f'Duplicate retained R6 rows for {keys}')
+    for column in ['source_path', 'source_pointer', *keys]:
+        if table[column].isna().any() or not table[column].astype(str).str.strip().str.len().gt(0).all():
+            raise ValueError(f'Missing retained R6 row provenance: {column}')
+    if not table.source_sha256.map(lambda value: bool(re.fullmatch('[0-9a-f]{64}', str(value)))).all():
+        raise ValueError('Missing retained R6 source digests')
+    units = table.n_units.to_numpy(dtype=float)
+    if not np.isfinite(units).all() or not ((units > 0) & (units == np.floor(units))).all():
+        raise ValueError('Invalid retained R6 independence-unit counts')
+    if not interval:
+        return table
+    if not set(table.status) <= {'estimated', 'unestimable'}:
+        raise ValueError('Unknown retained R6 row status')
+    estimated = table[table.status == 'estimated']
+    bounds = estimated[['estimate', 'ci_low', 'ci_high']].to_numpy(dtype=float)
+    if not np.isfinite(bounds).all() or not ((bounds[:, 1] <= bounds[:, 0]) & (bounds[:, 0] <= bounds[:, 2])).all():
+        raise ValueError('Invalid retained R6 interval')
+    blank = table[table.status == 'unestimable']
+    if not blank[['ci_low', 'ci_high']].isna().all().all() or blank.unestimable_reason.isna().any():
+        raise ValueError('An unestimable R6 row carries an interval or no reason')
+    return table
+
+
+def r6_analysis(relative, schema):
+    """One frozen R6 aggregate record, bound by digest before anything is read."""
+    path = REPO / relative
+    payload = json.loads(path.read_text())
+    if payload['schema'] != schema:
+        raise ValueError(f'Unexpected R6 analysis schema: {relative}')
+    value = digest(path)
+    EXTRACTION_HASHES[relative] = value
+    return payload, value
+
+
+def write_r6_table(name, rows, reader):
+    """Retain an extracted table, bind its digest, then read it back as public data."""
+    path = DATA / (name + '.csv')
+    pd.DataFrame(rows).to_csv(path, index=False, lineterminator='\n')
+    EXPECTED_HASHES[str(path.relative_to(REPO))] = digest(path)
+    return reader()
+
+
+def stratum_label(confirmatory, robustness, stratum):
+    """Short stratum labels from the one checkpoint-label source, plus precision."""
+    if stratum in CONFIRMATORY_STRATA:
+        if stratum not in confirmatory['primary_tm']:
+            raise ValueError(f'Unknown confirmatory stratum: {stratum}')
+        return 'Pooled' if stratum == 'pooled' else label(stratum)
+    design = robustness['design']
+    if stratum in design['rungs']:
+        rung = design['rungs'][stratum]
+        return f"{label(rung['base_checkpoint'])} {PRECISION_LABELS[rung['measure_line']]}"
+    line = stratum.removeprefix('pooled_')
+    if not stratum.startswith('pooled_') or line not in PRECISION_LABELS:
+        raise ValueError(f'Unknown robustness stratum: {stratum}')
+    return f'Pooled {PRECISION_LABELS[line]}'
+
+
+def contrast_row(shared, record, coverage, **extra):
+    """Copy one retained contrast, refusing a status its interval disagrees with."""
+    if (record['status'] == 'estimated') != (record['interval95_bca'] is not None):
+        raise ValueError('An R6 contrast status disagrees with its interval')
+    if record['interval_coverage_note'] not in [None, coverage]:
+        raise ValueError('An R6 contrast records a different interval-coverage caveat')
+    favouring = record['favouring']
+    if sum(favouring.values()) != record['n_domains']:
+        raise ValueError('R6 sign counts do not add to the domains the contrast covers')
+    low, high = record['interval95_bca'] or (None, None)
+    return dict(**shared, estimate=record['mean'], ci_low=low, ci_high=high, status=record['status'],
+                unestimable_reason=record['reason'], n_units=record['n_domains'], unit=DOMAIN_UNIT,
+                domains_positive=favouring['positive'], domains_negative=favouring['negative'],
+                domains_tied=favouring['tied'],
+                missing_domains='; '.join(f'{domain}: {reason}' for domain, reason
+                                         in sorted(record['missing_domains'].items())),
+                interval_coverage_note=coverage, **extra)
+
+
+def declared_dose_floor(robustness):
+    """The declared dose floor: which rungs a stratum covers, its cells and its rule."""
+    capture = robustness['captured_fraction_of_oracle_headroom']['by_stratum']
+    rungs = {stratum: set(block['rungs']) for stratum, block in capture.items()}
+    block = robustness['declared_context_dose_floor']
+    required = {arm['floor_margin_required'] for rung in block['rungs'].values() for arm in rung.values()}
+    floors = {arm['noise_floor_nats'] for rung in block['rungs'].values() for arm in rung.values()}
+    if len(required) != 1 or len(floors) != 1:
+        raise ValueError('The ProGen3 rungs declare more than one dose floor or required margin')
+    rule = (f'per-domain achieved KL per residue must exceed {required.pop():g} times the declared '
+            f'{floors.pop():g}-nat noise floor')
+    return rungs, block['below_declared_floor_margin'], rule
+
+
+def guidance_contrasts(refresh=False):
+    """Both co-primary endpoints, for two guidance contrasts, in every stratum."""
+    if not refresh:
+        table = read('guidance-contrasts-source')
+        return validate_retained_estimates(table, 28, ['endpoint', 'stratum', 'contrast'])
+    confirmatory, confirmatory_sha = r6_analysis(R6_CONFIRMATORY, 'e20_confirmatory_v1')
+    robustness, robustness_sha = r6_analysis(R6_ROBUSTNESS, 'progen3_robustness_bounds_v1')
+    if not confirmatory['matches_sealed_eight'] or not robustness['design']['matches_sealed_eight']:
+        raise ValueError('An R6 analysis no longer covers the sealed evaluation eight')
+    if robustness['issues_a_verdict'] or robustness['issues_a_pass_fail_flag']:
+        raise ValueError('The ProGen3 robustness analysis now issues a verdict')
+    equivalence, scale = confirmatory['equivalence'], robustness['reference_scale']
+    if equivalence['margin_tm'] != scale['margin_tm']:
+        raise ValueError('The two R6 analyses quote different TM reference margins')
+    rungs, floor_cells, floor_rule = declared_dose_floor(robustness)
+    definitions = robustness['design']['contrast_definitions']
+    rows = []
+    for endpoint in [PRIMARY_TM, NOVELTY_RATE]:
+        for stratum in GUIDANCE_STRATA:
+            for contrast, contrast_label in GUIDANCE_CONTRASTS:
+                arms = {definitions[contrast]['left'], definitions[contrast]['right']}
+                shared = dict(stratum=stratum, endpoint=endpoint,
+                              stratum_label=stratum_label(confirmatory, robustness, stratum),
+                              endpoint_label=ENDPOINT_LABELS[endpoint], contrast=contrast,
+                              contrast_label=contrast_label, margin_reference_tm=equivalence['margin_tm'])
+                if stratum in CONFIRMATORY_STRATA:
+                    field = CONFIRMATORY_FIELDS[endpoint]
+                    rows.append(contrast_row(
+                        shared, confirmatory[field][stratum]['contrasts'][contrast],
+                        confirmatory['frozen']['interval_coverage_note'],
+                        campaign='e20_confirmatory', field_name_in_source=field,
+                        endpoint_definition=None,
+                        interval_method=confirmatory['frozen']['interval'],
+                        margin_verdict=equivalence['verdict'],
+                        margin_note=f"{equivalence['rule']}; verdict {equivalence['verdict']}: "
+                                    f"{equivalence['verdict_reason']}",
+                        dose_floor_cells='not declared for this campaign',
+                        dose_floor_declared_total=0,
+                        dose_floor_rule='no per-domain dose floor is declared for this campaign',
+                        source_path=R6_CONFIRMATORY, source_sha256=confirmatory_sha,
+                        source_pointer=f'{field}.{stratum}.contrasts.{contrast}'))
+                    continue
+                bounds = robustness['bounds'][endpoint]
+                flagged = [f"{cell['rung']} {cell['arm']}:{cell['domain']}" for cell in floor_cells
+                           if cell['rung'] in rungs[stratum] and cell['arm'] in arms]
+                rows.append(contrast_row(
+                    shared, bounds['strata'][stratum][contrast],
+                    robustness['discipline']['interval_coverage_note'],
+                    campaign='progen3_robustness', field_name_in_source=endpoint,
+                    endpoint_definition=bounds['definition'],
+                    interval_method=robustness['discipline']['interval'],
+                    margin_verdict='none issued', margin_note=scale['role'],
+                    dose_floor_cells='; '.join(flagged) or 'none for this contrast',
+                    dose_floor_declared_total=len(floor_cells), dose_floor_rule=floor_rule,
+                    source_path=R6_ROBUSTNESS, source_sha256=robustness_sha,
+                    source_pointer=f'bounds.{endpoint}.strata.{stratum}.{contrast}'))
+    return write_r6_table('guidance-contrasts-source', rows, guidance_contrasts)
+
+
+def selection_headroom(refresh=False):
+    """Each admissible selector's captured fraction of the oracle headroom, by pool."""
+    if not refresh:
+        table = read('selection-headroom-source')
+        return validate_retained_estimates(table, 15, ['pool_arm', 'selector'])
+    confirmatory, confirmatory_sha = r6_analysis(R6_CONFIRMATORY, 'e20_confirmatory_v1')
+    capture = confirmatory['captured_fraction_of_oracle_headroom']
+    if capture['k'] != confirmatory['frozen']['selection_k']:
+        raise ValueError('The R6 selection budget is recorded twice and the two disagree')
+    rows = []
+    for arm, pool in POOLS:
+        block = capture['arms'][arm]
+        if set(block['selectors']) != {name for name, _ in SELECTORS}:
+            raise ValueError(f'The {arm} pool carries a different admissible selector roster')
+        for selector, selector_name in SELECTORS:
+            record = block['selectors'][selector]
+            if (record['status'] == 'estimated') != (record['interval95_bca'] is not None):
+                raise ValueError('A captured-fraction status disagrees with its interval')
+            low, high = record['interval95_bca'] or (None, None)
+            rows.append(dict(
+                campaign='e20_confirmatory', pool_arm=arm, pool_label=pool, selector=selector,
+                selector_label=selector_name, endpoint='captured_fraction_of_oracle_headroom',
+                endpoint_label='Captured fraction of the selection-oracle headroom',
+                estimate=record['mean_captured_fraction'], ci_low=low, ci_high=high,
+                status=record['status'], unestimable_reason=record.get('reason'),
+                mean_gain_tm=record['mean_gain'], oracle_headroom_tm=block['mean_oracle_gain'],
+                oracle_ceiling_captured_fraction=1.0,
+                oracle_ceiling_basis='definitional: the oracle captures its own headroom by '
+                                     'construction, so the ceiling is not a measured estimate',
+                oracle_role=capture['oracle_statement'], oracle_is_usable_selector=False,
+                selection_budget_k=capture['k'], n_units=block['n_domains'], unit=DOMAIN_UNIT,
+                missing_domains='; '.join(f'{domain}: {reason}' for domain, reason
+                                         in sorted(block['missing_domains'].items())),
+                interval_method=confirmatory['frozen']['interval'],
+                interval_coverage_note=capture['interval_coverage_note'],
+                outside_primary_holm_family=capture['outside_primary_holm_family'],
+                influences_primary_verdict=capture['influences_primary_verdict'],
+                source_path=R6_CONFIRMATORY, source_sha256=confirmatory_sha,
+                source_pointer=f'captured_fraction_of_oracle_headroom.arms.{arm}.selectors.{selector}'))
+    return write_r6_table('selection-headroom-source', rows, selection_headroom)
+
+
+def dose_floor_context(refresh=False):
+    """The ProGen3 dose cells whose measured intervention fell below the declared floor."""
+    if not refresh:
+        table = read('progen3-dose-floor-source')
+        return validate_retained_estimates(table, 14, ['rung', 'guidance_arm', 'domain'], interval=False)
+    robustness, robustness_sha = r6_analysis(R6_ROBUSTNESS, 'progen3_robustness_bounds_v1')
+    block = robustness['declared_context_dose_floor']
+    cells = block['below_declared_floor_margin']
+    rows = []
+    for index, cell in enumerate(cells):
+        arm = block['rungs'][cell['rung']][cell['arm']]
+        if (arm['floor_margin_required'] != cell['floor_margin_required']
+                or cell['domain'] not in arm['domains_below_required_margin']):
+            raise ValueError('A declared dose-floor cell disagrees with its own rung record')
+        rows.append(dict(
+            campaign='progen3_robustness', rung=cell['rung'],
+            rung_label=stratum_label({}, robustness, cell['rung']), guidance_arm=cell['arm'],
+            domain=cell['domain'], floor_margin_achieved=cell['floor_margin'],
+            floor_margin_required=cell['floor_margin_required'],
+            noise_floor_nats=arm['noise_floor_nats'], declared_total_cells=len(cells),
+            n_units=1, unit='dose cell', intervention_basis=block['intervention_basis'],
+            source_path=R6_ROBUSTNESS, source_sha256=robustness_sha,
+            source_pointer=f'declared_context_dose_floor.below_declared_floor_margin[{index}]'))
+    return write_r6_table('progen3-dose-floor-source', rows, dose_floor_context)
 
 
 def schematic_axes(fig, rect):
@@ -440,6 +707,77 @@ def main_figures():
     save(fig, 'Fig5_context_and_generation', [context.assign(panel='a'), streams.assign(panel='b')],
          'a: 134 biological groups; b: three generation streams', 'a: pointwise 95%; b: 95% Student-t, df=2, not panel simultaneous')
 
+    contrasts, headroom, floor = guidance_contrasts(), selection_headroom(), dose_floor_context()
+    margins = contrasts.margin_reference_tm.unique()
+    if len(margins) != 1 or len(floor) != int(floor.declared_total_cells.iloc[0]):
+        raise ValueError('Inconsistent retained R6 reference margin or dose-floor context')
+    margin = float(margins[0])
+    strata = {key: rec(contrasts, endpoint=PRIMARY_TM, stratum=key, contrast='Pr-N').stratum_label
+              for key in GUIDANCE_STRATA}
+    fig = figure(524)
+    for letter, endpoint, title, rect, xlabel, limits, ticks in [
+            ('a', PRIMARY_TM, 'Guidance contrasts in mean TM-score', (62, 399, 300, 92),
+             'Difference in mean TM-score', (-.045, .056), [-.04, -.02, 0, .02, .04]),
+            ('b', NOVELTY_RATE, 'The same contrasts on the novelty-admissibility rate',
+             (62, 262, 300, 92), 'Difference in novelty-admissibility rate', (-.5, .09), [-.4, -.2, 0])]:
+        heading(fig, 3, rect[1] + rect[3] + (22 if letter == 'a' else 10), letter, title)
+        a = axis(fig, rect, [strata[key] for key in GUIDANCE_STRATA], xlabel)
+        for i, key in enumerate(GUIDANCE_STRATA):
+            for (contrast, _), offset, color in zip(GUIDANCE_CONTRASTS, [-.2, .2], [BLUE, ORANGE]):
+                row = rec(contrasts, endpoint=endpoint, stratum=key, contrast=contrast)
+                if row.status == 'estimated':
+                    interval(a, i, row, color, offset)
+                else:  # No point is drawn where the frozen rule issues no estimate.
+                    a.text(limits[0] + .04 * (limits[1] - limits[0]), i + offset, 'unestimable',
+                           va='center', color=color)
+        a.set_xlim(*limits)
+        a.set_xticks(ticks, [f'{value:g}'.replace('-', '−') for value in ticks])
+        a.axhline(len(CONFIRMATORY_STRATA) - .5, color=palette.CONTROL, lw=.6)
+        if letter != 'a':
+            continue
+        a.axvline(margin, color=palette.SLATE, lw=.6, ls='--', zorder=0)
+        a.legend(handles=[Line2D([], [], color=BLUE, label=GUIDANCE_CONTRASTS[0][1]),
+                          Line2D([], [], color=ORANGE, label=GUIDANCE_CONTRASTS[1][1]),
+                          Line2D([], [], color=palette.SLATE, ls='--', label=f'{margin:g} TM reference scale')],
+                 frameon=False, loc='lower left', bbox_to_anchor=(0, 1), ncol=3, borderpad=0,
+                 handlelength=1.8, columnspacing=1.2)
+
+    heading(fig, 3, 227, 'c', 'Candidate selection against the oracle ceiling')
+    cells = [(arm, selector) for arm, _ in POOLS for selector, _ in SELECTORS]
+    c = axis(fig, (124, 77, 238, 140),
+             [rec(headroom, pool_arm=arm, selector=selector).selector_label for arm, selector in cells],
+             'Captured fraction of the selection-oracle headroom')
+    for i, (arm, selector) in enumerate(cells):
+        row = rec(headroom, pool_arm=arm, selector=selector)
+        if row.status == 'estimated':
+            interval(c, i, row)
+        else:
+            c.text(-.33, i, 'unestimable', va='center', color=BLUE)
+    c.set_xlim(-.36, 1.07)
+    c.set_xticks([-.25, 0, .5, 1], ['−0.25', '0', '0.5', '1'])
+    c.axvline(1, color=palette.SLATE, lw=.6, ls='--', zorder=0)
+    for index in range(1, len(POOLS)):
+        c.axhline(index * len(SELECTORS) - .5, color=palette.CONTROL, lw=.6)
+    for index, (arm, pool) in enumerate(POOLS):
+        centre = index * len(SELECTORS) + (len(SELECTORS) - 1) / 2
+        oracle = rec(headroom, pool_arm=arm, selector=SELECTORS[0][0]).oracle_headroom_tm
+        fig.text(3 / 370.08, (77 + 140 * (len(cells) - .6 - centre) / len(cells)) / 524,
+                 f'{pool}\n{oracle:+.3f} TM', va='center', linespacing=1.4)
+    fig.text(3 / 370.08, 4 / 524,
+             'Upper block: sealed-eight confirmatory; lower: ProGen3 rungs, bf16/fp16 precision.\n'
+             f'Dashed in a: the declared {margin:g} TM margin as a reference scale, with no verdict against it.\n'
+             'Dashed in c: the oracle ceiling, a diagnostic reference and not a usable selector.\n'
+             'Filled points exclude zero; 95% BCa over eight domains, realised coverage near 0.89.\n'
+             f'{len(floor)} ProGen3 dose cells fell below the declared noise floor; the figure data flags them.',
+             linespacing=1.4)
+    save(fig, 'Fig6_guidance_and_selection',
+         [contrasts[contrasts.endpoint == PRIMARY_TM].assign(panel='a'),
+          contrasts[contrasts.endpoint == NOVELTY_RATE].assign(panel='b'),
+          headroom.assign(panel='c'), floor.assign(panel='declared-context')],
+         'eight sealed evaluation domains; the domain is the independence unit',
+         '95% BCa over domains, 9999 resamples; realised coverage near 0.89 at eight units, so bounds '
+         'read optimistic; unestimable cells carry no interval')
+
 
 def supplementary_figures():
     native, text = read('native-fitness-source'), read('text-aa-fitness-source')
@@ -523,7 +861,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--supplement-only', action='store_true')
     parser.add_argument('--refresh-source-tables', action='store_true',
-                        help='Explicitly re-extract clean interactions and position counts from retained raw receipts')
+                        help='Explicitly re-extract clean interactions, position counts and the R6 '
+                             'guidance, selection and dose-floor tables from retained raw receipts')
     args = parser.parse_args()
     HASHES.clear(); CHECKS.clear(); CONTRACTS.clear(); EXPECTED_HASHES.clear(); EXTRACTION_HASHES.clear()
     previous = json.loads((DATA / 'figure_validation.json').read_text())
@@ -541,6 +880,9 @@ def main():
     if args.refresh_source_tables:
         clean_interactions(refresh=True)
         position_support(refresh=True)
+        guidance_contrasts(refresh=True)
+        selection_headroom(refresh=True)
+        dose_floor_context(refresh=True)
     if not args.supplement_only: main_figures()
     supplementary_figures()
     receipt_data = SUPPLEMENT_DATA if args.supplement_only else DATA
