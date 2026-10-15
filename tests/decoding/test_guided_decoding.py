@@ -40,8 +40,10 @@ from src.capability.core.arms import Arm, arm_spec  # noqa: E402
 from src.capability.decoding.guided_decoding import (  # noqa: E402
     ARM_CODES, FACTORIAL_ARMS, GUIDANCE_ARMS, ArmBias, CellIdentity, EmptyCandidateSet,
     GuidanceStrength, GuidedDecoder, bias_vector, build_arm_bias, component_bias_vectors,
-    component_scale, generate_cell, native_layout, nominal_lambda, permutation_for,
-    select_cross_domain_donor, sequence_bias_sum, sequence_component_sums, token_span_table)
+    canonical_token_ids, component_scale, generate_cell, incremental_path_steps,
+    incremental_replay_strength, native_layout, nominal_lambda, path_strength, permutation_for,
+    replay_strength, select_cross_domain_donor, sequence_bias_sum, sequence_component_sums,
+    token_span_table)
 
 PERMUTATION_SEED = 20261013
 SHORT = 7
@@ -695,3 +697,106 @@ def test_component_scale_pools_several_sequences_and_refuses_a_wrong_length(shor
         component_scale(short_model, [short_model.wildtype[:-1]])
     with pytest.raises(ValueError, match="at least one sequence"):
         component_scale(short_model, [])
+
+
+# --------------------------------------------------- the incremental strength replay
+
+
+def test_the_incremental_replay_reproduces_the_samplers_inline_record_exactly(short_model):
+    """The decisive property: a drawn path replayed incrementally *is* the sampler's measurement.
+
+    The sampler accumulates the strength as it decodes. A separate measurement is
+    only usable on another path -- a wild type, say -- if it reproduces that
+    accumulation bit for bit on a drawn one, because otherwise the two numbers
+    being compared came out of different computations. Equality is exact rather
+    than approximate: the walk makes the same forward calls in the same order at
+    the same batch extent and feeds the identical step observer.
+    """
+
+    arm = _single_residue_arm()
+    decoder = _decoder(arm, short_model, "coupling", 1.0)
+    records = generate_cell(
+        arm=arm, decoder=decoder,
+        identity=_identity("progen2-medium", "SYN", "coupling", 1.0, 0, 0, 4100),
+        count=3, batch_size=1, score_fn=_score_fn)
+    assert len(records) == 3
+    for record in records:
+        replayed = incremental_replay_strength(
+            arm=arm, decoder=decoder, token_ids=record["token_ids"])
+        assert replayed == record["guidance_strength"]
+
+
+def test_the_incremental_and_teacher_forced_replays_agree_on_a_prefix_exact_forward(short_model):
+    """Where the two replays may disagree is a property of the model, not of the path.
+
+    The fixture's logits are a function of the committed history alone, so its
+    forward is prefix-exact and the single teacher-forced pass sees what the
+    incremental walk sees. ProGen3's does not, which is why the incremental walk
+    exists; this pins that the two are the same measurement wherever that
+    assumption actually holds.
+    """
+
+    arm = _single_residue_arm()
+    decoder = _decoder(arm, short_model, "full", 0.5)
+    ids, segmentation = canonical_token_ids(arm, decoder, short_model.wildtype)
+    assert segmentation == "exact"
+    incremental = incremental_replay_strength(arm=arm, decoder=decoder, token_ids=ids)
+    forced = replay_strength(arm=arm, decoder=decoder, token_ids=ids)
+    for key, value in incremental.items():
+        assert value == pytest.approx(forced[key], rel=0.0, abs=1e-9), key
+
+
+def test_one_walk_answers_the_whole_dose_curve_and_zero_dose_is_exactly_zero(short_model):
+    """The dose enters in ``path_strength`` only, so a walk is reusable and the curve is monotone.
+
+    A calibration that had to re-walk the model per dose would pay a forward pass
+    per grid point for a quantity that is linear in the dose; more importantly, a
+    curve measured over several walks would not be a curve of one path. The
+    monotonicity is what makes the matching dose unique.
+    """
+
+    arm = _single_residue_arm()
+    decoder = _decoder(arm, short_model, "coupling", 1.0)
+    ids, _ = canonical_token_ids(arm, decoder, short_model.wildtype)
+    steps = incremental_path_steps(arm=arm, decoder=decoder, token_ids=ids)
+    assert len(steps) == SHORT
+    assert path_strength(steps, GuidanceStrength(0.0, 0.0))["kl_per_residue"] == 0.0
+    values = [path_strength(steps, GuidanceStrength(0.0, dose))["kl_per_residue"]
+              for dose in (0.25, 0.5, 1.0, 2.0, 4.0)]
+    assert values == sorted(values) and values[0] > 0.0
+    # the curve's own point at the decoder's dose is the decoder's own replay
+    assert path_strength(steps, decoder.strength) == incremental_replay_strength(
+        arm=arm, decoder=decoder, token_ids=ids)
+
+
+def test_the_incremental_walk_refuses_a_path_that_is_not_this_layout(short_model):
+    """A non-candidate token, a short path and a long one are refusals, never a partial record."""
+
+    arm = _single_residue_arm()
+    decoder = _decoder(arm, short_model, "coupling", 1.0)
+    ids, _ = canonical_token_ids(arm, decoder, short_model.wildtype)
+    with pytest.raises(ValueError, match="is not a candidate"):
+        incremental_path_steps(arm=arm, decoder=decoder,
+                               token_ids=[arm.tokenizer.eos_token_id, *ids[1:]])
+    with pytest.raises(ValueError, match="covers"):
+        incremental_path_steps(arm=arm, decoder=decoder, token_ids=ids[:-1])
+    with pytest.raises(ValueError, match="outside"):
+        incremental_path_steps(arm=arm, decoder=decoder, token_ids=[*ids, ids[0]])
+    with pytest.raises(ValueError, match="at least one token"):
+        incremental_path_steps(arm=arm, decoder=decoder, token_ids=[])
+
+
+def test_a_multi_residue_path_is_walked_over_its_own_token_spans(wrapped_model):
+    """The walk is span-aware, so a BPE arm's steps carry the residues their tokens emit."""
+
+    arm = _multi_residue_arm()
+    decoder = _decoder(arm, wrapped_model, "potts_fields", 1.0)
+    records = generate_cell(
+        arm=arm, decoder=decoder,
+        identity=_identity("protgpt2", "WRAP", "potts_fields", 1.0, 0, 0, 4200),
+        count=1, batch_size=1, score_fn=_score_fn)
+    steps = incremental_path_steps(arm=arm, decoder=decoder,
+                                   token_ids=records[0]["token_ids"])
+    assert sum(step["residues"] for step in steps) == WRAPPED
+    assert max(step["residues"] for step in steps) > 1
+    assert path_strength(steps, decoder.strength) == records[0]["guidance_strength"]

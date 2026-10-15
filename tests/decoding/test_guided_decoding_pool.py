@@ -333,3 +333,148 @@ def test_a_pool_summary_is_null_where_the_arm_has_no_such_component():
 def test_a_partially_null_pool_is_refused():
     with pytest.raises(ValueError, match="null for part of the pool"):
         stage.pool_summaries([_pool(), _pool(coupling_score=None)])
+
+
+# ------------------------------------------------- the declared ProGen3 amendment
+
+
+def _progen3_protocol(domains, model_arm="progen3-3b", dtype="bfloat16"):
+    doses = stage.PROGEN3_AMENDMENT["doses"][model_arm]
+    return _protocol(
+        domains=domains, model_arms=[model_arm],
+        strength_grid=[{"lambda_fields": 0.0, "lambda_coupling": 0.0},
+                       *({"lambda_fields": fields, "lambda_coupling": coupling}
+                         for fields, coupling in doses.values())],
+        native_contract={"batch_size": 1, "budget": 1024, "dtype": dtype,
+                         "score": "native scored-span full-sum log-likelihood (-nll_sum)"})
+
+
+def test_an_amended_arm_binds_its_own_dtype_and_records_the_amendment(references):
+    """The amendment is what admits a ProGen3 cell, and the bound contract says so.
+
+    An artefact that carried a non-float32 dtype without naming the declaration
+    that allowed it would be indistinguishable from a cell that had simply been
+    loaded in the wrong precision.
+    """
+
+    _, domains = references
+    for model_arm in stage.PROGEN3_AMENDMENT["doses"]:
+        for dtype in stage.PROGEN3_AMENDMENT["dtypes"]:
+            resolved = _bind(_progen3_protocol(domains, model_arm, dtype),
+                             model_arm=model_arm, strength_index=3)
+            assert resolved["native_contract"]["dtype"] == dtype
+            assert resolved["native_contract"]["amendment"] == stage.PROGEN3_AMENDMENT["id"]
+            assert resolved["native_contract"]["batch_size"] == 1
+            assert resolved["native_contract"]["budget"] == 1024
+
+
+def test_the_amendment_does_not_move_any_other_arms_dtype(references):
+    """E20's two arms keep float32 exactly, and their bound contract gains no key.
+
+    The settled contract is what E20's records rest on. The amendment may admit a
+    new architecture; it may not reach back and relax the arms already measured.
+    """
+
+    _, domains = references
+    for model_arm in ("protgpt2", "progen2-medium"):
+        resolved = _bind(_protocol(domains=domains), model_arm=model_arm)
+        assert resolved["native_contract"] == {
+            **stage.SETTLED_NATIVE_CONTRACT,
+            "score": "native scored-span full-sum log-likelihood (-nll_sum)"}
+        assert "amendment" not in resolved["native_contract"]
+        with pytest.raises(ValueError, match="native_contract.dtype"):
+            _bind(_protocol(domains=domains,
+                            native_contract={"batch_size": 1, "budget": 1024,
+                                             "dtype": "bfloat16", "score": "x"}),
+                  model_arm=model_arm)
+
+
+def test_an_amended_arm_is_refused_the_dtype_it_has_no_kernel_for(references):
+    """float32 is unreachable for ProGen3, so declaring it must refuse, not load and NaN."""
+
+    _, domains = references
+    with pytest.raises(ValueError, match="native_contract.dtype must be one of"):
+        _bind(_progen3_protocol(domains, "progen3-3b", "float32"),
+              model_arm="progen3-3b", strength_index=3)
+
+
+def test_the_calibrated_doses_are_on_the_amended_axis_and_off_the_settled_one(references):
+    """Each rung's own calibrated doses, and no other arm's, widen its axis.
+
+    The axis guard exists so that a typo cannot become a dose. The amendment keeps
+    it by naming the doses rather than by opening the axis, so a ProGen2 cell still
+    refuses a ProGen3 dose and each ProGen3 rung refuses the other rung's.
+    """
+
+    _, domains = references
+    assert stage.amended_model_arms() == tuple(stage.PROGEN3_AMENDMENT["doses"])
+    settled = (stage.FIELDS_AXIS, stage.COUPLING_AXIS)
+    assert stage.admitted_axes("progen2-medium") == settled
+    for model_arm, doses in stage.PROGEN3_AMENDMENT["doses"].items():
+        fields_axis, coupling_axis = stage.admitted_axes(model_arm)
+        assert stage.FIELDS_AXIS == fields_axis[:len(stage.FIELDS_AXIS)]
+        assert stage.COUPLING_AXIS == coupling_axis[:len(stage.COUPLING_AXIS)]
+        for fields, coupling in doses.values():
+            assert fields in fields_axis and coupling in coupling_axis
+            assert (fields in stage.FIELDS_AXIS) == (fields == 0.0)
+            assert (coupling in stage.COUPLING_AXIS) == (coupling == 0.0)
+        # the other rung refuses these doses even when the protocol admits both as
+        # model arms: the axis is the cell's own, not the roster's
+        for other in stage.PROGEN3_AMENDMENT["doses"]:
+            if other == model_arm:
+                continue
+            mixed = _progen3_protocol(domains, model_arm)
+            mixed["model_arms"] = [model_arm, other]
+            with pytest.raises(ValueError, match="off the strength axes admitted"):
+                _bind(mixed, model_arm=other, strength_index=3)
+    # a settled arm refuses them too, with its own float32 contract in place
+    settled_contract = _progen3_protocol(domains, "progen3-3b")
+    settled_contract["model_arms"] = ["progen3-3b", "progen2-medium"]
+    settled_contract["native_contract"] = _protocol()["native_contract"]
+    with pytest.raises(ValueError, match="off the strength axes admitted"):
+        _bind(settled_contract, model_arm="progen2-medium", strength_index=3)
+
+
+def test_an_amended_cell_hashes_the_adapter_that_decides_its_logits():
+    """The ProGen3 adapter decides every logit of an amended cell and nothing in an E20 one."""
+
+    for relative in stage.AMENDED_CODE_PATHS:
+        assert (REPO_ROOT / relative).is_file(), relative
+        assert relative not in stage.CODE_PATHS
+
+
+def test_every_amended_arm_declares_a_dose_for_each_guided_arm_it_runs():
+    """A rung with a missing dose would be scheduled at the settled axis by accident."""
+
+    expected = {"Pr", "M", "C", "Cx"}
+    for model_arm, doses in stage.PROGEN3_AMENDMENT["doses"].items():
+        assert set(doses) == expected, model_arm
+        for code, (fields, coupling) in doses.items():
+            carries_fields = code in {"Pr", "M"}
+            assert (fields > 0.0) is carries_fields, (model_arm, code)
+            assert (coupling > 0.0) is (not carries_fields), (model_arm, code)
+
+
+def test_an_amended_arms_precision_is_part_of_its_recorded_model_label(references):
+    """Two precisions of one checkpoint are two cells, so the label must separate them.
+
+    The 112M rung runs in both kernels the amendment admits, and the merge groups a
+    cell on ``(model, domain, arm, lambda_fields, lambda_coupling)``. A shared label
+    would collapse the two rungs into one pool of twice the declared depth under one
+    key, which is exactly the thing that must not happen to a precision control.
+    """
+
+    _, domains = references
+    labels = set()
+    for model_arm in stage.PROGEN3_AMENDMENT["doses"]:
+        for dtype in stage.PROGEN3_AMENDMENT["dtypes"]:
+            resolved = _bind(_progen3_protocol(domains, model_arm, dtype),
+                             model_arm=model_arm, strength_index=3)
+            assert resolved["model_arm"] == model_arm
+            assert resolved["model_label"] == f"{model_arm}-{dtype}"
+            labels.add(resolved["model_label"])
+    assert len(labels) == 2 * len(stage.PROGEN3_AMENDMENT["doses"])
+    # E20's arms are not relabelled: their dtype is fixed, so it carries no information
+    for model_arm in ("protgpt2", "progen2-medium"):
+        assert _bind(_protocol(domains=domains), model_arm=model_arm)["model_label"] == model_arm
+        assert stage.recorded_model_label(model_arm, "float32") == model_arm

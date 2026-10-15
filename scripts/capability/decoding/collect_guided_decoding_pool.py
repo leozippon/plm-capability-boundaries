@@ -19,10 +19,13 @@ Protocol schema (``coupling_guided_generation_v1``)
 ===================================================
 
 ``model_arms``
-    The admitted protein decoders of this experiment, a non-empty subset of
-    ``protgpt2`` and ``progen2-medium``. Another arm needs its own declared
-    native generation interface and is refused by name rather than rendered by
-    analogy.
+    The admitted protein decoders, a non-empty subset of :data:`ALLOWED_MODEL_ARMS`.
+    Another arm needs its own declared native generation interface and is refused
+    by name rather than rendered by analogy. ``protgpt2`` and ``progen2-medium``
+    are E20's own two; the two ProGen3 rungs are admitted by
+    :data:`PROGEN3_AMENDMENT`, which is also the only thing that moves their
+    ``native_contract`` dtype and their dose axes, and which moves neither for any
+    other arm.
 ``guidance_arms``
     A non-empty subset of
     :data:`~src.capability.decoding.guided_decoding.GUIDANCE_ARMS`. The four
@@ -61,7 +64,10 @@ Protocol schema (``coupling_guided_generation_v1``)
 ``native_contract``
     ``batch_size`` 1, ``budget`` 1024, ``dtype`` ``float32`` and a declared
     ``score`` string. Scoring is one row per forward because the native score is
-    batch-extent sensitive at the scale of this programme's endpoints.
+    batch-extent sensitive at the scale of this programme's endpoints. An arm
+    :data:`PROGEN3_AMENDMENT` lists declares one of the amendment's dtypes in
+    place of ``float32``, which that architecture has no kernel for, and the
+    bound contract then records the amendment's id.
 
 Two sequence files, joined on ``id``
 ====================================
@@ -139,10 +145,136 @@ FAILURE_FILENAME = "failure_guided_decoding_pool.json"
 SEQUENCES_FILENAME = "sequences.jsonl"
 DIAGNOSTICS_FILENAME = "sequence_diagnostics.jsonl"
 
-#: The two decoders this experiment admits. Both already carry complete
-#: substitution grids on these domains and a verified native float32 handle.
-ALLOWED_MODEL_ARMS = ("protgpt2", "progen2-medium")
+#: The two decoders E20 admits. Both already carry complete substitution grids on
+#: these domains and a verified native float32 handle. The two ProGen3 rungs are
+#: admitted by :data:`PROGEN3_AMENDMENT` and by nothing else.
+ALLOWED_MODEL_ARMS = ("protgpt2", "progen2-medium", "progen3-3b", "progen3-112m")
 SETTLED_NATIVE_CONTRACT: dict[str, Any] = {"batch_size": 1, "budget": 1024, "dtype": "float32"}
+
+#: The one declared exception to :data:`SETTLED_NATIVE_CONTRACT`, scoped by arm name.
+#:
+#: ProGen3's attention is pinned to the flash SDPA backend, which has no float32
+#: kernel, and float16 gives NaN on the 3B, so the settled float32 dtype is not a
+#: stricter requirement for this architecture -- it is an unreachable one.
+#: ``src/capability/decoding/progen3_decoding.py`` establishes this, together with
+#: the batch-size-one requirement the settled contract already states for its own
+#: reasons: ProGen3's expert mixture reduces over the whole flattened batch, so a
+#: cell sampled at any wider extent is not the cell it is labelled as.
+#:
+#: The amendment replaces the dtype and nothing else, for these two arms and no
+#: others, so E20's own cells are validated and sampled exactly as they were. The
+#: doses are declared here too, because ProGen3 cannot be given E20's nominal
+#: lambdas: the same bias competes against a different logit scale, so a shared
+#: number is a shared label and not a shared intervention. Each value is the dose
+#: at which the arm's measured median per-residue KL on the wild-type basis equals
+#: the one ProGen2-medium receives at its frozen E20 strength, solved by
+#: ``scripts/capability/decoding/calibrate_progen3_guidance_dose.py`` before any
+#: endpoint existed and recorded in ``calibration_sha256`` below. They are declared
+#: constants for the same reason the settled axes are: a typo must not become a dose.
+PROGEN3_AMENDMENT: dict[str, Any] = {
+    "id": "progen3-native-contract-amendment-20261015",
+    "dtypes": ("bfloat16", "float16"),
+    "basis": (
+        "ProGen3's attention is pinned to a flash SDPA kernel with no float32 path and "
+        "float16 gives NaN on the 3B; the settled float32 dtype is unreachable for this "
+        "architecture rather than merely stricter"
+    ),
+    "scope": "the dtype requirement and the dose axes, for the arms listed in doses only",
+    #: ``model arm -> contract arm code -> (lambda_fields, lambda_coupling)``. This mapping
+    #: is the amendment's roster: an arm with no calibrated doses is not amended and is
+    #: therefore refused by the settled contract, which is the right answer until its doses
+    #: are solved. The 112M doses are solved in bfloat16 and its float16 rung runs at those
+    #: same doses, so precision is the only thing that moves between the two rungs.
+    "doses": {
+        "progen3-3b": {"Pr": (0.1874, 0.0), "M": (0.2035, 0.0),
+                       "C": (0.0, 2.491), "Cx": (0.0, 3.299)},
+        "progen3-112m": {"Pr": (0.1741, 0.0), "M": (0.1794, 0.0),
+                         "C": (0.0, 1.562), "Cx": (0.0, 2.652)},
+    },
+    "calibration": (
+        "scripts/capability/decoding/calibrate_progen3_guidance_dose.py, median over the eight "
+        "evaluation domains of the wild-type-basis kl_per_residue, matched to progen2-medium at "
+        "its frozen E20 strength and solved before any endpoint existed"
+    ),
+}
+
+
+def amended_model_arms() -> tuple[str, ...]:
+    """The arms :data:`PROGEN3_AMENDMENT` admits: those whose doses it declares."""
+
+    return tuple(PROGEN3_AMENDMENT["doses"])
+
+
+def admitted_axes(model_arm: str) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """``(fields axis, coupling axis)`` one model arm's protocol may draw a dose from.
+
+    E20's settled axes for every arm it admits. For an amended arm they also carry
+    that arm's own calibrated doses, which is the only widening the amendment
+    makes. The axes are therefore a function of the cell's own model arm: one
+    protocol declares one model family's doses, and a protocol that mixed ProGen2
+    and ProGen3 arms would have each refuse the other's. That is a real limitation
+    and not a check to loosen -- it is what keeps a cell from being scheduled at a
+    dose nothing calibrated for it.
+    """
+
+    if model_arm not in PROGEN3_AMENDMENT["doses"]:
+        return FIELDS_AXIS, COUPLING_AXIS
+    pairs = PROGEN3_AMENDMENT["doses"][model_arm].values()
+    return (FIELDS_AXIS + tuple(sorted({fields for fields, _ in pairs if fields})),
+            COUPLING_AXIS + tuple(sorted({coupling for _, coupling in pairs if coupling})))
+
+
+def recorded_model_label(model_arm: str, dtype: str) -> str:
+    """The ``model`` label this cell's records carry.
+
+    E20's arms record the arm name unchanged: the settled contract fixes one
+    dtype, so the precision carries no information and the label stays the one
+    E20's records already use. An amended arm's precision is a declared choice --
+    the amendment admits two kernels, and the 112M rung is run at both precisely
+    so that the reduced-precision noise floor can be read as a variable rather
+    than assumed away -- so two rungs of one checkpoint at two precisions are two
+    cells. A shared label would merge them into one pool of twice the depth under
+    one cell key, which is the one failure this label exists to prevent. The
+    checkpoint's own arm name stays in the completion record's ``checkpoint``
+    block, so nothing is lost.
+    """
+
+    if model_arm not in PROGEN3_AMENDMENT["doses"]:
+        return model_arm
+    return f"{model_arm}-{dtype}"
+
+
+def bind_native_contract(model_arm: str, contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind one cell's native contract, refusing a protocol that does not declare it.
+
+    Every admitted arm must meet :data:`SETTLED_NATIVE_CONTRACT` exactly; an
+    amended arm meets it with the dtype :data:`PROGEN3_AMENDMENT` names in its
+    place. The amendment is keyed on the arm name, so no other arm's dtype
+    requirement moves and an amended protocol that declared float32 -- a dtype the
+    architecture has no kernel for -- is refused rather than loaded and found NaN.
+    """
+
+    required = dict(SETTLED_NATIVE_CONTRACT)
+    amended = None
+    if model_arm in PROGEN3_AMENDMENT["doses"]:
+        declared = contract.get("dtype")
+        if declared not in PROGEN3_AMENDMENT["dtypes"]:
+            raise ValueError(
+                f"protocol.native_contract.dtype must be one of "
+                f"{list(PROGEN3_AMENDMENT['dtypes'])} for {model_arm} under "
+                f"{PROGEN3_AMENDMENT['id']}, got {declared!r}"
+            )
+        required["dtype"] = declared
+        amended = PROGEN3_AMENDMENT["id"]
+    for key, expected in required.items():
+        if contract.get(key) != expected:
+            raise ValueError(f"protocol.native_contract.{key} must be {expected!r}")
+    if not isinstance(contract.get("score"), str) or not contract["score"]:
+        raise ValueError("protocol.native_contract.score must be a non-empty string")
+    bound = {**required, "score": contract["score"]}
+    if amended is not None:
+        bound["amendment"] = amended
+    return bound
 
 #: The declared strength axes, one per component. The coupling term is weaker per unit than
 #: the fields term (the measured ratio and its basis are in the module docstring of
@@ -278,6 +410,11 @@ def _load_module(name: str, path: Path) -> Any:
 
 #: Every source whose bytes decide a number in this cell. The native score comes
 #: from the shared extraction kernel rather than a second scorer declared here.
+#: The sources :data:`PROGEN3_AMENDMENT` adds for an amended arm, and for no other: the
+#: adapter that supplies ProGen3's two required forward arguments decides every logit of
+#: such a cell and nothing at all in an E20 cell.
+AMENDED_CODE_PATHS = ("src/capability/decoding/progen3_decoding.py",
+                      "src/capability/models/progen3.py")
 CODE_PATHS = (
     "scripts/capability/decoding/collect_guided_decoding_pool.py",
     "scripts/capability/stability/extract_stability_singles.py",
@@ -359,11 +496,7 @@ def validate_protocol(
     contract = protocol.get("native_contract")
     if not isinstance(contract, Mapping):
         raise ValueError("protocol.native_contract must be an object")
-    for key, expected in SETTLED_NATIVE_CONTRACT.items():
-        if contract.get(key) != expected:
-            raise ValueError(f"protocol.native_contract.{key} must be {expected!r}")
-    if not isinstance(contract.get("score"), str) or not contract["score"]:
-        raise ValueError("protocol.native_contract.score must be a non-empty string")
+    native_contract = bind_native_contract(model_arm, contract)
 
     count = _require_int(protocol.get("sequences_per_cell"), field="protocol.sequences_per_cell")
     if count < 1:
@@ -372,6 +505,7 @@ def validate_protocol(
     grid = protocol.get("strength_grid")
     if not isinstance(grid, list) or not grid:
         raise ValueError("protocol.strength_grid must be a non-empty list of strength pairs")
+    fields_axis, coupling_axis = admitted_axes(model_arm)
     strengths = []
     for entry in grid:
         if not isinstance(entry, Mapping) or set(entry) != {"lambda_fields", "lambda_coupling"}:
@@ -380,12 +514,13 @@ def validate_protocol(
                 "lambda_coupling"
             )
         strength = GuidanceStrength(entry["lambda_fields"], entry["lambda_coupling"])
-        off_axis = [value for value, axis in ((strength.fields, FIELDS_AXIS), (strength.coupling, COUPLING_AXIS))
+        off_axis = [value for value, axis in ((strength.fields, fields_axis), (strength.coupling, coupling_axis))
                     if value not in axis]
         if off_axis:
             raise ValueError(
-                f"protocol.strength_grid holds {off_axis}, which is off the declared strength "
-                f"axes fields {list(FIELDS_AXIS)} and coupling {list(COUPLING_AXIS)}"
+                f"protocol.strength_grid holds {off_axis}, which is off the strength axes "
+                f"admitted for {model_arm}: fields {list(fields_axis)} and coupling "
+                f"{list(coupling_axis)}"
             )
         strengths.append(strength)
     if len(set(strengths)) != len(strengths):
@@ -425,6 +560,7 @@ def validate_protocol(
 
     return {
         "model_arm": model_arm,
+        "model_label": recorded_model_label(model_arm, native_contract["dtype"]),
         "model_arms": model_arms,
         "guidance_arm": guidance_arm,
         "guidance_arms": guidance_arms,
@@ -440,7 +576,7 @@ def validate_protocol(
         "sequences_per_cell": count,
         "sampling": {**{key: float(value) for key, value in SAMPLING_RECIPE.items()},
                      "batch_size": batch_size},
-        "native_contract": {**SETTLED_NATIVE_CONTRACT, "score": contract["score"]},
+        "native_contract": native_contract,
         "permutation_seed": _require_int(protocol.get("permutation_seed"), field="protocol.permutation_seed"),
     }
 
@@ -497,8 +633,22 @@ def load_declared_models(directory: Path, declared: Mapping[str, Mapping[str, An
 # ------------------------------------------------------------------ the handles
 
 
+def weight_module(arm: Any) -> Any:
+    """The module whose parameters and training mode this cell owns.
+
+    A ProGen3 decoding arm's ``model`` is the adapter that supplies the two
+    arguments ProGen3's forward requires and holds no parameters of its own; the
+    weights sit on the serving handle, which is where the score path's
+    ``_forward_progen3`` reads them too. Every other arm's ``model`` is the module.
+    """
+
+    handle = (arm.serving_provenance or {}).get("progen3")
+    return arm.model if handle is None else handle.model
+
+
 def _observed_parameter_dtypes(arm: Any) -> list[str]:
-    return sorted({str(parameter.dtype).removeprefix("torch.") for parameter in arm.model.parameters()})
+    return sorted({str(parameter.dtype).removeprefix("torch.")
+                   for parameter in weight_module(arm).parameters()})
 
 
 def _checkpoint_record(arm: Any) -> dict[str, Any]:
@@ -553,14 +703,24 @@ def run_job(args: argparse.Namespace) -> dict[str, Any]:
     stage46 = _load_module("guided_stage46", ROOT / "scripts/capability/stages/context_homologue.py")
     singles = _load_module(
         "guided_stability_singles", ROOT / "scripts/capability/stability/extract_stability_singles.py")
-    arm = load_readout_arm(resolved["model_arm"], stage46, device=device, dtype="float32")
-    arm.model.eval()
-    arm.model.requires_grad_(False)
+    dtype = resolved["native_contract"]["dtype"]
+    if resolved["model_arm"] in PROGEN3_AMENDMENT["doses"]:
+        # Not load_readout_arm: that path is AutoModel and would sample random
+        # experts. progen3_decoding_arm is the only supported way in and runs the
+        # checkpoint's own numerical self-check before the arm is returned.
+        from src.capability.decoding.progen3_decoding import progen3_decoding_arm
+
+        arm = progen3_decoding_arm(resolved["model_arm"], device=device, dtype=dtype)
+    else:
+        arm = load_readout_arm(resolved["model_arm"], stage46, device=device, dtype=dtype)
+    module = weight_module(arm)
+    module.eval()
+    module.requires_grad_(False)
     observed = _observed_parameter_dtypes(arm)
-    if observed != ["float32"]:
+    if observed != [dtype]:
         raise ValueError(
             f"{resolved['model_arm']}: the loaded handle carries dtypes {observed}; this cell "
-            "requires one float32 handle for both sampling and scoring"
+            f"requires one {dtype} handle for both sampling and scoring"
         )
     ch.require_position_budget(arm.model.config, arm=resolved["model_arm"])
     width = output_logit_width(arm)
@@ -578,7 +738,7 @@ def run_job(args: argparse.Namespace) -> dict[str, Any]:
     decoder = GuidedDecoder(bias=bias, layout=layout, table=table, strength=resolved["strength"])
 
     identity = CellIdentity(
-        model_arm=resolved["model_arm"], domain=resolved["domain"],
+        model_arm=resolved["model_label"], domain=resolved["domain"],
         guidance_arm=resolved["guidance_arm"], strength=resolved["strength"],
         strength_index=resolved["strength_index"], stream_index=resolved["stream_index"],
         stream_seed=resolved["stream_seed"])
@@ -655,7 +815,11 @@ def run_job(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint": _checkpoint_record(arm),
         "source": {
             "script": "scripts/capability/decoding/collect_guided_decoding_pool.py",
-            "code_sha256": {path: sha256_file(ROOT / path) for path in CODE_PATHS},
+            "code_sha256": {
+                path: sha256_file(ROOT / path)
+                for path in (CODE_PATHS + AMENDED_CODE_PATHS
+                             if resolved["model_arm"] in PROGEN3_AMENDMENT["doses"]
+                             else CODE_PATHS)},
         },
         "counts": {
             "sequences": len(records),

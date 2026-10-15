@@ -92,6 +92,32 @@ def require_assets(args: argparse.Namespace) -> None:
         raise SystemExit("--limit must be positive")
 
 
+def require_prefix_exact_models(rows: Sequence[Mapping[str, Any]], amended: Sequence[str]) -> None:
+    """Refuse records from a model whose forward is not prefix-exact.
+
+    Everything here rests on :func:`replay_strength`, whose single teacher-forced
+    pass is the computation the sampler ran only for a prefix-exact forward.
+    ProGen3's expert mixture reduces over the flattened token axis, so the pass
+    and the sampler's incremental loop are different computations -- measured on
+    ProGen3-3B, by up to 0.289 nats per step and 0.28-1.00 nats summed along a
+    sequence, the order of the smallest coupling doses. Such records are refused
+    here by name: the number this script would print for them is wrong, and a
+    wrong strength is worse than a missing one, because the dose matching between
+    models is read off it.
+    """
+
+    refused = sorted({row["model"] for row in rows
+                      if any(str(row["model"]).startswith(name) for name in amended)})
+    if refused:
+        raise SystemExit(
+            f"--records holds rows from {refused}, whose forward is not prefix-exact. This "
+            "script replays teacher-forced through replay_strength, which is a different "
+            "computation from the incremental path those pools were sampled on. Measure them "
+            "with src.capability.decoding.guided_decoding.incremental_replay_strength instead "
+            "(INCREMENTAL_REPLAY_DECLARATION states what it establishes)"
+        )
+
+
 def load_records(path: Path) -> list[dict[str, Any]]:
     text = path.read_text()
     rows = ([json.loads(line) for line in text.splitlines() if line.strip()]
@@ -162,8 +188,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     collect = _load_script("decoding/collect_guided_decoding_pool.py")
     records_bytes, protocol_bytes = args.records.read_bytes(), args.protocol.read_bytes()
     protocol = json.loads(protocol_bytes)
-    selected = select_shard(load_records(args.records), limit=args.limit,
-                            shard=args.shard, shards=args.shards)
+    records = load_records(args.records)
+    require_prefix_exact_models(records, collect.amended_model_arms())
+    selected = select_shard(records, limit=args.limit, shard=args.shard, shards=args.shards)
     if not selected:
         raise ValueError("this shard holds no records")
 

@@ -1157,6 +1157,17 @@ def _entropy_nats(scores: torch.Tensor) -> float:
     return float(-(probabilities * torch.where(finite, logprobs, torch.zeros_like(logprobs))).sum())
 
 
+def candidate_logits(decoder: GuidedDecoder, logits: torch.Tensor) -> np.ndarray:
+    """One step's native logits over the candidate table, in table order.
+
+    The single projection every strength measurement reads, so the native side of
+    a divergence is the same quantity whoever asks for it.
+    """
+
+    ids = torch.as_tensor(decoder.table.ids, dtype=torch.long, device=logits.device)
+    return logits.index_select(0, ids).to(torch.float32).double().cpu().numpy()
+
+
 def _observe_step(
     meter: StrengthMeter, decoder: GuidedDecoder, logits: torch.Tensor, mask: np.ndarray,
     bias: np.ndarray, residues: int,
@@ -1167,9 +1178,7 @@ def _observe_step(
     the measured guided distribution is the one that was sampled from.
     """
 
-    ids = torch.as_tensor(decoder.table.ids, dtype=torch.long, device=logits.device)
-    native = logits.index_select(0, ids).to(torch.float32).double().cpu().numpy()
-    meter.add_step(native, bias.astype(np.float32), mask, residues)
+    meter.add_step(candidate_logits(decoder, logits), bias.astype(np.float32), mask, residues)
 
 
 def _prompt_ids(arm: Any, decoder: GuidedDecoder) -> list[int]:
@@ -1545,3 +1554,116 @@ def replay_strength(*, arm: Any, decoder: GuidedDecoder, token_ids: Sequence[int
     if offset != decoder.layout.characters:
         raise ValueError(f"{arm.name}: the path covers {offset} of {decoder.layout.characters} characters")
     return meter.record()
+
+
+#: Why a ProGen3 strength measurement replays incrementally, as an artefact records it.
+INCREMENTAL_REPLAY_DECLARATION = (
+    "replay_strength reads every step's native logits from one teacher-forced pass over the "
+    "whole prefix, which is the computation the sampler ran only for a model whose forward is "
+    "prefix-exact. ProGen3's is not: its expert mixture reduces over the flattened token axis, "
+    "so one pass over n tokens and n single-token passes through a growing cache disagree -- "
+    "measured on ProGen3-3B by up to 0.289 nats per step and 0.28-1.00 nats summed along a "
+    "sequence, the order of the smallest coupling doses this programme schedules. The "
+    "incremental replay runs the sampler's own loop at batch extent one and feeds the identical "
+    "step observer, so on a drawn path it reproduces the in-line guidance_strength record "
+    "exactly and on any other path it measures the strength the sampler would have observed "
+    "had it drawn that path."
+)
+
+
+def incremental_path_steps(
+    *, arm: Any, decoder: GuidedDecoder, token_ids: Sequence[int]
+) -> list[dict[str, Any]]:
+    """Walk one token path through the sampler's own incremental cache, step by step.
+
+    Returns, per step, the native logits over the candidate table, the layout's
+    admissibility mask, the two **unit-strength** bias components at that step and
+    how many residues the committed token emitted. The dose is not applied, so one
+    walk serves a whole strength curve: the native logits are a property of the
+    path and the components scale linearly in the two lambdas.
+
+    The walk is :data:`INCREMENTAL_REPLAY_DECLARATION`'s loop -- prompt once with
+    ``use_cache=True``, then one committed token per forward, at batch extent one.
+    A token that is not admissible where it stands, or a path that does not fill
+    the layout exactly, is refused.
+    """
+
+    if not len(token_ids):
+        raise ValueError("a replay needs at least one token")
+    path = [int(value) for value in token_ids]
+    prompt_ids = _prompt_ids(arm, decoder)
+    device = arm.device
+    steps: list[dict[str, Any]] = []
+    prefix: list[int] = []
+    offset = 0
+    with torch.no_grad():
+        step = arm.model(
+            input_ids=torch.tensor([prompt_ids], dtype=torch.long, device=device), use_cache=True)
+        past = step.past_key_values
+        logits = step.logits[:, -1]
+        for index, token in enumerate(path):
+            position = int(np.searchsorted(decoder.table.ids, token))
+            if position >= decoder.table.size or int(decoder.table.ids[position]) != token:
+                raise ValueError(f"{arm.name}: token {token} at step {index} is not a candidate")
+            mask = decoder.admissible(offset)
+            if not mask[position]:
+                raise ValueError(
+                    f"{arm.name}: token {token} at step {index} does not fit the native layout")
+            residues_before = int(decoder.layout.residues_before[offset])
+            prefix_codes = np.asarray(prefix, dtype=np.int64)
+            steps.append({
+                "native": candidate_logits(decoder, logits[0]),
+                "admissible": mask,
+                "fields": decoder.fields_terms(residues_before),
+                "coupling": decoder.coupling_terms(residues_before, prefix_codes),
+                "residues": int(decoder.table.residue_length[position]),
+            })
+            prefix.extend(int(code) for code in
+                          decoder.table.residues[position, : decoder.table.residue_length[position]])
+            offset += int(decoder.table.character_length[position])
+            if index + 1 == len(path):
+                break
+            step = arm.model(
+                input_ids=torch.tensor([[token]], dtype=torch.long, device=device),
+                past_key_values=past, use_cache=True)
+            past = step.past_key_values
+            logits = step.logits[:, -1]
+    if offset != decoder.layout.characters:
+        raise ValueError(
+            f"{arm.name}: the path covers {offset} of {decoder.layout.characters} characters")
+    return steps
+
+
+def path_strength(
+    steps: Sequence[Mapping[str, Any]], strength: GuidanceStrength
+) -> dict[str, Any]:
+    """The strength record one walked path would carry at ``strength``.
+
+    The dose enters here and nowhere else, so the same walk answers a whole
+    strength curve. The combination is the identical expression
+    :meth:`GuidedDecoder.token_bias` evaluates and the bias is rounded to float32
+    exactly as the sampler adds it, so a walk of a drawn path at the cell's own
+    strength reproduces its in-line ``guidance_strength`` record.
+    """
+
+    if not steps:
+        raise ValueError("a strength record needs at least one step")
+    meter = StrengthMeter()
+    for step in steps:
+        bias = strength.fields * step["fields"] + strength.coupling * step["coupling"]
+        meter.add_step(step["native"], bias.astype(np.float32), step["admissible"],
+                       int(step["residues"]))
+    return meter.record()
+
+
+def incremental_replay_strength(
+    *, arm: Any, decoder: GuidedDecoder, token_ids: Sequence[int]
+) -> dict[str, Any]:
+    """The strength record of one token path at the decoder's own dose, replayed incrementally.
+
+    :data:`INCREMENTAL_REPLAY_DECLARATION` says why this exists beside
+    :func:`replay_strength` and what it establishes.
+    """
+
+    return path_strength(
+        incremental_path_steps(arm=arm, decoder=decoder, token_ids=token_ids), decoder.strength)
