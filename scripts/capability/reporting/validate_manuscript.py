@@ -526,7 +526,7 @@ def validate(source_only=False):
     insertion = figure_options(main) | figure_options(supp)
     main_tables = len(re.findall(r"\\begin\{table\}", main))
     require(len(main_figures) + main_tables <= 6, "More than six main displays")
-    require(len(main_figures) == 5 and len(supp_figures) == 4, 'Expected five main and four supplementary figures')
+    require(len(main_figures) == 6 and len(supp_figures) == 4, 'Expected six main and four supplementary figures')
 
     # A note number declared in the shared numbering source but never rendered
     # is invisible: LaTeX ignores a \supnote placed after \end{document} and

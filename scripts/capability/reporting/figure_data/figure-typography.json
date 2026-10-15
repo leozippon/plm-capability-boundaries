@@ -1,5 +1,5 @@
 {
-  "status": "fail",
+  "status": "qualified_pass",
   "not_certified_scope": [
     "Original supplied-raster text is not editable or font-certified; original colors are not recolored. Preview DPI is not native artwork DPI."
   ],
@@ -69,6 +69,19 @@
       "native_raster_effective_dpi": null,
       "svg_sha256": "b931c0080161f9cdde93a16b76ea8f844e94c840ded870fb7b6b86127dc59465",
       "pdf_sha256": "89ed5f42c8a7a41faded5c81e7d9506c5e65cd87db274a2ebf39aa1ce7028d2f"
+    },
+    {
+      "figure": "figures/figure-6-guidance-and-selection.pdf",
+      "source_width_pdf_points": 370.08,
+      "insertion_width_pdf_points": 370.6102117061022,
+      "minimum_source_font_points": 7.0,
+      "minimum_effective_font_points": 7.010028863874608,
+      "labels_measured": 64,
+      "label_layout_faults": [],
+      "not_certified_scope": null,
+      "native_raster_effective_dpi": null,
+      "svg_sha256": "ee01762e13e5bc2d6fe0db6d66bf9e20e794462ed657b5e26ae1ca739fdbce93",
+      "pdf_sha256": "7d38bd560a7f8f841b139eede063740261b252e8809f446c347da9b8bdf67b22"
     },
     {
       "figure": "figures/supplementary-figure-1-native-comparators.pdf",
