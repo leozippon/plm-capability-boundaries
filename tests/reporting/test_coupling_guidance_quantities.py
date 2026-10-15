@@ -1,15 +1,17 @@
 """The guided-decoding and selection rows R6 rests on, and the refusals that guard them.
 
 R6 quotes three kinds of reading the artifacts do not hand over as single
-leaves. An achieved upper bound is recorded in three places at once, so a
-disagreement between them means there is no one bound to quote. A contrast is
-only the sealed eight's while it covers all eight domains, so an unestimable
-contrast and one missing a domain are refusals rather than quieter numbers. And
-"the best admissible scorer" is a maximum over a declared selector roster, so a
-roster the artifact does not carry, or one whose members are not all estimable,
-makes the maximum a maximum over something else.
+leaves. An achieved upper bound of the pre-registered equivalence family is
+recorded in three places at once, so a disagreement between them means there is
+no one bound to quote; the permuted-column control the same rule does not decide
+on is recorded once, in its own interval. A contrast is only the sealed eight's
+while it covers all eight domains, so an unestimable contrast and one missing a
+domain are refusals rather than quieter numbers. And "the best admissible
+scorer" is a maximum over a declared selector roster, so a roster the artifact
+does not carry, or one whose members are not all estimable, makes the maximum a
+maximum over something else.
 
-Two refusals carry the prose directly: the one equivalence reading the section
+Two refusals carry the prose directly: every equivalence reading the section
 reports as unestimable has to be unestimable for exactly one domain and for the
 admissible-candidate floor, and native likelihood's captured fraction has to
 still be negative for the section to quote it as a loss.
@@ -50,13 +52,21 @@ def contrast(mean: float, *, interval: tuple[float, float] | None = None,
     }
 
 
+#: The permuted-column contrast as the retained analysis carries it in the one
+#: stratum that resolves: ProtGPT2 covers the sealed eight, while the pooled and
+#: ProGen2-medium readings lose the 2LGW coupling cell to the admissible floor,
+#: which is the default :func:`primary` stages.
+RESOLVED_PERMUTED = contrast(0.0064, interval=(-0.0010, 0.0168), positive=5)
+
+
 def primary(**overrides) -> dict:
     """The primary TM family, one record per contrast and stratum."""
     base = {
         "C-Pr": contrast(-0.0138, interval=(-0.0397, -0.0040), positive=1),
         "F-M": contrast(0.0183, interval=(0.0033, 0.0422), positive=6),
         "C-N": contrast(-0.09, interval=(-0.2, -0.01), positive=0),
-        "C-Cx": contrast(0.0064, interval=(-0.0010, 0.0168), positive=5),
+        "C-Cx": contrast(0.0056, domains=DOMAINS[:7],
+                         missing={"2LGW": "C: 20 admissible < 25"}),
         "C-Cd": contrast(-0.0060, interval=(-0.0146, 0.0025), positive=3),
         "Pr-N": contrast(0.0126, interval=(0.0083, 0.0195)),
         "potts_coupling-coupling_permuted": contrast(0.0042, interval=(-0.0061, 0.0098),
@@ -151,7 +161,9 @@ def confirmatory_payload(*, strata: tuple[str, ...] = (*guidance.MODELS, guidanc
                                     missing={"2LGW": "C: 20 admissible < 25"}),
                    "F-M": contrast(0.0038, interval=(-0.0002, 0.0119), positive=5)})
         else:
-            primary_family[stratum] = primary()
+            # ProtGPT2 is the one stratum whose permuted-column contrast resolves,
+            # and the section quotes its bound.
+            primary_family[stratum] = primary(**{"C-Cx": RESOLVED_PERMUTED})
     feasibility_family = {stratum: (feasibility_pooled if stratum == guidance.POOLED
                                     and feasibility_pooled is not None else feasibility())
                           for stratum in strata}
@@ -236,27 +248,58 @@ def test_every_quoted_reading_is_emitted_once_with_its_own_kind(tmp_path):
         assert quantity.interval_kind == guidance.BCA
 
 
-def test_the_procedural_constants_these_campaigns_record_are_not_emitted(tmp_path):
-    emitted = stage(tmp_path).quantities
-    values = {quantity.value for quantity in emitted}
-    # Draw count, bootstrap and permutation seeds, the admissible-candidate
-    # floor and the selection budget.
-    assert not values & {9999.0, 20261013.0, 25.0, 10.0}
+def test_the_declared_constants_are_emitted_and_the_resampling_ones_are_not(tmp_path):
+    emitted = rows(stage(tmp_path))
+    values = {quantity.value for quantity in emitted.values()}
+    # Draw count, and the bootstrap and permutation seeds.
+    assert not values & {9999.0, 20261013.0}
     # The bootstrap floor is eight domains and so is the sign count the section
     # quotes, so the floor is excluded by there being one row at that value and
     # it being the count.
-    assert [quantity.id for quantity in emitted if quantity.value == 8.0] == [
+    assert [quantity.id for quantity in emitted.values() if quantity.value == 8.0] == [
         "coupling_guidance/primary_tm/pooled/profile_over_unguided/domains_favouring_profile"]
-    # The identity restriction is emitted, because the section quotes it as a
-    # numeral and the whole endpoint is defined by it.
-    assert 20.0 in values
+    # The three constants the endpoints are defined by are emitted, because the
+    # Methods quotes each as a numeral: the identity restriction, the
+    # admissible-candidate floor and the selection budget.
+    assert emitted["coupling_guidance/admissible_identity_below"].value == 20.0
+    assert emitted["coupling_guidance/minimum_admissible"].value == 25.0
+    assert emitted["coupling_selection/selection_budget"].value == 10.0
+    for identifier in ("coupling_guidance/minimum_admissible",
+                       "coupling_selection/selection_budget"):
+        assert emitted[identifier].kind == "constant"
+        assert emitted[identifier].unit == guidance.ADMISSIBLE_CANDIDATES
+
+
+def test_a_budget_recorded_twice_has_to_agree(tmp_path):
+    payload = confirmatory_payload()
+    payload["captured_fraction_of_oracle_headroom"]["k"] = 20
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=payload)
+    assert "selection budget is recorded twice and the two disagree" in str(refusal.value)
 
 
 def test_a_bound_recorded_three_times_has_to_agree_in_all_three(tmp_path):
     with pytest.raises(LedgerError) as refusal:
         stage(tmp_path, confirmatory=confirmatory_payload(
             bounds={"protgpt2": {"F-M": 0.0431}}))
-    assert "three different achieved upper bounds" in str(refusal.value)
+    assert "different achieved upper bounds" in str(refusal.value)
+
+
+def test_the_permuted_column_bound_is_read_from_the_one_place_that_records_it(tmp_path):
+    # It is outside the pre-registered family, so the artifact records it only
+    # in its own interval and the row points there.
+    emitted = rows(stage(tmp_path))
+    bound = emitted["coupling_guidance/equivalence/protgpt2/C-Cx/achieved_upper_bound"]
+    assert bound.kind == "range_bound" and round(bound.value, 4) == 0.0168
+    assert bound.source_pointer == ("primary_tm", "protgpt2", "contrasts", "C-Cx",
+                                    "interval95_bca", "[1]")
+    assert "the declared margin rule does not decide on" in bound.claim
+    # A stratum whose permuted-column contrast resolved would no longer be the
+    # unestimable reading the section reports.
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=confirmatory_payload(
+            pooled=primary(**{"C-Cx": RESOLVED_PERMUTED})))
+    assert "now carries an achieved upper bound" in str(refusal.value)
 
 
 def test_a_bound_at_or_above_the_declared_margin_refuses(tmp_path):
@@ -402,11 +445,14 @@ def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
         return tuple(round(bound, places) for bound in emitted[identifier].interval)
 
     assert quoted("coupling_guidance/admissible_identity_below", 0) == 20.0
+    assert quoted("coupling_guidance/minimum_admissible", 0) == 25.0
+    assert quoted("coupling_selection/selection_budget", 0) == 10.0
     assert quoted("coupling_guidance/equivalence/declared_margin", 2) == 0.05
     assert quoted("coupling_guidance/equivalence/protgpt2/C-Pr/achieved_upper_bound", 4) == -0.0040
     assert quoted("coupling_guidance/equivalence/progen2-medium/F-M/achieved_upper_bound", 4) \
         == 0.0119
     assert quoted("coupling_guidance/equivalence/protgpt2/F-M/achieved_upper_bound", 4) == 0.0422
+    assert quoted("coupling_guidance/equivalence/protgpt2/C-Cx/achieved_upper_bound", 4) == 0.0168
 
     assert quoted("coupling_guidance/primary_tm/pooled/profile_over_unguided", 4) == 0.0126
     assert emitted["coupling_guidance/primary_tm/pooled/profile_over_unguided/"

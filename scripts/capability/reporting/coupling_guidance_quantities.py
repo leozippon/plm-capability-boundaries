@@ -1,32 +1,37 @@
 """Source mappings for the guided-decoding and candidate-selection readings R6 rests on.
 
 R6 reports the pre-registered E20 confirmatory analysis --- the achieved upper
-bounds on the two pairwise-specific contrasts, the first-order gain that does
-resolve, the co-primary cost of guidance and how much of the selection oracle's
-headroom any admissible scorer reaches --- together with the one E17 reading the
-section cites as the same anti-selection on a different endpoint. Every row here
-is read out of one of those two retained artifacts. Nothing is fitted, no
-interval is resampled and no contrast is recomputed: an interval is copied with
-the resampling unit, draw count and seed the artifact's own interval statement
-records, and the two derived rows carry the arithmetic their claims state ---
-the largest captured fraction over a selector roster, and a count of the domains
-whose per-domain difference is positive.
+bounds on the two pairwise-specific contrasts and on the permuted-column
+control, the first-order gain that does resolve, the co-primary cost of guidance
+and how much of the selection oracle's headroom any admissible scorer reaches
+--- together with the one E17 reading the section cites as the same
+anti-selection on a different endpoint. Every row here is read out of one of
+those two retained artifacts. Nothing is fitted, no interval is resampled and no
+contrast is recomputed: an interval is copied with the resampling unit, draw
+count and seed the artifact's own interval statement records, and the two
+derived rows carry the arithmetic their claims state --- the largest captured
+fraction over a selector roster, and a count of the domains whose per-domain
+difference is positive.
 
-Three readings in this section are bounds rather than estimates, and are emitted
+Five readings in this section are bounds rather than estimates, and are emitted
 as such. An achieved upper 95% bound is the end of an interval, so it is a
 ``range_bound`` and not a point estimate the manuscript owes an interval for;
 the same holds for the best admissible scorer's captured fraction, which is a
 maximum over a roster rather than one resampled quantity. Each achieved bound is
-cross-read against the two other places the artifact records it --- the
-stratum's own ``upper_bound`` block and the primary contrast's interval --- and
-refuses on disagreement, because one number recorded three times is one reading
-only while the three agree.
+read in every place the artifact records it and refuses on disagreement, because
+one number recorded more than once is one reading only while the recordings
+agree. The two contrasts the declared equivalence rule decides on are recorded
+three times --- the headline block, the stratum's own ``upper_bound`` block and
+the primary contrast's interval --- and the permuted-column contrast, which that
+rule does not cover, is recorded once in its own interval; no second copy of it
+is invented to agree with, and which contrasts the rule decides on is read off
+the headline block rather than declared here.
 
 Four rosters carry what the artifacts do not name. ``MODELS`` is the two
-checkpoints the design runs; ``QUOTED_BOUNDS`` and ``UNESTIMABLE_BOUND`` split
-the four model-level equivalence readings into the three the section quotes as a
-bound and the one it reports as unestimable; ``SELECTORS`` is the admissible
-scorer roster the "best admissible scorer" is a maximum over; and
+checkpoints the design runs; ``QUOTED_BOUNDS`` and ``UNESTIMABLE_BOUNDS`` split
+the model-level and pooled equivalence readings into the four the section quotes
+as a bound and the three it reports as unestimable; ``SELECTORS`` is the
+admissible scorer roster the "best admissible scorer" is a maximum over; and
 ``QUOTED_POOLS`` names the two pool bases whose headroom the section quotes. A
 contrast that does not cover all eight sealed domains, a capture arm with a
 missing domain, and a selector roster the artifact does not carry are refusals
@@ -34,15 +39,23 @@ rather than quieter numbers: a reduction over a set is only statable when the
 artifact covers the set, and "the best admissible scorer" over four of five
 selectors is a different claim.
 
-The procedural constants these campaigns record are not emitted: the bootstrap
-draw count and seed, the permutation seed, the eight-domain bootstrap floor, the
-25-candidate admissible floor and the selection budget. No claim quotes any of
-them as a numeral --- the budget is written out as a word --- and each collides
-with numbers the manuscript writes for other things, so a row for any of them
-could only dilute the attribution of a number it does quote. They travel on the
-support descriptions instead, which is where the population they define belongs.
-The identity restriction is emitted because the section quotes it as a numeral
-and the whole endpoint is defined by it.
+The resampling constants these campaigns record are not emitted: the bootstrap
+draw count and seed, the permutation seed and the eight-domain bootstrap floor.
+No claim quotes any of them as a numeral, and the floor's value is one the
+manuscript does write for a window radius, so a row for any of them could only
+dilute the attribution of a number it does quote. They travel on the support
+descriptions instead, which is where the population they define belongs.
+
+The three constants the endpoints are defined by are emitted: the identity
+restriction, the admissible-candidate floor and the selection budget. The
+Methods quotes each as a numeral, and each says what the endpoint counts rather
+than how it was resampled --- which candidate enters it, how many a cell needs
+before it carries a value at all, and how many a scorer's reading is taken over.
+The floor and the budget were suppressed while the Methods wrote them as words,
+and the collision that justified suppressing them was checked before they were
+emitted: the floor's numeral appears nowhere else in the manuscript, and every
+other number the budget's numeral collides with keeps the attribution it had, so
+neither row takes a number away from a result that quotes it.
 """
 from __future__ import annotations
 
@@ -64,14 +77,19 @@ MODELS = ("progen2-medium", "protgpt2")
 POOLED = "pooled"
 
 #: The achieved upper bounds the section quotes, as (stratum, contrast). Both
-#: pairwise-specific contrasts are here: coupling guidance against the
-#: first-order profile, and couplings added to fields.
-QUOTED_BOUNDS = (("protgpt2", "C-Pr"), ("progen2-medium", "F-M"), ("protgpt2", "F-M"))
-#: The fourth model-level reading, which the section reports as unestimable
-#: rather than as a bound. It carries its own refusal: the artifact has to say
-#: it is unestimable for exactly one domain, and that domain's reason has to be
-#: the admissible-candidate floor, or the sentence describes another failure.
-UNESTIMABLE_BOUND = ("progen2-medium", "C-Pr")
+#: pairwise-specific contrasts of the pre-registered family are here --- coupling
+#: guidance against the first-order profile, and couplings added to fields ---
+#: together with the permuted-column control the coupling arm is read against,
+#: which the declared equivalence rule does not decide on.
+QUOTED_BOUNDS = (("protgpt2", "C-Pr"), ("progen2-medium", "F-M"), ("protgpt2", "F-M"),
+                 ("protgpt2", "C-Cx"))
+#: The readings the section reports as unestimable rather than as a bound, each
+#: resting on seven of the eight domains. Each carries its own refusal: the
+#: artifact has to say it is unestimable for exactly one domain, and that
+#: domain's reason has to be the admissible-candidate floor, or the sentence
+#: describes another failure.
+UNESTIMABLE_BOUNDS = (("progen2-medium", "C-Pr"), (POOLED, "C-Cx"),
+                      ("progen2-medium", "C-Cx"))
 
 #: The admissible scorer roster. The TM oracle is deliberately outside it --- it
 #: ranks by the measured endpoint, which is prohibited for any method --- so
@@ -93,6 +111,10 @@ DOMAIN_UNIT = "sealed evaluation domain"
 
 TM = "dimensionless TM-score"
 FRACTION = "dimensionless fraction"
+#: What the floor and the budget count. Both are candidates that already clear
+#: the identity restriction: the floor is how many a cell needs to carry a value
+#: and the budget is how many a scorer's reading is taken over.
+ADMISSIBLE_CANDIDATES = "admissible candidates"
 #: Mean per-residue CA pLDDT on the 0--100 scale E17 reports its yields in. It
 #: is the folding model's confidence in its own coordinates, so it is neither a
 #: percentage nor a measured property, and the unit says so rather than
@@ -111,9 +133,11 @@ def add_coupling_guidance_quantities(ledger) -> None:
     emit = _emitter(ledger)
     payload = _confirmatory(ledger)
     _identity_restriction(ledger, emit, payload)
+    _admissible_floor(ledger, emit, payload)
     _equivalence_bounds(ledger, emit, payload)
     _primary_tm(ledger, emit, payload)
     _coprimary_feasibility(ledger, emit, payload)
+    _selection_budget(ledger, emit, payload)
     _selection_headroom(ledger, emit, payload)
     _likelihood_anti_selection(ledger, emit)
 
@@ -189,7 +213,7 @@ def _selection_support(ledger, payload: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# The identity restriction the endpoint is defined by.
+# The declared constants the endpoints are defined by.
 # --------------------------------------------------------------------------- #
 
 def _identity_restriction(ledger, emit, payload: dict) -> None:
@@ -203,62 +227,132 @@ def _identity_restriction(ledger, emit, payload: dict) -> None:
          unit="percent", kind="constant", level="generation")
 
 
+def _admissible_floor(ledger, emit, payload: dict) -> None:
+    emit(CONFIRMATORY, ("frozen", "minimum_admissible"),
+         identifier="coupling_guidance/minimum_admissible",
+         claim="declared admissible-candidate floor: a cell carries a value on the co-primary "
+               "endpoints only with at least this many candidates below the identity restriction, "
+               "and a cell short of the floor is reported without a value rather than imputed or "
+               "relaxed after the fact; it is the floor one coupling cell misses, which is why "
+               "every contrast over that cell rests on seven domains and carries no interval",
+         family="coupling_guidance", support=_primary_support(ledger, payload, POOLED),
+         unit=ADMISSIBLE_CANDIDATES, kind="constant", level="generation")
+
+
+def _selection_budget(ledger, emit, payload: dict) -> None:
+    """The declared top-k budget, which the analysis records in two places."""
+    frozen = payload["frozen"]["selection_k"]
+    capture = payload["captured_fraction_of_oracle_headroom"]["k"]
+    if frozen != capture:
+        raise LedgerError(f"{CONFIRMATORY}: the selection budget is recorded twice and the two "
+                          f"disagree ({frozen}, {capture}), so there is no one budget the captured "
+                          "fractions and the oracle headroom were both measured at")
+    emit(CONFIRMATORY, ("frozen", "selection_k"),
+         identifier="coupling_selection/selection_budget",
+         claim="declared selection budget: a scorer's reading is the mean endpoint of the top this "
+               "many candidates it ranks inside a cell's admissible pool, and the oracle's "
+               "headroom is measured at the same budget, so every captured fraction is a fraction "
+               "of it",
+         family="coupling_selection", support=_selection_support(ledger, payload),
+         unit=ADMISSIBLE_CANDIDATES, kind="constant", level="generation")
+
+
 # --------------------------------------------------------------------------- #
 # The headline: achieved upper bounds against the declared margin.
 # --------------------------------------------------------------------------- #
 
-def _agreeing_bound(payload: dict, stratum: str, contrast: str) -> float:
-    """One achieved upper bound, read where the artifact states it three times.
+def _recorded_bounds(payload: dict, stratum: str,
+                     contrast: str) -> list[tuple[tuple, float | None]]:
+    """Every place the artifact records this contrast's achieved upper bound.
 
-    The headline block, the stratum's own ``upper_bound`` block and the primary
-    contrast's own interval each carry it. Three recordings are one reading only
-    while they agree, so a disagreement refuses rather than picking one.
+    The contrast's own interval always carries it. A contrast the declared
+    equivalence rule decides on carries it twice more --- in the headline block
+    and in the stratum's own ``upper_bound`` block --- because the rule reads
+    those; which contrasts those are is the headline block's own keys rather
+    than a roster typed in here. The authoritative locator comes first, so a row
+    points at the headline block where there is one and at the interval
+    otherwise.
     """
     equivalence = payload["equivalence"]
-    headline = equivalence["achieved_upper_bound"][contrast][stratum]
-    stated = equivalence["strata"][stratum]["upper_bound"][contrast]
-    record = payload["primary_tm"][stratum]["contrasts"][contrast]
-    interval = record["interval95_bca"]
-    if headline is None or stated is None or interval is None:
-        raise LedgerError(f"{CONFIRMATORY}: {stratum} {contrast} carries no achieved upper bound "
-                          f"({record['status']}: {record['reason']})")
-    if not headline == stated == interval[1]:
+    interval = payload["primary_tm"][stratum]["contrasts"][contrast]["interval95_bca"]
+    own = (("primary_tm", stratum, "contrasts", contrast, "interval95_bca", "[1]"),
+           None if interval is None else interval[1])
+    if contrast not in equivalence["achieved_upper_bound"]:
+        return [own]
+    return [(("equivalence", "achieved_upper_bound", contrast, stratum),
+             equivalence["achieved_upper_bound"][contrast][stratum]),
+            (("equivalence", "strata", stratum, "upper_bound", contrast),
+             equivalence["strata"][stratum]["upper_bound"][contrast]),
+            own]
+
+
+def _agreeing_bound(payload: dict, stratum: str, contrast: str) -> tuple[tuple, float]:
+    """One achieved upper bound, read in every place the artifact records it.
+
+    Several recordings are one reading only while they agree, so a disagreement
+    refuses rather than picking one. The contrast has to cover the sealed eight
+    for its interval to have an end at all, and a contrast the equivalence rule
+    decides on also has to lie below the declared margin; a contrast outside
+    that rule is read against no margin, because the margin statement does not
+    cover it.
+    """
+    _covered(payload, "primary_tm", stratum, contrast)
+    recorded = _recorded_bounds(payload, stratum, contrast)
+    locator, bound = recorded[0]
+    if len({value for _, value in recorded}) != 1:
         raise LedgerError(
-            f"{CONFIRMATORY}: {stratum} {contrast} records three different achieved upper bounds "
-            f"({headline}, {stated}, {interval[1]}), so there is no one bound to quote")
-    if not equivalence["strata"][stratum]["below_margin"][contrast]:
+            f"{CONFIRMATORY}: {stratum} {contrast} records different achieved upper bounds "
+            f"({', '.join(str(value) for _, value in recorded)}), so there is no one bound "
+            "to quote")
+    equivalence = payload["equivalence"]
+    if contrast in equivalence["achieved_upper_bound"] and \
+            not equivalence["strata"][stratum]["below_margin"][contrast]:
         raise LedgerError(f"{CONFIRMATORY}: {stratum} {contrast} does not lie below the declared "
                           f"margin {equivalence['margin_tm']}, so it is not a bound the margin "
                           "statement covers")
-    return float(headline)
+    return locator, float(bound)
 
 
-def _equivalence_bounds(ledger, emit, payload: dict) -> None:
-    prose = {"C-Pr": ("coupling guidance is worth over the first-order profile", "C minus Pr"),
-             "F-M": ("adding couplings to the fields of a Potts model is worth", "F minus M")}
-    for stratum, contrast in QUOTED_BOUNDS:
-        bound = _agreeing_bound(payload, stratum, contrast)
-        difference, arms = prose[contrast]
-        emit(CONFIRMATORY, ("equivalence", "achieved_upper_bound", contrast, stratum),
-             identifier=f"coupling_guidance/equivalence/{stratum}/{contrast}/achieved_upper_bound",
-             claim=f"achieved upper 95% bound on what {difference}, in mean TM-score "
-                   f"({arms}) on {stratum}"
-                   f"{', whose whole interval lies below zero' if bound < 0.0 else ''}; it is the "
-                   "upper end of that contrast's own interval and not a point estimate",
-             family="coupling_guidance", support=_primary_support(ledger, payload, stratum),
-             unit=TM, kind="range_bound", value=bound, level="generation")
+def _unestimable_bound(payload: dict, stratum: str, contrast: str) -> None:
+    """One reading the section reports as unestimable, and why it has to be.
 
-    stratum, contrast = UNESTIMABLE_BOUND
-    record = payload["primary_tm"][stratum]["contrasts"][contrast]
-    missing = record["missing_domains"]
-    if payload["equivalence"]["strata"][stratum]["upper_bound"][contrast] is not None:
+    No place the artifact records a bound may carry one, and the reason has to
+    be the one the prose gives: exactly one domain supplying too few admissible
+    candidates.
+    """
+    if any(value is not None for _, value in _recorded_bounds(payload, stratum, contrast)):
         raise LedgerError(f"{CONFIRMATORY}: {stratum} {contrast} now carries an achieved upper "
                           "bound, so reporting it as unestimable states the wrong result")
+    missing = payload["primary_tm"][stratum]["contrasts"][contrast]["missing_domains"]
     if len(missing) != 1 or "admissible" not in next(iter(missing.values())):
         raise LedgerError(
             f"{CONFIRMATORY}: {stratum} {contrast} is unestimable for {sorted(missing)} with "
             f"reasons {sorted(missing.values())}; the quoted claim is one domain supplying too few "
             "admissible candidates, which is a different statement")
+
+
+def _equivalence_bounds(ledger, emit, payload: dict) -> None:
+    prose = {"C-Pr": ("coupling guidance is worth over the first-order profile", "C minus Pr"),
+             "F-M": ("adding couplings to the fields of a Potts model is worth", "F minus M"),
+             "C-Cx": ("decoding under coupling guidance is worth over decoding under the same "
+                      "guidance with its coupling columns permuted", "C minus Cx")}
+    for stratum, contrast in QUOTED_BOUNDS:
+        locator, bound = _agreeing_bound(payload, stratum, contrast)
+        difference, arms = prose[contrast]
+        below_zero = ", whose whole interval lies below zero" if bound < 0.0 else ""
+        outside_rule = ("" if contrast in payload["equivalence"]["achieved_upper_bound"] else
+                        " the contrast is an incorrect-constraint control the declared margin rule "
+                        "does not decide on, and")
+        emit(CONFIRMATORY, locator,
+             identifier=f"coupling_guidance/equivalence/{stratum}/{contrast}/achieved_upper_bound",
+             claim=f"achieved upper 95% bound on what {difference}, in mean TM-score "
+                   f"({arms}) on {stratum}{below_zero};{outside_rule} it is the "
+                   "upper end of that contrast's own interval and not a point estimate",
+             family="coupling_guidance", support=_primary_support(ledger, payload, stratum),
+             unit=TM, kind="range_bound", value=bound, level="generation")
+
+    for stratum, contrast in UNESTIMABLE_BOUNDS:
+        _unestimable_bound(payload, stratum, contrast)
 
     emit(CONFIRMATORY, ("equivalence", "margin_tm"),
          identifier="coupling_guidance/equivalence/declared_margin",
