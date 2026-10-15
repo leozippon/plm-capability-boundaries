@@ -208,19 +208,29 @@ def main(argv: list[str] | None = None) -> int:
         if not active:
             continue
         print(f"slot {slot}: {len(active)} rows running", flush=True)
-        for plan in active:
-            code = plan["process"].wait()
-            plan["handle"].close()
-            seconds = time.time() - plan["started"]
-            complete = code == 0 and plan["expect"].is_file()
-            if not complete:
-                failures += 1
-            lines.append("\t".join((
-                str(plan["row"].slot), plan["row"].gpu, plan["row"].label,
-                "complete" if complete else "failed", str(code), f"{seconds:.1f}",
-                str(plan["log"]))) + "\n")
-            print(f"  {plan['row'].label}: {'complete' if complete else 'FAILED'} "
-                  f"rc={code} {seconds:.1f}s", flush=True)
+        # Reaped as each row exits, not in list order: waiting on the first row and
+        # then timing the rest would record the slot's wall time for every row that
+        # finished before the slowest one, which is not what the column says it is.
+        pending = list(active)
+        while pending:
+            for plan in list(pending):
+                code = plan["process"].poll()
+                if code is None:
+                    continue
+                pending.remove(plan)
+                plan["handle"].close()
+                seconds = time.time() - plan["started"]
+                complete = code == 0 and plan["expect"].is_file()
+                if not complete:
+                    failures += 1
+                lines.append("\t".join((
+                    str(plan["row"].slot), plan["row"].gpu, plan["row"].label,
+                    "complete" if complete else "failed", str(code), f"{seconds:.1f}",
+                    str(plan["log"]))) + "\n")
+                print(f"  {plan['row'].label}: {'complete' if complete else 'FAILED'} "
+                      f"rc={code} {seconds:.1f}s", flush=True)
+            if pending:
+                time.sleep(1.0)
         status.write_text("".join(lines))
         if failures:
             print(f"{failures} rows failed in slot {slot}; later slots are not run",

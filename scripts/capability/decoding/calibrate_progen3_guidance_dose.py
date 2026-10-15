@@ -79,7 +79,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.capability.context.family_potts import FamilyModel, load_family_model  # noqa: E402
-from src.capability.core.io import write_json  # noqa: E402
+from src.capability.core.io import sha256_file, write_json  # noqa: E402
 from src.capability.decoding.guided_decoding import (  # noqa: E402
     ARM_CODES, INCREMENTAL_REPLAY_DECLARATION, GuidanceStrength, GuidedDecoder, build_arm_bias,
     canonical_token_ids, component_scale, incremental_path_steps, native_layout, path_strength,
@@ -125,6 +125,18 @@ def _load_script(relative: str) -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def code_paths(collect: Any) -> tuple[str, ...]:
+    """Every source whose bytes decide a dose, read from the stage that already lists them.
+
+    The pool stage's own digest set is the authority on what decides a cell's logits;
+    a dose is decided by the same sources plus this script and the ProGen3 adapter,
+    which the stage lists separately because it hashes them only for an amended arm.
+    """
+
+    return (("scripts/capability/decoding/calibrate_progen3_guidance_dose.py",)
+            + tuple(collect.CODE_PATHS) + tuple(collect.AMENDED_CODE_PATHS))
 
 
 def settled_axis(collect: Any) -> dict[str, tuple[float, ...]]:
@@ -361,7 +373,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
 
-    axis = settled_axis(_load_script("decoding/collect_guided_decoding_pool.py"))
+    collect = _load_script("decoding/collect_guided_decoding_pool.py")
+    axis = settled_axis(collect)
     targets = {code: statistic(sides["reference"]["walks"][code], code, frozen[code])
                for code in sorted(SOLVED_ARMS)}
     solved: dict[str, Any] = {}
@@ -453,6 +466,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         for name, family in sorted(families.items())},
         },
         "permutation_seed": permutation_seed,
+        "source": {
+            "script": "scripts/capability/decoding/calibrate_progen3_guidance_dose.py",
+            "code_sha256": {path: sha256_file(ROOT / path) for path in code_paths(collect)},
+        },
         "invocation": {"device": device, "out": str(Path(args.out).resolve())},
     }
 
