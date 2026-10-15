@@ -89,7 +89,10 @@ equals the ``potts_fields`` bias plus the ``coupling`` bias, because the three a
 share one ``u`` and one ``C``;
 ``coupling`` at ``t = 0`` is exactly zero because the sum is empty; and with both
 strengths at zero every arm adds a literal ``0.0`` to the same logits, so all six
-draw the identical sequence from one seed. An arm that lacks a component
+draw the identical sequence from one seed. That the shared sequence is the one
+*native sampling* draws, rather than merely a sequence all six agree on, is
+checked against :func:`native_reference_draw`, which reimplements native sampling
+without any of this module's layout or bias machinery. An arm that lacks a component
 contributes exactly zero from it, not a small number, because the component is
 absent rather than scaled down. :func:`build_arm_bias` additionally checks the
 three target-model arms against
@@ -218,6 +221,7 @@ __all__ = [
     "GUIDANCE_ARMS",
     "GuidanceStrength",
     "GuidedDecoder",
+    "NATIVE_REFERENCE_DECLARATION",
     "NativeLayout",
     "RESIDUE_SLOT",
     "SAMPLING_RECIPE",
@@ -229,7 +233,9 @@ __all__ = [
     "component_bias_vectors",
     "component_scale",
     "generate_cell",
+    "generation_point",
     "native_layout",
+    "native_reference_draw",
     "nominal_lambda",
     "permutation_for",
     "select_cross_domain_donor",
@@ -812,6 +818,27 @@ class NativeLayout:
         return "".join(out)
 
 
+def generation_point(arm: Any) -> Any:
+    """Where this arm's native stream starts, and how its prompt tokenises.
+
+    ``unconditional_generation.ADMITTED`` is the right source for every arm that
+    campaign admits, and it stays the default. It is not, however, a declaration
+    about *this* experiment: it refuses ``progen3-3b`` because EXP-R2-233 is
+    complete, which says nothing about whether a later experiment may sample the
+    checkpoint, and it reaches some arms through a released generator rather than
+    through a forward loop. An arm that carries its own ``generation_point`` --
+    :mod:`src.capability.decoding.progen3_decoding` derives one from the
+    checkpoint's own batch preparer -- is read from there, so E20's roster is not
+    pinned to another campaign's exclusions. The declaration is the same type
+    either way, so a generation point has one shape.
+    """
+
+    declared = getattr(arm, "generation_point", None)
+    if declared is not None:
+        return declared
+    return require_admitted(arm.name)
+
+
 def _probe(length: int, offset: int) -> str:
     return "".join(AA20[(index + offset) % 20] for index in range(length))
 
@@ -827,7 +854,7 @@ def native_layout(arm: Any, length: int) -> NativeLayout:
 
     if length < 1:
         raise ValueError("a native layout needs at least one residue")
-    prompt = require_admitted(arm.name).prompt
+    prompt = generation_point(arm).prompt
     first, second = _probe(length, 0), _probe(length, 1)
     rendered = render_records(arm, [first, second], modality="protein")
     if len(rendered) != 2 or len(rendered[0]) != len(rendered[1]):
@@ -1148,7 +1175,7 @@ def _observe_step(
 def _prompt_ids(arm: Any, decoder: GuidedDecoder) -> list[int]:
     prompt_ids = arm.tokenizer(
         decoder.layout.prompt,
-        add_special_tokens=require_admitted(arm.name).add_special_tokens,
+        add_special_tokens=generation_point(arm).add_special_tokens,
         return_tensors=None,
     )["input_ids"]
     if not prompt_ids:
@@ -1248,6 +1275,115 @@ def _draw_batch(
             }
         )
     return draws
+
+
+#: What :func:`native_reference_draw` establishes, as a test or an artefact records it.
+NATIVE_REFERENCE_DECLARATION = (
+    "a second, independent implementation of native sampling for a one-residue-per-token "
+    "arm, used only to check that guidance at lambda = 0 reproduces native sampling token "
+    "for token from one seed. It shares the declared sampling recipe, because that is the "
+    "protocol rather than the thing under test, and shares no layout, candidate table or "
+    "bias machinery. Comparing the native arm against itself would establish only that the "
+    "module is deterministic."
+)
+
+
+def native_reference_draw(
+    *, arm: Any, length: int, seed: int, device: str | None = None
+) -> dict[str, Any]:
+    """One native draw of ``length`` residues, written independently of the biased path.
+
+    The zero-strength invariant -- every arm at ``lambda = 0`` draws the sequence
+    native sampling draws from the same seed -- is what makes the arms differ in
+    the bias term and in nothing else, and it cannot be checked against the native
+    arm itself. :data:`NATIVE_REFERENCE_DECLARATION` says what this shares and what
+    it does not.
+
+    Defined for an arm whose native stream is one canonical residue per token, so
+    that the candidate set at every step is "the twenty canonical residues" and no
+    layout is needed to find it. A tokeniser carrying a multi-residue token is
+    refused rather than approximated: its stream cannot be reproduced without the
+    layout rule, and an approximation would turn the gate into a near-miss
+    comparison.
+
+    The score vector's width is read from the model's own output rather than
+    declared, because one ``multinomial`` over a differently shaped vector is a
+    different draw, so the comparison only holds against a candidate table built
+    on that same width.
+    """
+
+    if length < 1:
+        raise ValueError("a native reference draw needs at least one residue")
+    vocabulary = arm.tokenizer.get_vocab()
+    ids = sorted(int(value) for value in vocabulary.values())
+    texts = arm.tokenizer.batch_decode(
+        [[value] for value in ids], skip_special_tokens=False, clean_up_tokenization_spaces=False
+    )
+    residue_ids: list[int] = []
+    residue_of: dict[int, str] = {}
+    spanning: list[str] = []
+    for token_id, text in zip(ids, texts, strict=True):
+        if not text or any(character not in _RESIDUE_CODE for character in text):
+            continue
+        if len(text) == 1:
+            residue_ids.append(token_id)
+            residue_of[token_id] = text
+        else:
+            spanning.append(text)
+    if spanning:
+        raise ValueError(
+            f"{arm.name}: the vocabulary carries multi-residue tokens "
+            f"{sorted(spanning)[:5]}, so its native stream is not one residue per token "
+            "and cannot be reproduced without the layout rule"
+        )
+    if len(residue_ids) != 20:
+        raise ValueError(
+            f"{arm.name}: {len(residue_ids)} of the twenty canonical residues have a "
+            "single-token spelling; a native reference draw would suppress the rest"
+        )
+    point = generation_point(arm)
+    prompt_ids = arm.tokenizer(
+        point.prompt, add_special_tokens=point.add_special_tokens, return_tensors=None
+    )["input_ids"]
+    if not prompt_ids:
+        raise ValueError(f"{arm.name}: the native generation prompt tokenised to nothing")
+    target = arm.device if device is None else device
+    generator = torch.Generator(device=target)
+    generator.manual_seed(int(seed))
+    token_ids: list[int] = []
+    residues: list[str] = []
+    with torch.no_grad():
+        step = arm.model(
+            input_ids=torch.tensor([prompt_ids], dtype=torch.long, device=target), use_cache=True
+        )
+        past, logits = step.past_key_values, step.logits[:, -1]
+        index = torch.as_tensor(residue_ids, dtype=torch.long, device=logits.device)
+        for position in range(length):
+            row = logits[0]
+            scores = torch.full(
+                (row.shape[-1],), -math.inf, dtype=torch.float32, device=row.device)
+            scores[index] = row[index].to(torch.float32)
+            token = int(
+                torch.multinomial(torch.softmax(scores, dim=-1), 1, generator=generator).item())
+            if token not in residue_of:
+                raise RuntimeError(f"{arm.name}: drew token {token}, which is not a residue")
+            token_ids.append(token)
+            residues.append(residue_of[token])
+            if position + 1 == length:
+                break
+            step = arm.model(
+                input_ids=torch.tensor([[token]], dtype=torch.long, device=target),
+                past_key_values=past,
+                use_cache=True,
+            )
+            past, logits = step.past_key_values, step.logits[:, -1]
+    return {
+        "declaration": NATIVE_REFERENCE_DECLARATION,
+        "seed": int(seed),
+        "sequence": "".join(residues),
+        "token_ids": token_ids,
+        "prompt_ids": [int(value) for value in prompt_ids],
+    }
 
 
 #: Agreement required between the dose-weighted bias accumulated over token spans
@@ -1369,6 +1505,19 @@ def replay_strength(*, arm: Any, decoder: GuidedDecoder, token_ids: Sequence[int
     logits; admissibility, bias and divergence then go through the same
     :func:`_observe_step` the sampler uses. A token that is not admissible where it
     stands, or a path that does not fill the layout exactly, is refused.
+
+    **This assumes the model's full-prefix logits are the logits the sampler saw**,
+    which holds for a float32 arm whose forward is prefix-exact and does *not* hold
+    for ProGen3. Its expert mixture reduces over the flattened token axis, so the
+    incremental path the sampler runs and the single teacher-forced pass here are
+    different computations: measured on ProGen3-3B over four 52-residue draws, the
+    per-step twenty-residue log-probabilities disagree by up to 0.289 nats (mean
+    0.031-0.056 per step) and the drawn token's own log-probability by 0.28-1.00
+    nats summed along a sequence -- the same order as the smallest coupling doses.
+    A ProGen3 strength measurement therefore has to replay through the sampler's
+    own incremental cache rather than through this function; the sampled pool
+    itself is unaffected, because the forward is bit-reproducible at a fixed batch
+    extent and cache discipline.
     """
 
     if not len(token_ids):
