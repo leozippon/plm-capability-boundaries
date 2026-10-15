@@ -120,7 +120,7 @@
     {
       "figure": "Fig6_guidance_and_selection",
       "width_inches": 5.14,
-      "height_inches": 7.277777777777778,
+      "height_inches": 4.972222222222222,
       "minimum_font_points": 7.0,
       "panel_letter_points": 8.0,
       "panel_labels": [
@@ -140,9 +140,9 @@
       "all_retained_intervals_inside_axes": true,
       "all_text_inside_canvas": true,
       "pdf_path": "manuscript/submission/figures/figure-6-guidance-and-selection.pdf",
-      "pdf_sha256": "0fc2c3f1b89f7ab61f94e23a91b51b49298d25423c8143265f6a991c8426249e",
+      "pdf_sha256": "7d38bd560a7f8f841b139eede063740261b252e8809f446c347da9b8bdf67b22",
       "svg_path": "scripts/capability/reporting/figure_data/main/Fig6_guidance_and_selection.svg",
-      "svg_sha256": "98dd0213e9ccd23c8c21fa63d074d40b8f1ca9484054ba98a8ff6e7342157c1d",
+      "svg_sha256": "ee01762e13e5bc2d6fe0db6d66bf9e20e794462ed657b5e26ae1ca739fdbce93",
       "plotted_source_path": "scripts/capability/reporting/figure_data/main/Fig6_guidance_and_selection-plotted.csv",
       "plotted_source_sha256": "bcba9c105b2901f4ffc18d2b581725f3668709bd68390b5a90bbc1f1df52c1ad"
     },
@@ -493,7 +493,7 @@
     "results/R6/progen3_robustness_analysis_20261015/robustness.json": "b360762afff1c9516bc78ef0123eb881cf608c1cee60e931b20344f7fcd5fda1"
   },
   "renderer_sha256": {
-    "scripts/capability/reporting/render_figures.py": "8a59a28263ae76d986fe6ed4937e1d68ce6c14dbd5c25c8f3da7e3bc12a809a6",
+    "scripts/capability/reporting/render_figures.py": "1b6fd75a6088a256b5274768e7d270987f8e02124538268068356bd61be818e1",
     "scripts/capability/reporting/palette.py": "635b4c1eec231211d93b579defb747596a0aed6b5a985fec3442fbb66e938c08",
     "scripts/capability/reporting/checkpoint_labels.py": "ec58198f87d3a01b2e6b2bcf3b1ed1b70c0591ccb13dcaa13607590129f89a8c",
     "scripts/capability/reporting/publication_paths.py": "77932ab45f2fa66ed6b4ae2b1b8067cfeaac0ea50b9409b0743e7c0a7d53ea49"

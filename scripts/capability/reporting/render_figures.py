@@ -714,14 +714,22 @@ def main_figures():
     margin = float(margins[0])
     strata = {key: rec(contrasts, endpoint=PRIMARY_TM, stratum=key, contrast='Pr-N').stratum_label
               for key in GUIDANCE_STRATA}
-    fig = figure(524)
-    for letter, endpoint, title, rect, xlabel, limits, ticks in [
-            ('a', PRIMARY_TM, 'Guidance contrasts in mean TM-score', (62, 399, 300, 92),
-             'Difference in mean TM-score', (-.045, .056), [-.04, -.02, 0, .02, .04]),
-            ('b', NOVELTY_RATE, 'The same contrasts on the novelty-admissibility rate',
-             (62, 262, 300, 92), 'Difference in novelty-admissibility rate', (-.5, .09), [-.4, -.2, 0])]:
-        heading(fig, 3, rect[1] + rect[3] + (22 if letter == 'a' else 10), letter, title)
-        a = axis(fig, rect, [strata[key] for key in GUIDANCE_STRATA], xlabel)
+    # Height is a layout constraint, not a free parameter: artwork and caption share
+    # one float, so their sum has to fit the text block or the caption runs through the
+    # page footer. The caption runs to about 165 pt, leaving under 390 pt for the
+    # artwork. Panels a and b therefore share one set of stratum rows, which is also
+    # how they are read -- the same contrast on two endpoints, row against row -- and
+    # one row block costs half the height of two.
+    fig = figure(358)
+    for letter, endpoint, title, x, xlabel, limits, ticks in [
+            ('a', PRIMARY_TM, 'Primary endpoint', 58, 'Difference in mean TM-score',
+             (-.045, .056), [-.04, -.02, 0, .02, .04]),
+            ('b', NOVELTY_RATE, 'Co-primary endpoint', 221,
+             'Difference in novelty-admissibility rate', (-.5, .09), [-.4, -.2, 0])]:
+        heading(fig, x - 4, 349, letter, title)
+        a = axis(fig, (x, 245, 139, 82),
+                 [strata[key] for key in GUIDANCE_STRATA] if letter == 'a' else [''] * len(GUIDANCE_STRATA),
+                 xlabel)
         for i, key in enumerate(GUIDANCE_STRATA):
             for (contrast, _), offset, color in zip(GUIDANCE_CONTRASTS, [-.2, .2], [BLUE, ORANGE]):
                 row = rec(contrasts, endpoint=endpoint, stratum=key, contrast=contrast)
@@ -742,9 +750,9 @@ def main_figures():
                  frameon=False, loc='lower left', bbox_to_anchor=(0, 1), ncol=3, borderpad=0,
                  handlelength=1.8, columnspacing=1.2)
 
-    heading(fig, 3, 227, 'c', 'Candidate selection against the oracle ceiling')
+    heading(fig, 3, 211, 'c', 'Candidate selection against the oracle ceiling')
     cells = [(arm, selector) for arm, _ in POOLS for selector, _ in SELECTORS]
-    c = axis(fig, (124, 77, 238, 140),
+    c = axis(fig, (124, 75, 238, 126),
              [rec(headroom, pool_arm=arm, selector=selector).selector_label for arm, selector in cells],
              'Captured fraction of the selection-oracle headroom')
     for i, (arm, selector) in enumerate(cells):
@@ -761,9 +769,9 @@ def main_figures():
     for index, (arm, pool) in enumerate(POOLS):
         centre = index * len(SELECTORS) + (len(SELECTORS) - 1) / 2
         oracle = rec(headroom, pool_arm=arm, selector=SELECTORS[0][0]).oracle_headroom_tm
-        fig.text(3 / 370.08, (77 + 140 * (len(cells) - .6 - centre) / len(cells)) / 524,
+        fig.text(3 / 370.08, (75 + 126 * (len(cells) - .6 - centre) / len(cells)) / 358,
                  f'{pool}\n{oracle:+.3f} TM', va='center', linespacing=1.4)
-    fig.text(3 / 370.08, 4 / 524,
+    fig.text(3 / 370.08, 4 / 358,
              'Upper block: sealed-eight confirmatory; lower: ProGen3 rungs, bf16/fp16 precision.\n'
              f'Dashed in a: the declared {margin:g} TM margin as a reference scale, with no verdict against it.\n'
              'Dashed in c: the oracle ceiling, a diagnostic reference and not a usable selector.\n'
