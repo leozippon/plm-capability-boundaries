@@ -6,14 +6,33 @@ control, the first-order gain that does resolve, the co-primary cost of guidance
 and how much of the selection oracle's headroom any admissible scorer reaches
 --- together with the one E17 reading the section cites as the same
 anti-selection on a different endpoint. Every row here is read out of one of
-those two retained artifacts. Nothing is fitted, no interval is resampled and no
+those two retained artifacts.
+
+The permuted-column control is carried in every stratum, not only where the
+section quotes a bound for it. Supplementary Note 14 compares this campaign's
+reading of that control against the ProGen3 campaign's, which departs from it, so
+the comparison is only traceable if both sides are sourced: each stratum carries
+the contrast's mean, the domains it rests on and its three sign counts, and the
+stratum that resolves also carries the lower end of its interval. The upper end
+is not re-emitted where the equivalence section already emits it, because one
+number split across two identifiers is one number neither of them pins down.
+
+The two strata on which that control, and the coupling-versus-profile contrast,
+are unestimable are recorded as the artifact records them. Seven of the eight
+domains carry a value because one coupling cell supplied twenty admissible
+candidates against a declared floor of twenty-five; the frozen rule therefore
+returns no interval, no p-value and no margin flag, and the reading is reported
+that way rather than relaxed after the fact. The mean over those seven domains
+exists and is emitted as an estimate carrying the artifact's own reason for having
+no interval, so it cannot be quoted as a resolved difference; the bound that does
+not exist is registered as a gap under the identifier it would have had. Nothing is fitted, no interval is resampled and no
 contrast is recomputed: an interval is copied with the resampling unit, draw
 count and seed the artifact's own interval statement records, and the two
 derived rows carry the arithmetic their claims state --- the largest captured
 fraction over a selector roster, and a count of the domains whose per-domain
 difference is positive.
 
-Five readings in this section are bounds rather than estimates, and are emitted
+Seven readings in this section are bounds rather than estimates, and are emitted
 as such. An achieved upper 95% bound is the end of an interval, so it is a
 ``range_bound`` and not a point estimate the manuscript owes an interval for;
 the same holds for the best admissible scorer's captured fraction, which is a
@@ -102,6 +121,29 @@ SELECTORS = ("coupling_permuted", "native_loglik", "potts_coupling", "potts_fiel
 QUOTED_POOLS = (("N", "unguided", "unguided_pool"),
                 ("Pr", "profile-guided", "profile_guided_pool"))
 
+#: What each quoted contrast differences, in the words the section uses. One
+#: place owns these because the equivalence bounds and the permuted-column
+#: control both quote them, and two copies would let the same contrast be
+#: described two ways.
+CONTRAST_PROSE = {
+    "C-Pr": ("coupling guidance is worth over the first-order profile", "C minus Pr"),
+    "F-M": ("adding couplings to the fields of a Potts model is worth", "F minus M"),
+    "C-Cx": ("decoding under coupling guidance is worth over decoding under the same "
+             "guidance with its coupling columns permuted", "C minus Cx"),
+}
+
+#: The permuted-column control, the two arms it differences and the strata it is
+#: read in. The analysis declares no contrast definitions, so the arms are
+#: checked against the cell roster and against the contrast key itself.
+PERMUTED = "C-Cx"
+PERMUTED_ARMS = ("C", "Cx")
+PERMUTED_STRATA = (POOLED, *MODELS)
+
+#: The selector contrast inside the unguided pool: a Potts-coupling scorer
+#: against the same scorer with its columns permuted. It is not the decoding arm
+#: against its permuted-column control, and the section quotes only its bound.
+SELECTOR_CONTRAST = "potts_coupling-coupling_permuted"
+
 #: How the analysis states its interval, read rather than assumed: the draw
 #: count and seed exist nowhere else in the artifact, and a statement this
 #: pattern cannot read is a statement about another interval.
@@ -136,6 +178,8 @@ def add_coupling_guidance_quantities(ledger) -> None:
     _admissible_floor(ledger, emit, payload)
     _equivalence_bounds(ledger, emit, payload)
     _primary_tm(ledger, emit, payload)
+    _permuted_column_control(ledger, emit, payload)
+    _selector_permuted_bound(ledger, emit, payload)
     _coprimary_feasibility(ledger, emit, payload)
     _selection_budget(ledger, emit, payload)
     _selection_headroom(ledger, emit, payload)
@@ -332,13 +376,9 @@ def _unestimable_bound(payload: dict, stratum: str, contrast: str) -> None:
 
 
 def _equivalence_bounds(ledger, emit, payload: dict) -> None:
-    prose = {"C-Pr": ("coupling guidance is worth over the first-order profile", "C minus Pr"),
-             "F-M": ("adding couplings to the fields of a Potts model is worth", "F minus M"),
-             "C-Cx": ("decoding under coupling guidance is worth over decoding under the same "
-                      "guidance with its coupling columns permuted", "C minus Cx")}
     for stratum, contrast in QUOTED_BOUNDS:
         locator, bound = _agreeing_bound(payload, stratum, contrast)
-        difference, arms = prose[contrast]
+        difference, arms = CONTRAST_PROSE[contrast]
         below_zero = ", whose whole interval lies below zero" if bound < 0.0 else ""
         outside_rule = ("" if contrast in payload["equivalence"]["achieved_upper_bound"] else
                         " the contrast is an incorrect-constraint control the declared margin rule "
@@ -353,6 +393,21 @@ def _equivalence_bounds(ledger, emit, payload: dict) -> None:
 
     for stratum, contrast in UNESTIMABLE_BOUNDS:
         _unestimable_bound(payload, stratum, contrast)
+        difference, arms = CONTRAST_PROSE[contrast]
+        record = payload["primary_tm"][stratum]["contrasts"][contrast]
+        ledger.gap(
+            id=f"coupling_guidance/equivalence/{stratum}/{contrast}/achieved_upper_bound",
+            claim=f"achieved upper 95% bound on what {difference}, in mean TM-score ({arms}) on "
+                  f"{stratum}",
+            family="coupling_guidance",
+            reason=f"the analysis reports this contrast as {record['status']}: {record['reason']}. "
+                   "The admissible-candidate floor is not relaxed after the fact, so no interval, "
+                   "no p-value and no margin flag is issued for this reading and the declared rule "
+                   "returns 'unestimable' rather than a bound",
+            looked_in=CONFIRMATORY, reachability="not_measured",
+            searched="every place the analysis records an achieved upper bound: the headline "
+                     "block, the stratum's own upper-bound block and the contrast's own "
+                     "interval")
 
     emit(CONFIRMATORY, ("equivalence", "margin_tm"),
          identifier="coupling_guidance/equivalence/declared_margin",
@@ -415,7 +470,7 @@ def _primary_tm(ledger, emit, payload: dict) -> None:
          kind="count", level="generation")
 
     _contrast_row(
-        emit, payload, "primary_tm", POOLED, "potts_coupling-coupling_permuted",
+        emit, payload, "primary_tm", POOLED, SELECTOR_CONTRAST,
         identifier="coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted",
         # The claim says "checkpoints" where its siblings say "models", and
         # keeps the bare word "permuted" rather than only the compounds: this
@@ -429,6 +484,151 @@ def _primary_tm(ledger, emit, payload: dict) -> None:
               "coupling decoding arm against its permuted-column control (C minus Cx), which is "
               "unestimable pooled",
         support=support, unit=TM)
+
+
+# --------------------------------------------------------------------------- #
+# The permuted-column control, in every stratum.
+# --------------------------------------------------------------------------- #
+
+def _permuted_arms(payload: dict) -> None:
+    """Check the control differences the two arms its key names.
+
+    This analysis declares no contrast definitions, so there is nothing to read
+    the arms off except the cell roster and the key itself. A key naming arms the
+    design does not run is not this comparison, and Supplementary Note 14 reads
+    this campaign's result against another campaign's on the strength of it being
+    the same contrast.
+    """
+    arms = {cell["arm"] for cell in payload["cells"]}
+    missing = [arm for arm in PERMUTED_ARMS if arm not in arms]
+    if missing or PERMUTED != "-".join(PERMUTED_ARMS):
+        raise LedgerError(
+            f"{CONFIRMATORY}: the design runs arms {sorted(arms)}, which does not carry "
+            f"{sorted(missing)}, or {PERMUTED!r} is not {PERMUTED_ARMS[0]!r} minus "
+            f"{PERMUTED_ARMS[1]!r}, so it is not the permuted-column control")
+
+
+def _permuted_record(payload: dict, stratum: str) -> dict:
+    """The control's record in one stratum: estimated over the eight, or unestimable.
+
+    Both outcomes are admissible here and nothing else is. An estimated record
+    has to cover the sealed eight, because a reduction over a set is only
+    statable when the artifact covers the set. An unestimable one has to carry
+    the reason it has no interval, and no interval beside it, because this
+    function builds a row out of exactly those two fields and a record holding
+    both would leave the frozen rule's own outcome ambiguous. That the reason is
+    the admissible-candidate floor on exactly one domain is not re-derived here:
+    :func:`_unestimable_bound` owns that assertion for every reading the section
+    reports as unestimable.
+    """
+    record = payload["primary_tm"][stratum]["contrasts"][PERMUTED]
+    if record["status"] == "estimated":
+        return _covered(payload, "primary_tm", stratum, PERMUTED)
+    if record["status"] != "unestimable":
+        raise LedgerError(f"{CONFIRMATORY}: {PERMUTED} on {stratum} is {record['status']!r}, "
+                          "which is neither estimated nor unestimable")
+    if record["interval95_bca"] is not None or not record["reason"]:
+        raise LedgerError(
+            f"{CONFIRMATORY}: {PERMUTED} on {stratum} reports itself unestimable and carries "
+            f"interval {record['interval95_bca']} with reason {record['reason']!r}, so the frozen "
+            "rule's own outcome for it is ambiguous")
+    return record
+
+
+def _permuted_column_control(ledger, emit, payload: dict) -> None:
+    _permuted_arms(payload)
+    difference, arms = CONTRAST_PROSE[PERMUTED]
+    draws, seed = _resampling(payload)
+    floor = payload["minimum_bootstrap_units"]
+    for stratum in PERMUTED_STRATA:
+        record = _permuted_record(payload, stratum)
+        support = _primary_support(ledger, payload, stratum)
+        base = ("primary_tm", stratum, "contrasts", PERMUTED)
+        prefix = f"coupling_guidance/primary_tm/{stratum}/{PERMUTED}"
+        estimated = record["status"] == "estimated"
+        held = (f"mean TM-score of what {difference} ({arms}) on {stratum}: the "
+                "incorrect-constraint control the coupling decoding arm is read against, which the "
+                "declared margin rule does not decide on")
+        if estimated:
+            emit(CONFIRMATORY, base + ("mean",), identifier=f"{prefix}/true_over_permuted",
+                 claim=f"{held}",
+                 family="coupling_guidance", support=support, unit=TM, kind="estimate",
+                 interval=record["interval95_bca"], interval_kind=BCA,
+                 resampling_unit=DOMAIN_UNIT, draws=draws, seed=(seed,), level="generation")
+            emit(CONFIRMATORY, base + ("interval95_bca", "[0]"),
+                 identifier=f"{prefix}/achieved_lower_bound",
+                 claim=f"achieved lower 95% bound on what {difference}, in mean TM-score ({arms}) "
+                       f"on {stratum}; it is the lower end of that contrast's own interval and "
+                       "not a point estimate",
+                 family="coupling_guidance", support=support, unit=TM, kind="range_bound",
+                 value=record["interval95_bca"][0], level="generation")
+            # The upper end is already a row wherever the section quotes it, and
+            # one number under two identifiers is one number neither of them
+            # pins down. A stratum the equivalence section does not quote gets
+            # its bound here instead of losing it.
+            if (stratum, PERMUTED) not in QUOTED_BOUNDS:
+                locator, bound = _agreeing_bound(payload, stratum, PERMUTED)
+                emit(CONFIRMATORY, locator, identifier=f"{prefix}/achieved_upper_bound",
+                     claim=f"achieved upper 95% bound on what {difference}, in mean TM-score "
+                           f"({arms}) on {stratum}; it is the upper end of that contrast's own "
+                           "interval and not a point estimate",
+                     family="coupling_guidance", support=support, unit=TM, kind="range_bound",
+                     value=bound, level="generation")
+        else:
+            emit(CONFIRMATORY, base + ("mean",), identifier=f"{prefix}/true_over_permuted",
+                 claim=f"{held}. The contrast is unestimable: {record['reason']}. It carries no "
+                       f"interval, no p-value and no margin flag, so this mean over "
+                       f"{record['n_domains']} domains is not a resolved difference and may not be "
+                       "quoted as one",
+                 family="coupling_guidance", support=support, unit=TM, kind="estimate",
+                 reason=record["reason"], level="generation")
+        without = ("" if estimated else
+                   f"; the domains without a value are {', '.join(sorted(record['missing_domains']))}"
+                   f", each short of the declared admissible-candidate floor")
+        emit(CONFIRMATORY, base + ("n_domains",), identifier=f"{prefix}/domains",
+             claim="sealed evaluation domains the permuted-column control rests on in "
+                   f"{stratum}, out of the eight the campaign holds out; a contrast below the "
+                   f"{floor}-domain floor carries no interval and no p-value{without}",
+             family="coupling_guidance", support=support, unit="sealed evaluation domains",
+             kind="support_count", level="generation")
+        favouring = record["favouring"]
+        if sum(favouring.values()) != record["n_domains"]:
+            raise LedgerError(
+                f"{CONFIRMATORY}: the {stratum} {PERMUTED} sign counts {favouring} do not add to "
+                f"the {record['n_domains']} domains the contrast covers")
+        for field, label, side in (("positive", "domains_favouring_true_columns", "the true"),
+                                   ("negative", "domains_favouring_permuted_columns",
+                                    "the permuted"),
+                                   ("tied", "domains_tied", "neither set of")):
+            emit(CONFIRMATORY, base + ("favouring", field), identifier=f"{prefix}/{label}",
+                 claim=f"sealed evaluation domains in which {side} coupling columns give the "
+                       f"higher mean TM-score in {stratum}, out of the "
+                       f"{record['n_domains']} the contrast covers",
+                 family="coupling_guidance", support=support, unit="sealed evaluation domains",
+                 kind="count", level="generation")
+
+
+def _selector_permuted_bound(ledger, emit, payload: dict) -> None:
+    """The bound on the scorer contrast inside the unguided pool.
+
+    The section quotes this reading as an achieved upper bound and quotes no
+    point estimate for it, so the bound needs a row of its own: the contrast's
+    estimate carries the number as the end of its interval, which is not the
+    same thing as the table carrying the bound the sentence states.
+    """
+    locator, bound = _agreeing_bound(payload, POOLED, SELECTOR_CONTRAST)
+    emit(CONFIRMATORY, locator,
+         identifier="coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted/"
+                    "achieved_upper_bound",
+         claim="achieved upper 95% bound, in mean TM-score, on what a Potts-coupling scorer is "
+               "worth over the same scorer with its coupling columns permuted, applied inside the "
+               "unguided pool and pooled over the two checkpoints: the bound on which that scorer "
+               "is indistinguishable from its permuted counterpart. It is a scorer contrast inside "
+               "one pool rather than the coupling decoding arm against its permuted-column control "
+               f"({CONTRAST_PROSE[PERMUTED][1]}), and it is the upper end of that contrast's own "
+               "interval and not a point estimate",
+         family="coupling_guidance", support=_primary_support(ledger, payload, POOLED), unit=TM,
+         kind="range_bound", value=bound, level="generation")
 
 
 # --------------------------------------------------------------------------- #

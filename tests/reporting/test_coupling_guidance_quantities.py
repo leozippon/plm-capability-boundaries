@@ -33,6 +33,14 @@ INTERVAL = "95% BCa bootstrap over domains, 9999 resamples, seed 20261013"
 #: has to see the family it was computed inside.
 CONTRASTS = ("C-Cd", "C-Cx", "C-N", "C-Pr", "F-M", "Pr-N",
              "potts_coupling-coupling_permuted", "potts_full-potts_fields")
+#: The arms the design runs, as the cell list carries them. The analysis declares
+#: no contrast definitions, so the permuted-column control is only that control
+#: while both of the arms its key names are in this roster.
+ARMS = ("C", "Cd", "Cx", "F", "H", "M", "N", "P", "Pr")
+
+
+def cells(arms: tuple[str, ...] = ARMS) -> list[dict]:
+    return [{"arm": arm, "model": "protgpt2", "domain": DOMAINS[0]} for arm in arms]
 
 
 def contrast(mean: float, *, interval: tuple[float, float] | None = None,
@@ -149,7 +157,7 @@ def confirmatory_payload(*, strata: tuple[str, ...] = (*guidance.MODELS, guidanc
                          feasibility_pooled: dict | None = None,
                          interval: str = INTERVAL, capture_block: dict | None = None,
                          sealed: bool = True, margin: float = 0.05,
-                         bounds: dict | None = None) -> dict:
+                         bounds: dict | None = None, arms: tuple[str, ...] = ARMS) -> dict:
     """One confirmatory analysis, with the pooled stratum carrying the quoted rows."""
     primary_family = {}
     for stratum in strata:
@@ -169,7 +177,7 @@ def confirmatory_payload(*, strata: tuple[str, ...] = (*guidance.MODELS, guidanc
                           for stratum in strata}
     return {
         "schema": "e20_confirmatory_v1", "matches_sealed_eight": sealed,
-        "domains": list(DOMAINS), "minimum_bootstrap_units": 8,
+        "domains": list(DOMAINS), "minimum_bootstrap_units": 8, "cells": cells(arms),
         "frozen": {"admissible_identity_below": 20.0, "minimum_admissible": 25,
                    "margin_tm": margin, "interval": interval, "selection_k": 10,
                    "selection_pool_arm": "N", "permutation_seed": 20261013},
@@ -224,7 +232,14 @@ def rows(ledger: Ledger) -> dict:
 def test_every_quoted_reading_is_emitted_once_with_its_own_kind(tmp_path):
     emitted = rows(stage(tmp_path))
     bounds = [identifier for identifier in emitted if identifier.endswith("achieved_upper_bound")]
-    assert len(bounds) == len(guidance.QUOTED_BOUNDS)
+    # Every bound the section quotes: the four of the equivalence family and the
+    # selector contrast inside the unguided pool. The permuted-column control's
+    # upper end is not re-emitted beside the equivalence row that already carries
+    # it, because one number under two identifiers is one number neither pins down.
+    assert len(bounds) == len(guidance.QUOTED_BOUNDS) + 1
+    assert "coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted/" \
+        "achieved_upper_bound" in bounds
+    assert "coupling_guidance/primary_tm/protgpt2/C-Cx/achieved_upper_bound" not in emitted
     # An achieved upper bound is the end of an interval, so it is a bound and
     # never an estimate the manuscript owes a second interval for.
     for identifier in bounds:
@@ -253,11 +268,17 @@ def test_the_declared_constants_are_emitted_and_the_resampling_ones_are_not(tmp_
     values = {quantity.value for quantity in emitted.values()}
     # Draw count, and the bootstrap and permutation seeds.
     assert not values & {9999.0, 20261013.0}
-    # The bootstrap floor is eight domains and so is the sign count the section
-    # quotes, so the floor is excluded by there being one row at that value and
-    # it being the count.
-    assert [quantity.id for quantity in emitted.values() if quantity.value == 8.0] == [
-        "coupling_guidance/primary_tm/pooled/profile_over_unguided/domains_favouring_profile"]
+    # The bootstrap floor is eight domains and so are the domain and sign counts
+    # the section quotes, so the floor is excluded by every row at that value
+    # being a count of domains rather than a declared constant.
+    at_eight = {quantity.id: quantity for quantity in emitted.values()
+                if quantity.value == 8.0}
+    assert set(at_eight) == {
+        "coupling_guidance/primary_tm/pooled/profile_over_unguided/domains_favouring_profile",
+        "coupling_guidance/primary_tm/protgpt2/C-Cx/domains"}
+    assert all(quantity.kind in ("count", "support_count")
+               and quantity.unit == "sealed evaluation domains"
+               for quantity in at_eight.values())
     # The three constants the endpoints are defined by are emitted, because the
     # Methods quotes each as a numeral: the identity restriction, the
     # admissible-candidate floor and the selection budget.
@@ -429,6 +450,118 @@ def test_a_pool_mean_recorded_twice_has_to_agree(tmp_path):
     assert "pool mean is recorded twice and the two disagree" in str(refusal.value)
 
 
+def test_the_permuted_column_control_is_read_in_every_stratum(tmp_path):
+    """Both sides of the comparison Supplementary Note 14 draws have to be sourced.
+
+    The note reads this campaign's permuted-column control against the ProGen3
+    campaign's, which departs from it. The ProGen3 side carries the contrast in
+    every stratum, so this side does too: the stratum that resolves carries its
+    mean and the lower end of its interval, and the two that do not carry the
+    mean over the domains that have a value with the artifact's own reason for
+    having no interval.
+    """
+    emitted = rows(stage(tmp_path))
+    for stratum in guidance.PERMUTED_STRATA:
+        prefix = f"coupling_guidance/primary_tm/{stratum}/{guidance.PERMUTED}"
+        mean = emitted[f"{prefix}/true_over_permuted"]
+        assert mean.kind == "estimate" and mean.unit == guidance.TM
+        signs = [emitted[f"{prefix}/{name}"].value for name in
+                 ("domains_favouring_true_columns", "domains_favouring_permuted_columns",
+                  "domains_tied")]
+        assert sum(signs) == emitted[f"{prefix}/domains"].value
+        assert emitted[f"{prefix}/domains"].kind == "support_count"
+    # ProtGPT2 resolves over the sealed eight, so its interval is copied with the
+    # unit, draw count and seed it was computed under.
+    resolved = emitted[f"coupling_guidance/primary_tm/protgpt2/{guidance.PERMUTED}"
+                       "/true_over_permuted"]
+    assert resolved.interval == (-0.0010, 0.0168)
+    assert resolved.interval_kind == guidance.BCA
+    assert resolved.resampling_unit == guidance.DOMAIN_UNIT
+    assert resolved.resampling_draws == 9999 and resolved.seed_set == (20261013,)
+    assert resolved.no_interval_reason is None
+    lower = emitted[f"coupling_guidance/primary_tm/protgpt2/{guidance.PERMUTED}"
+                    "/achieved_lower_bound"]
+    assert lower.kind == "range_bound" and lower.interval is None and lower.value == -0.0010
+    assert emitted[f"coupling_guidance/primary_tm/protgpt2/{guidance.PERMUTED}/domains"].value \
+        == len(DOMAINS)
+
+
+def test_an_unestimable_stratum_carries_its_reason_and_no_interval(tmp_path):
+    ledger = stage(tmp_path)
+    emitted = rows(ledger)
+    for stratum in (guidance.POOLED, "progen2-medium"):
+        prefix = f"coupling_guidance/primary_tm/{stratum}/{guidance.PERMUTED}"
+        mean = emitted[f"{prefix}/true_over_permuted"]
+        # The mean over seven domains exists and is recorded; what does not exist
+        # is an interval, and the row carries the artifact's own reason for that
+        # rather than a silence a reader could mistake for a resolved difference.
+        assert mean.interval is None and mean.no_interval_reason
+        assert "below the 8-domain floor" in mean.no_interval_reason or \
+            "domains have a value" in mean.no_interval_reason
+        assert "may not be quoted as one" in mean.claim
+        assert emitted[f"{prefix}/domains"].value == len(DOMAINS) - 1
+        # No bound row is written where the analysis issues no bound.
+        assert f"{prefix}/achieved_lower_bound" not in emitted
+        assert f"{prefix}/achieved_upper_bound" not in emitted
+
+
+def test_every_unestimable_bound_is_recorded_as_a_gap(tmp_path):
+    gaps = {gap.id: gap for gap in stage(tmp_path).gaps}
+    assert set(gaps) == {
+        f"coupling_guidance/equivalence/{stratum}/{contrast}/achieved_upper_bound"
+        for stratum, contrast in guidance.UNESTIMABLE_BOUNDS}
+    for gap in gaps.values():
+        # The absence is the frozen rule's own outcome, so it is recorded as one
+        # and never worked around by relaxing the floor.
+        assert gap.reachability == "not_measured"
+        assert "unestimable" in gap.reason and "not relaxed after the fact" in gap.reason
+        assert gap.searched and gap.family == "coupling_guidance"
+
+
+def test_a_permuted_control_whose_arms_the_design_does_not_run_refuses(tmp_path):
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=confirmatory_payload(
+            arms=tuple(arm for arm in ARMS if arm != "Cx")))
+    assert "it is not the permuted-column control" in str(refusal.value)
+
+
+def test_a_stratum_that_is_neither_estimated_nor_unestimable_refuses(tmp_path):
+    # A status outside the two the frozen rule issues is neither outcome, so no
+    # row is written off it.
+    other = contrast(0.0056, domains=DOMAINS[:7], missing={"2LGW": "C: 20 admissible < 25"})
+    other["status"] = "withheld"
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=confirmatory_payload(pooled=primary(**{"C-Cx": other})))
+    assert "neither estimated nor unestimable" in str(refusal.value)
+    # An unestimable record with no reason gives the mean-with-reason row nothing
+    # to carry.
+    silent = contrast(0.0056, domains=DOMAINS[:7], missing={"2LGW": "C: 20 admissible < 25"})
+    silent["reason"] = None
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=confirmatory_payload(pooled=primary(**{"C-Cx": silent})))
+    assert "ambiguous" in str(refusal.value)
+    # An unestimable record that also carries an interval is caught by the guard
+    # that owns the section's unestimable readings, before any row is built.
+    both = contrast(0.0056, domains=DOMAINS[:7], missing={"2LGW": "C: 20 admissible < 25"})
+    both["interval95_bca"] = [-0.001, 0.012]
+    with pytest.raises(LedgerError) as refusal:
+        stage(tmp_path, confirmatory=confirmatory_payload(pooled=primary(**{"C-Cx": both})))
+    assert "now carries an achieved upper bound" in str(refusal.value)
+
+
+def test_the_selector_contrast_bound_is_its_own_row(tmp_path):
+    emitted = rows(stage(tmp_path))
+    bound = emitted["coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted/"
+                    "achieved_upper_bound"]
+    estimate = emitted["coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted"]
+    assert bound.kind == "range_bound" and bound.interval is None
+    assert bound.value == estimate.interval[1]
+    # The section quotes this reading only as a bound, and its claim has to keep
+    # the scorer contrast apart from the decoding arm's permuted-column control.
+    assert "scorer contrast inside one pool" in bound.claim
+    assert guidance.CONTRAST_PROSE[guidance.PERMUTED][1] in bound.claim
+
+
 def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
     artifacts = Artifacts()
     for relative in (guidance.CONFIRMATORY, guidance.E17_GAP):
@@ -460,6 +593,10 @@ def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
     coupling = emitted["coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted"]
     assert round(coupling.value, 4) == 0.0042
     assert coupling.interval[0] < 0.0 < coupling.interval[1]
+    # "at an achieved upper bound of $+0.0098$ TM", which the section quotes as a
+    # bound and never as a point estimate.
+    assert quoted("coupling_guidance/primary_tm/pooled/coupling_selector_over_permuted/"
+                  "achieved_upper_bound", 4) == 0.0098
 
     # The co-primary reductions are stored as negative differences and quoted as
     # the magnitudes lost, so the point and both bounds have to flip together.
@@ -484,3 +621,51 @@ def test_the_retained_artifacts_carry_the_numbers_the_manuscript_quotes():
     assert quoted("likelihood_anti_selection/protgpt2/mean_ca_plddt/pool_mean", 1) == 74.7
     assert quoted("likelihood_anti_selection/protgpt2/mean_ca_plddt/top_twelve_by_oracle", 1) \
         == 98.0
+
+
+def test_the_retained_analysis_carries_the_permuted_column_control_in_every_stratum():
+    """The confirmatory side of the comparison Supplementary Note 14 draws.
+
+    The note's "there, decoding with permuted coupling columns was not
+    distinguishable from decoding with the true ones" rests on these three
+    readings, and only ProtGPT2's resolves. The two that do not are unestimable
+    on seven of eight domains, which is the frozen consequence of one coupling
+    cell supplying twenty admissible candidates against a floor of twenty-five,
+    and they are recorded that way rather than relaxed.
+    """
+    artifacts = Artifacts()
+    if not artifacts.exists(guidance.CONFIRMATORY):
+        pytest.skip("the E20 confirmatory analysis is not staged in this checkout")
+    ledger = Ledger(artifacts)
+    guidance.add_coupling_guidance_quantities(ledger)
+    emitted = rows(ledger)
+    resolved = "coupling_guidance/primary_tm/protgpt2/C-Cx"
+    mean = emitted[f"{resolved}/true_over_permuted"]
+    assert round(mean.value, 6) == 0.006436
+    assert tuple(round(bound, 6) for bound in mean.interval) == (-0.001041, 0.016840)
+    assert round(emitted[f"{resolved}/achieved_lower_bound"].value, 6) == -0.001041
+    # The upper end is the bound the main text quotes, and it has exactly one row.
+    assert round(emitted["coupling_guidance/equivalence/protgpt2/C-Cx/"
+                         "achieved_upper_bound"].value, 6) == 0.016840
+    assert f"{resolved}/achieved_upper_bound" not in emitted
+    assert emitted[f"{resolved}/domains"].value == 8.0
+    assert [emitted[f"{resolved}/{name}"].value for name in
+            ("domains_favouring_true_columns", "domains_favouring_permuted_columns",
+             "domains_tied")] == [4.0, 4.0, 0.0]
+    # The two unestimable strata: a mean over seven domains, no interval, the
+    # artifact's own reason, and no bound row anywhere.
+    for stratum, signs in (("pooled", [6.0, 1.0, 0.0]), ("progen2-medium", [3.0, 4.0, 0.0])):
+        prefix = f"coupling_guidance/primary_tm/{stratum}/C-Cx"
+        unestimable = emitted[f"{prefix}/true_over_permuted"]
+        assert unestimable.interval is None
+        assert "below the 8-domain floor" in unestimable.no_interval_reason
+        assert "2LGW" in unestimable.no_interval_reason
+        assert emitted[f"{prefix}/domains"].value == 7.0
+        assert [emitted[f"{prefix}/{name}"].value for name in
+                ("domains_favouring_true_columns", "domains_favouring_permuted_columns",
+                 "domains_tied")] == signs
+        assert f"{prefix}/achieved_upper_bound" not in emitted
+    gaps = {gap.id: gap for gap in ledger.gaps}
+    for stratum in ("pooled", "progen2-medium"):
+        gap = gaps[f"coupling_guidance/equivalence/{stratum}/C-Cx/achieved_upper_bound"]
+        assert "20 admissible < 25" in gap.reason and gap.reachability == "not_measured"

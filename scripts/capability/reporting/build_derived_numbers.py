@@ -4641,6 +4641,7 @@ REPRESENTATION_CONDITIONS = {
     "readout": "readout_selection",
     "controlled_readout_gap": "readout_selection",
     "readout_sweeps": "readout_selection",
+    "readout_design_resolution": "readout_selection",
     "pairwise": "gate_representation_recomputation",
     "remote_homology": "gate_representation_recomputation",
     "local_context": "local_context_gate_recomputation",
@@ -4720,6 +4721,10 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
         add_potts_construction_quantities)
     from scripts.capability.reporting.progen3_robustness_quantities import (
         add_progen3_robustness_quantities)
+    from scripts.capability.reporting.readout_design_resolution_quantities import (
+        add_readout_design_resolution_quantities)
+    from scripts.capability.reporting.interval_coverage_quantities import (
+        add_interval_coverage_quantities)
     add_current_quantities(ledger)
     add_followup_quantities(ledger)
     add_propagation_quantities(ledger)
@@ -4727,6 +4732,8 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     add_coupling_guidance_quantities(ledger)
     add_potts_construction_quantities(ledger)
     add_progen3_robustness_quantities(ledger)
+    add_readout_design_resolution_quantities(ledger)
+    add_interval_coverage_quantities(ledger)
     assign_representation_conditions(ledger)
     payload = ledger.write(out_dir, scope=(
         "Every quantity the manuscript cites that a retained artifact or gate record "

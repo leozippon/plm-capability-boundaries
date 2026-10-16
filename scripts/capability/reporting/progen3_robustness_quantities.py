@@ -6,10 +6,25 @@ ProGen3 robustness campaign answers that: the same frozen analysis module, the
 same eight sealed domains and the same admissibility rule, run on a 3B and a 112M
 ProGen3 checkpoint at doses matched to the confirmatory intervention measured as
 per-residue divergence, with a five-arm design that has no fields-plus-couplings
-cell. Three readings of it are quoted --- what first-order guidance is worth over
-unguided decoding, the bound on what couplings add over the profile, and how far
-a float16 kernel moves the primary endpoint --- and every row here is one of
-those, read out of the one retained analysis.
+cell. Four readings of it are quoted --- what first-order guidance is worth over
+unguided decoding, the bound on what couplings add over the profile, how far a
+float16 kernel moves the primary endpoint, and the permuted-column control in
+every stratum --- and every row here is one of those, read out of the one
+retained analysis.
+
+The permuted-column control is the one place this campaign departs from the
+confirmatory result, which found true and permuted coupling columns
+indistinguishable. Here the 3B stratum separates them and the other three strata
+do not, so the contrast is emitted for every stratum rather than for the one that
+resolves: a reading quoted only where it resolves is a selected reading. Each
+stratum carries the mean, both ends of its interval, the domains the contrast
+rests on, the three sign counts and the two identity shifts the contrast record
+measures beside the endpoint, because the departure is reported together with the
+shift toward the reference that travels with it. The identity shifts are
+recapitulation measures and not predicted structure, and the domain contributing
+most of the endpoint difference is read rather than asserted: it need not be the
+domain whose identity against the family alignment rises most, and each claim
+names which superlative it is making.
 
 The campaign issues no verdict and no pass/fail flag, and reproduces E20's
 declared margin only as a reference scale so that a bound can be read against
@@ -23,8 +38,10 @@ is a refusal.
 Precision is part of the native contract, so the campaign's measure lines are
 precisions and no stratum pools across one. The strata are therefore the three
 rungs plus the pooled bfloat16 stratum, and every row is keyed to the stratum it
-is read from: the three quoted readings are the pooled bfloat16 ones and the
-precision control's, never a rung's. ``RUNGS``, ``POOLED_RUNGS`` and ``ARMS``
+is read from: of the four quoted readings, three are the pooled bfloat16 ones and
+the precision control's and never a rung's, and only the permuted-column control
+is read in each stratum separately, because that is the level at which the
+campaign departs from the confirmatory result. ``RUNGS``, ``POOLED_RUNGS`` and ``ARMS``
 carry what the artifact lists but does not declare, and the pooled stratum has to
 pool exactly the two bfloat16 rungs, because "across 3B and 112M checkpoints" is
 that and nothing else.
@@ -81,6 +98,18 @@ MEASURE_LINE = "bfloat16"
 PRECISION_CHECKPOINT = "progen3-112m"
 
 PRIMARY = "primary_tm"
+#: The permuted-column control, and the two arms it differences. It is the one
+#: reading on which this campaign departs from the confirmatory result, so the
+#: arms are read off the artifact's own contrast declaration rather than inferred
+#: from the key.
+PERMUTED = "C-Cx"
+PERMUTED_ARMS = ("C", "Cx")
+#: Percent identity to a reference sequence. A difference between two arms' means
+#: is in percentage points of identity, which ``percent`` names; identity is a
+#: share of an alignment length rather than a measured physical scale, so a
+#: difference in it pairs legitimately with the identity restriction the endpoint
+#: already carries.
+IDENTITY = "percent"
 #: The endpoints the report bounds. Both carry strata, so both are checked
 #: against the declared roster even though only the primary one is quoted.
 ENDPOINTS = ("novelty_admissibility_rate", "primary_tm")
@@ -91,6 +120,7 @@ def add_progen3_robustness_quantities(ledger) -> None:
     payload = _robustness(ledger)
     _profile_over_unguided(ledger, emit, payload)
     _coupling_over_profile(ledger, emit, payload)
+    _permuted_column_control(ledger, emit, payload)
     _precision_control(ledger, emit, payload)
 
 
@@ -171,11 +201,28 @@ def _population(payload: dict, cells: str, rungs: tuple[str, ...]) -> str:
             f"Doses are matched to the confirmatory intervention by the {statistics.pop()}")
 
 
+def _stratum_cells(rungs: tuple[str, ...]) -> str:
+    """How a domain's value is formed on one stratum.
+
+    A stratum that pools two rungs averages their cells; a rung stratum reads its
+    own, and calling that an average over one rung would describe a reduction the
+    artifact does not perform.
+    """
+    if len(rungs) > 1:
+        return f"each domain's value the mean over the cells of {' and '.join(sorted(rungs))}"
+    return f"{rungs[0]} cells only"
+
+
+def _stratum_rungs(stratum: str) -> tuple[str, ...]:
+    """The rungs one stratum rests on. The strata roster is checked in
+    :func:`_robustness`, so a stratum is the pooled one or a rung itself."""
+    return POOLED_RUNGS if stratum == POOLED else (stratum,)
+
+
 def _primary_support(ledger, payload: dict, stratum: str, rungs: tuple[str, ...]) -> str:
-    cells = f"each domain's value the mean over the cells of {' and '.join(sorted(rungs))}"
     return ledger.declare_support(
         f"progen3_robustness/primary_tm/{stratum}",
-        f"{_population(payload, cells, rungs)}; the endpoint is "
+        f"{_population(payload, _stratum_cells(rungs), rungs)}; the endpoint is "
         f"{payload['bounds'][PRIMARY]['definition']}. No verdict and no pass/fail flag is issued on "
         "this campaign")
 
@@ -262,6 +309,188 @@ def _coupling_over_profile(ledger, emit, payload: dict) -> None:
          family="progen3_robustness", support=_primary_support(ledger, payload, POOLED,
                                                                POOLED_RUNGS),
          unit=TM, kind="range_bound", value=bound, level="generation")
+
+
+# --------------------------------------------------------------------------- #
+# The permuted-column control, in every stratum.
+# --------------------------------------------------------------------------- #
+
+def _permuted_definition(payload: dict) -> str:
+    """What the contrast differences, read off the artifact's own declaration.
+
+    A contrast whose arms moved would be another comparison under the same key,
+    and this is the one reading of this campaign that departs from the
+    confirmatory result, so which arms it differences is read rather than assumed.
+    """
+    definition = payload["design"]["contrast_definitions"][PERMUTED]
+    if (definition["left"], definition["right"]) != PERMUTED_ARMS:
+        raise LedgerError(
+            f"{ROBUSTNESS}: {PERMUTED} differences {definition['left']!r} against "
+            f"{definition['right']!r} and not the declared {PERMUTED_ARMS[0]!r} against "
+            f"{PERMUTED_ARMS[1]!r}, so it is not the permuted-column control")
+    return definition["reads"]
+
+
+def _identity_support(ledger, payload: dict, stratum: str, rungs: tuple[str, ...]) -> str:
+    """The same population, read on the two identity companions of the endpoint.
+
+    They are a different endpoint from the TM score, so they take their own
+    support: a row that borrowed the primary support would state that it measures
+    the mean TM-score the primary support declares.
+    """
+    return ledger.declare_support(
+        f"progen3_robustness/identity_shift/{stratum}",
+        f"{_population(payload, _stratum_cells(rungs), rungs)}; the endpoints are the mean percent "
+        "identity of a cell's admissible candidates to the wild-type reference and their mean best "
+        "percent identity to a row of the family alignment, each differenced between the two arms. "
+        "Both measure recapitulation of a known sequence and neither contains any predicted "
+        "structure, and both are taken inside the admissible band, because no candidate at or "
+        "above the identity restriction is scored at all. No verdict and no pass/fail flag is "
+        "issued on this campaign")
+
+
+def _largest_contribution(payload: dict, stratum: str, record: dict) -> str:
+    """The domain contributing most of this stratum's endpoint difference.
+
+    The domains are equally weighted, so the largest contribution is the largest
+    per-domain difference in magnitude. Two domains at the same magnitude leave no
+    single largest one, and a row that picked either would state a superlative the
+    artifact does not support.
+    """
+    per_domain = record["per_domain"]
+    ranked = sorted(per_domain, key=lambda domain: -abs(per_domain[domain]["diff"]))
+    first, second = ranked[0], ranked[1]
+    if abs(per_domain[first]["diff"]) == abs(per_domain[second]["diff"]):
+        raise LedgerError(
+            f"{ROBUSTNESS}: {PRIMARY} {stratum} {PERMUTED} contributes equally from {first} and "
+            f"{second}, so no domain is the largest single contribution")
+    return first
+
+
+def _permuted_column_control(ledger, emit, payload: dict) -> None:
+    reads = _permuted_definition(payload)
+    draws, seed = _resampling(payload)
+    for stratum in (*RUNGS, POOLED):
+        rungs = _stratum_rungs(stratum)
+        record = _covered(payload, stratum, PERMUTED)
+        support = _primary_support(ledger, payload, stratum, rungs)
+        base = ("bounds", PRIMARY, "strata", stratum, PERMUTED)
+        prefix = f"progen3_robustness/primary_tm/{stratum}/{PERMUTED}"
+        held = (f"in the {stratum} stratum: {reads}. This campaign issues no verdict and the "
+                "margin the confirmatory campaign declared is not applied to it")
+        emit(ROBUSTNESS, base + ("mean",), identifier=f"{prefix}/true_over_permuted",
+             claim="mean TM-score of coupling guidance with the true columns minus the same "
+                   f"guidance with its columns permuted (C minus Cx) {held}",
+             family="progen3_robustness", support=support, unit=TM, kind="estimate",
+             interval=record["interval95_bca"], interval_kind=BCA, resampling_unit=DOMAIN_UNIT,
+             draws=draws, seed=(seed,), level="generation")
+        emit(ROBUSTNESS, base + ("interval95_bca", "[0]"),
+             identifier=f"{prefix}/achieved_lower_bound",
+             claim="achieved lower 95% bound on what the true coupling columns are worth over "
+                   f"their permuted control, in mean TM-score (C minus Cx) {held}. It is the lower "
+                   "end of that contrast's own interval and not a point estimate, and it is what "
+                   "decides whether the contrast resolves against zero at all",
+             family="progen3_robustness", support=support, unit=TM, kind="range_bound",
+             value=record["interval95_bca"][0], level="generation")
+        locator, bound = _agreeing_bound(payload, stratum, PERMUTED)
+        emit(ROBUSTNESS, locator, identifier=f"{prefix}/achieved_upper_bound",
+             claim="achieved upper 95% bound on what the true coupling columns are worth over "
+                   f"their permuted control, in mean TM-score (C minus Cx) {held}. It is the upper "
+                   "end of that contrast's own interval and not a point estimate",
+             family="progen3_robustness", support=support, unit=TM, kind="range_bound",
+             value=bound, level="generation")
+        emit(ROBUSTNESS, base + ("n_domains",), identifier=f"{prefix}/domains",
+             claim="sealed evaluation domains the permuted-column contrast rests on in the "
+                   f"{stratum} stratum, out of the eight the campaign holds out; a contrast below "
+                   "the eight-domain floor carries no interval at all",
+             family="progen3_robustness", support=support, unit=DOMAIN_UNIT + "s",
+             kind="support_count", level="generation")
+        favouring = record["favouring"]
+        if sum(favouring.values()) != record["n_domains"]:
+            raise LedgerError(
+                f"{ROBUSTNESS}: the {stratum} {PERMUTED} sign counts {favouring} do not add to the "
+                f"{record['n_domains']} domains the contrast covers")
+        for field, label, side in (("positive", "domains_favouring_true_columns", "the true"),
+                                   ("negative", "domains_favouring_permuted_columns",
+                                    "the permuted"),
+                                   ("tied", "domains_tied", "neither set of")):
+            emit(ROBUSTNESS, base + ("favouring", field), identifier=f"{prefix}/{label}",
+                 claim=f"sealed evaluation domains in which {side} coupling columns give the higher "
+                       f"mean TM-score in the {stratum} stratum, out of the eight the contrast "
+                       "covers",
+                 family="progen3_robustness", support=support, unit=DOMAIN_UNIT + "s", kind="count",
+                 level="generation")
+        _permuted_identity(ledger, emit, payload, stratum, rungs, record, support, base, prefix)
+
+
+def _permuted_identity(ledger, emit, payload: dict, stratum: str, rungs: tuple[str, ...],
+                       record: dict, primary_support: str, base: tuple, prefix: str) -> None:
+    """The two identity shifts, and the one domain that contributes most.
+
+    The contrast record carries these beside the endpoint and states no interval
+    for any of them, so each is the scalar the artifact records and not a
+    resampled estimate. A record that stops carrying them produces a gap and no
+    row rather than a row read off a field that is absent or null.
+    """
+    missing = [field for field in ("mean_identity_diff", "mean_msa_identity_diff", "per_domain")
+               if record.get(field) in (None, {})]
+    if missing:
+        ledger.gap(
+            id=f"progen3_robustness/identity_shift/{stratum}/{PERMUTED}",
+            claim="the identity shift that travels with the permuted-column contrast in the "
+                  f"{stratum} stratum, and the domain contributing most of its endpoint difference",
+            family="progen3_robustness",
+            reason=f"the contrast record carries no {', '.join(missing)}, so the shift toward the "
+                   "reference the contrast is reported with cannot be read from it",
+            looked_in=ROBUSTNESS, reachability="not_recorded",
+            searched=f"the {PRIMARY} {stratum} {PERMUTED} contrast record")
+        return
+    support = _identity_support(ledger, payload, stratum, rungs)
+    per_domain = record["per_domain"]
+    largest = _largest_contribution(payload, stratum, record)
+    widest = {field: max(per_domain, key=lambda domain: per_domain[domain][field])
+              for field in ("identity_diff", "msa_identity_diff")}
+    also = ("which is also the domain whose identity to the reference rises most"
+            if widest["identity_diff"] == largest else
+            "which is not the domain whose identity to the reference rises most "
+            f"({widest['identity_diff']} is)")
+    alignment = ("and is also the domain contributing most of the endpoint difference"
+                 if widest["msa_identity_diff"] == largest else
+                 f"and is not the domain contributing most of the endpoint difference ({largest} "
+                 "is), so neither superlative may be read off the other")
+    emit(ROBUSTNESS, base + ("mean_identity_diff",),
+         identifier=f"progen3_robustness/identity_shift/{stratum}/{PERMUTED}/to_reference",
+         claim="mean rise in percent identity to the wild-type reference, over the eight sealed "
+               "domains, when coupling guidance uses the true columns rather than its permuted "
+               f"control (C minus Cx) in the {stratum} stratum: the recapitulation shift that "
+               "travels with the endpoint difference, measured inside the admissible band",
+         family="progen3_robustness", support=support, unit=IDENTITY, kind="artifact_leaf",
+         level="generation")
+    emit(ROBUSTNESS, base + ("mean_msa_identity_diff",),
+         identifier=f"progen3_robustness/identity_shift/{stratum}/{PERMUTED}/to_family_alignment",
+         claim="mean rise in a candidate's best percent identity to a row of the family alignment, "
+               "over the eight sealed domains, when coupling guidance uses the true columns rather "
+               f"than its permuted control (C minus Cx) in the {stratum} stratum. The largest "
+               "single-domain rise against the alignment in this stratum is in "
+               f"{widest['msa_identity_diff']}, {alignment}",
+         family="progen3_robustness", support=support, unit=IDENTITY, kind="artifact_leaf",
+         level="generation")
+    emit(ROBUSTNESS, base + ("per_domain", largest, "diff"),
+         identifier=f"{prefix}/{largest}/diff",
+         claim=f"the {largest} contribution to the permuted-column contrast in the {stratum} "
+               "stratum: that domain's mean TM-score under the true coupling columns minus its "
+               "mean under the permuted control. It is the largest per-domain difference in "
+               "magnitude, so with equally weighted domains it is the largest single contribution "
+               "to the stratum's mean",
+         family="progen3_robustness", support=primary_support, unit=TM, kind="artifact_leaf",
+         level="generation")
+    emit(ROBUSTNESS, base + ("per_domain", largest, "identity_diff"),
+         identifier=f"progen3_robustness/identity_shift/{stratum}/{PERMUTED}/{largest}/to_reference",
+         claim=f"rise in percent identity to the wild-type reference in {largest}, the domain "
+               f"contributing most of the permuted-column contrast in the {stratum} stratum, "
+               f"{also}",
+         family="progen3_robustness", support=support, unit=IDENTITY, kind="artifact_leaf",
+         level="generation")
 
 
 # --------------------------------------------------------------------------- #
