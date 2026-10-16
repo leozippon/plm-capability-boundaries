@@ -14,7 +14,8 @@ Derived here, so that it cannot drift from the repository:
 * the renderer's declared inputs and display tables, read out of the figure
   validation receipt, for any the curated inventory does not already cover;
 * the ``layout`` block, read out of the compiled PDFs with pdfinfo/pdftotext;
-* every ``bytes``, ``sha256`` and ``source_sha256``.
+* every ``bytes``, ``sha256`` and ``source_sha256``, computed whenever the file
+  it describes is there to be read.
 
 Declared here: those entry points, and the two files under ``code/`` that have
 no repository source.
@@ -34,6 +35,16 @@ packaged. Anything the refresh cannot establish -- a source that has
 disappeared, a recorded symlink that no longer points where it did, a figure
 whose caption page cannot be read -- ends the run with the paths named instead
 of being written as a guess.
+
+One class of source is exempt from that. A source under an ephemeral root is a
+record of where bytes came from, not a place to restage them: the harness
+scratch tree is inside the repository, is not in Git and will be cleaned, while
+the packaged copy holds those same bytes and its own ``sha256`` is what
+guarantees them. Such an entry is marked ``"source_state": "ephemeral"``, keeps
+the ``source`` and the ``source_sha256`` the staging recorded, and is verified
+against its own digest. Its source is compared only while it is still there,
+and a source that is there and no longer those bytes is a loud failure, because
+then one of the two records is wrong and only a person can say which.
 
 Run from the repository root in the validated ct environment:
 
@@ -119,6 +130,13 @@ LIBRARY_REFERENCED = (
     "src/capability/interactions/pairwise_epistasis.py",
 )
 
+#: Source roots that will not outlive the package. ``.pi/`` is the agent
+#: harness's task scratch tree: it sits inside the repository, is gitignored and
+#: is cleaned on the harness's own schedule. The retained-data supplements under
+#: ``data/`` were staged from it and carry those bytes, so losing it loses no
+#: data and only makes a provenance re-check impossible.
+EPHEMERAL_SOURCE_ROOTS = (".pi/",)
+
 FIGURE_RECEIPT = "scripts/capability/reporting/figure_data/main/figure_validation.json"
 CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
                         ".ipynb_checkpoints"})
@@ -138,6 +156,11 @@ def digest_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1 << 20), b""):
             sha.update(block)
     return sha.hexdigest()
+
+
+def ephemeral(source: str) -> bool:
+    """Whether a recorded source path is one that will not outlive the package."""
+    return source.startswith(EPHEMERAL_SOURCE_ROOTS)
 
 
 def gzip_bytes(data: bytes) -> bytes:
@@ -264,6 +287,12 @@ def curated_inventory(previous: dict) -> dict[str, tuple[str, str | None]]:
             if "source" in entry and not entry["path"].startswith("code/")}
 
 
+def recorded_source_digests(previous: dict) -> dict[str, str]:
+    """The source digest each entry was staged against, as the manifest has it."""
+    return {entry["path"]: entry["source_sha256"] for entry in previous["files"]
+            if "source_sha256" in entry}
+
+
 def package_contents(package: Path) -> tuple[list[str], list[str], list[str]]:
     """Package-relative regular files, symlinks and cache paths."""
     files: list[str] = []
@@ -355,17 +384,41 @@ def compiled_layout(package: Path = PACKAGE) -> dict:
     return record
 
 
-def stage(sources: dict[str, tuple[str, str | None]], write: bool,
-          problems: list[str]) -> list[str]:
-    """Make every packaged copy carry exactly what its source carries."""
-    staged = []
+def stage(sources: dict[str, tuple[str, str | None]], recorded: dict[str, str],
+          write: bool, problems: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Make every packaged copy carry exactly what its source carries.
+
+    Returns the paths restaged and the source digest to record for each entry.
+    An ephemeral source is never restaged from and never required to be there:
+    its recorded digest is carried, it is compared while it is still present,
+    and the packaged copy stands on its own ``sha256``.
+    """
+    staged: list[str] = []
+    digests: dict[str, str] = {}
     for path, (source, encoding) in sorted(sources.items()):
         origin = REPO_ROOT / source
+        target = PACKAGE / path
+        if ephemeral(source):
+            if not target.is_file():
+                problems.append(f"{path}: packaged copy is gone and its source {source} is "
+                                "ephemeral, so nothing can restage it")
+            elif origin.is_file():
+                present = digest_file(origin)
+                digests[path] = recorded.get(path, present)
+                if present != digests[path]:
+                    problems.append(f"{path}: ephemeral source {source} is present and is no "
+                                    "longer the bytes this package was staged from")
+            elif path in recorded:
+                digests[path] = recorded[path]
+            else:
+                problems.append(f"{path}: its ephemeral source {source} is gone and no digest "
+                                "of it was ever recorded")
+            continue
         if not origin.is_file():
             problems.append(f"{path}: recorded source is gone: {source}")
             continue
-        target = PACKAGE / path
-        if target.is_file() and content_digest(target, encoding) == digest_file(origin):
+        digests[path] = digest_file(origin)
+        if target.is_file() and content_digest(target, encoding) == digests[path]:
             continue
         if not write:
             problems.append(f"{path}: absent; its source is {source}" if not target.is_file()
@@ -377,7 +430,7 @@ def stage(sources: dict[str, tuple[str, str | None]], write: bool,
         else:
             shutil.copyfile(origin, target)
         staged.append(path)
-    return staged
+    return staged, digests
 
 
 def remove(paths: list[str], write: bool, problems: list[str], reason: str) -> None:
@@ -392,20 +445,22 @@ def remove(paths: list[str], write: bool, problems: list[str], reason: str) -> N
             target.unlink()
 
 
-def manifest_entries(files: list[str],
-                     sources: dict[str, tuple[str, str | None]]) -> list[dict]:
+def manifest_entries(files: list[str], sources: dict[str, tuple[str, str | None]],
+                     digests: dict[str, str]) -> list[dict]:
     entries = []
     for relative in files:
         path = PACKAGE / relative
         entry = {"path": relative, "bytes": path.stat().st_size, "sha256": digest_file(path)}
         if PACKAGE_ONLY_CODE.get(relative) is not None:
             entry["provenance"] = PACKAGE_ONLY_CODE[relative]
-        if relative in sources:
+        if relative in sources and relative in digests:
             source, encoding = sources[relative]
             if encoding is not None:
                 entry["encoding"] = encoding
             entry["source"] = source
-            entry["source_sha256"] = digest_file(REPO_ROOT / source)
+            entry["source_sha256"] = digests[relative]
+            if ephemeral(source):
+                entry["source_state"] = "ephemeral"
         entries.append(entry)
     return entries
 
@@ -450,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _, _, caches = package_contents(PACKAGE)
     remove(caches, write, problems, "generated cache; never part of the package")
-    staged = stage(sources, write, problems)
+    staged, digests = stage(sources, recorded_source_digests(previous), write, problems)
 
     files, symlinks, caches = package_contents(PACKAGE)
     strays = [path for path in files if path.startswith("code/")
@@ -481,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         for path in caches:
             problems.append(f"{path}: cache reappeared while staging")
 
-    entries = manifest_entries(files, sources)
+    entries = manifest_entries(files, sources, digests)
     layout = compiled_layout()
     before = {entry["path"]: entry for entry in previous["files"]}
     after = {entry["path"]: entry for entry in entries}
@@ -493,6 +548,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"package: {len(entries)} files, {len(derived)} code files derived from the import "
           f"closure of {len(ANALYSIS_ENTRY_POINTS) + len(FLAT_ENTRY_POINTS)} entry points, "
           f"{len(library)} library modules on the dependency surface, {len(symlinks)} links")
+    marked = [entry for entry in entries if entry.get("source_state") == "ephemeral"]
+    gone = [entry for entry in marked if not (REPO_ROOT / entry["source"]).is_file()]
+    print(f"ephemeral sources: {len(marked)} entries, {len(gone)} of them no longer re-checkable")
     for path in staged:
         print(f"  staged  {path}")
     if write:
@@ -507,6 +565,13 @@ def main(argv: list[str] | None = None) -> int:
               else f"{len(problems)} fault(s)")
         return 1
     if args.check:
+        if changed:
+            # The recorded digest is the whole guarantee for an entry whose
+            # source is ephemeral, so a manifest that no longer describes the
+            # package is a failure here, not a note in the output.
+            print(f"{len(changed)} recorded entries no longer describe the package; "
+                  "a refresh is due")
+            return 1
         print("manifest, package and sources agree")
         return 0
     if changed and not args.note:
