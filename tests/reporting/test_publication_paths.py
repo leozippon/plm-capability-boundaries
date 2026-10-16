@@ -1,5 +1,6 @@
 """Submission filenames never change the historical figure/source identifiers."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,9 @@ def test_pdf_contract_keeps_main_and_supplement_table_identifiers(tmp_path, monk
 
 
 def test_packaged_stage_restores_retained_json_names_and_shared_helper(tmp_path, monkeypatch):
+    # Loading the adapter must not leave a bytecode cache inside the handoff
+    # package, which carries only the files its manifest records.
+    monkeypatch.setattr(sys, 'dont_write_bytecode', True)
     spec = importlib.util.spec_from_file_location('packaged_figures', ROOT / 'manuscript/code/run_figures.py')
     assert spec is not None and spec.loader is not None
     runner = importlib.util.module_from_spec(spec)
