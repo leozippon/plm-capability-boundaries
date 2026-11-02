@@ -112,5 +112,18 @@
     "pooling": "The two supports are never pooled and every reported number names its support.",
     "rank_scale_limit": "On S1 only the direction of a within-assay pair is read. No magnitude, difference in nats, or effect size in likelihood units may be computed from the rank scale, and none is reported.",
     "what_this_amendment_may_not_do": "It fixes no threshold, adds no arm to S2, and changes no endpoint, margin or decision rule. It was written before any direction accuracy on either support was computed."
+  },
+  "amendment_02": {
+    "declared_on": "2026-11-02",
+    "declared_before": "any direction accuracy or likelihood magnitude was computed on either support",
+    "reason": "S1 reads a within-assay rank and so cannot report how large a likelihood difference is. Fresh scoring on S2 recovers nats, which allows one further descriptive question that the rank scale forbids: whether the native rule is wrong confidently or only wrong marginally.",
+    "secondary_descriptive_endpoint_S2_only": {
+      "name": "direction accuracy stratified by likelihood-difference magnitude",
+      "definition": "Partition T_match evaluation pairs into declared quantile bins of |delta log-likelihood| in nats, then report direction accuracy with its cluster-bootstrap interval within each bin.",
+      "bins": "quintiles of |delta log-likelihood|, boundaries fixed on development clusters",
+      "reading": "A flat profile near 0.5 across bins means the magnitude of a likelihood difference carries no information about which variant is functionally better, so the native rule is not merely uncertain but confidently uninformative. An increasing profile would instead mean the rule is informative where it is decisive, and would weaken the paper's claim.",
+      "status": "descriptive and secondary; it carries no verdict, enters no multiplicity family, and cannot overturn the primary endpoint"
+    },
+    "what_this_amendment_may_not_do": "It fixes no threshold, adds no arm, and changes no primary endpoint, margin or decision rule."
   }
 }
