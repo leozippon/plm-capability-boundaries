@@ -1,12 +1,12 @@
 {
-  "date": "2026-11-02T19:07:45.644901+00:00",
+  "date": "2026-11-02T23:38:12.785216+00:00",
   "journal": "Nature Computational Science",
   "article_type": "Analysis",
   "status": "fail",
   "not_certified_scope": [],
   "warnings": [],
-  "main_word_count": 3363,
-  "abstract_word_count": 149,
+  "main_word_count": 3500,
+  "abstract_word_count": 150,
   "count_convention": "Whitespace-separated prose after removing display environments, section headings and citation/reference commands; excludes abstract, Methods, references and legends. Hyphenated tokens count once; tildes and inline-math delimiters are normalized.",
   "main_figures": 5,
   "main_tables": 1,
@@ -15,19 +15,19 @@
   "subsections_by_section": {
     "Results": 6,
     "Discussion": 1,
-    "Methods": 11
+    "Methods": 12
   },
   "references": 32,
   "maximum_main_legend_words": 127,
   "pdfs": {
     "main": {
-      "pages": 27,
-      "sha256": "947a513c7b22991560c6db4f732558b2489ab2f03e114f913bef29d4c5fbcf34",
+      "pages": 28,
+      "sha256": "e1bbcc3386a2f4a55cea3cc70d4029c22ecedd41a11c42ea56b9f446e613b8cf",
       "footer_faults": []
     },
     "supplementary-information": {
-      "pages": 24,
-      "sha256": "505e5b6e2ca9581d492fcae03b6c9e640a25db20a7abb997ac18df6890c4d47e",
+      "pages": 31,
+      "sha256": "f4aa5e15a592dc9af20a643d6211eeacc26bb27ed4affbc1c9bd16d3badfe01b",
       "footer_faults": []
     }
   },
@@ -35,6 +35,7 @@
     "Missing or changed renderer_sha256 input: scripts/capability/reporting/render_figures.py",
     "Missing or changed renderer_sha256 input: scripts/capability/reporting/checkpoint_labels.py",
     "Missing or changed auxiliary_outputs_sha256 input: manuscript/submission/checkpoint-name-key.tex",
+    "Missing or changed source_sha256 input: results/shared/manuscript_evidence_20261004/derived-numbers.csv",
     "Missing or changed rendered pdf: Fig1_framework",
     "Invalid render receipt scripts/capability/reporting/figure_data/main/framework_validation.json: PDF must retain the single native-resolution artwork raster",
     "Render receipt contains figures not included in the manuscript",
@@ -51,7 +52,7 @@
   ],
   "files_sha256": {
     "main.tex": "b5debbda01dc8f6aa0100ce61754263b157cdee607533565e2e148fece54bbc8",
-    "supplementary-information.tex": "6432fa706e4d70b8ed331e72b867afde979781f9e5c91cf586390cc404089ff3",
+    "supplementary-information.tex": "840699fb25c8c331e292953eadd143473c7511ca089bce93d2836111097971c4",
     "references.bib": "d0632ab99709ff74c782597f2fd5aeb7bac0439690ed6385dec44d90a5ceada4",
     "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
     "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",

@@ -710,6 +710,7 @@ def _panel(ledger, emit) -> None:
     _failed_position_check(ledger, emit, panel)
     _readout_levels(ledger, emit, panel, supports)
     _readout_counts(ledger, emit, panel, supports)
+    _declared_endpoint_counts(ledger, emit, panel, supports)
     _readout_validity(ledger, emit, panel)
 
 
@@ -788,30 +789,141 @@ def _readout_levels(ledger, emit, panel: Mapping, supports: Mapping[str, str]) -
           members, ACCURACY)
 
 
-def _readout_counts(ledger, emit, panel: Mapping, supports: Mapping[str, str]) -> None:
-    """How many arms resolve a supervised contrast, counted from the verdicts.
+def _verdict_count(emit, records: Mapping[str, Mapping], pointer, *, verdict: str,
+                   direction: str | None = None, identifier: str, claim: str, support: str,
+                   level: str = "measurement") -> list[str]:
+    """How many arms record one verdict, counted from the verdicts themselves.
 
-    The count is what the manuscript prints, because the per-arm increments
-    themselves are not quoted. It is read off the artifact's own across-seed
-    verdicts and the pointer names one of the arms it counts, so the count cannot
-    drift from the verdicts it summarises.
+    The count is what the manuscript prints, because the per-arm estimates it
+    summarises are not quoted. ``records`` maps each arm to its across-seed
+    record and ``pointer`` takes an arm to the verdict field the row is written
+    at, so the row points at one of the verdicts it counts and the count cannot
+    drift from them. ``direction`` is the side a resolved interval excludes the
+    null on, which the artifact records beside the verdict: resolving upward and
+    resolving downward are different findings and a count may not merge them.
+
+    The matching names are returned, because what the manuscript says about the
+    arms a count leaves out is a statement about this partition and its caller
+    is where that is checked.
     """
+    matching = sorted(arm for arm, record in records.items()
+                      if record["verdict"] == verdict
+                      and (direction is None or record["direction"] == direction))
+    if not matching:
+        raise LedgerError(
+            f"{PANEL}: no arm records {identifier} as {verdict}"
+            f"{'' if direction is None else ' ' + direction}, so the count the manuscript prints "
+            "is not what the analysis records")
+    emit(PANEL, pointer(matching[0]), identifier=identifier, claim=claim, family=FAMILY,
+         support=support, unit="checkpoints", kind="count", value=len(matching), level=level)
+    return matching
+
+
+def _readout_counts(ledger, emit, panel: Mapping, supports: Mapping[str, str]) -> None:
+    """How many arms resolve a supervised contrast, counted from the verdicts."""
     del ledger
     arms = panel["E22"]["arms"]
     contrast = "T_open/B_R_minus_B"
-    matching = sorted(arm for arm, record in arms.items()
-                      if record["contrasts"][contrast]["across_seeds"]["verdict"]
-                      == "bounded_negative")
-    if not matching:
-        raise LedgerError(f"{PANEL}: no arm records {contrast} as a bounded negative")
-    emit(PANEL, ("E22", "arms", matching[0], "contrasts", contrast, "across_seeds", "verdict"),
-         identifier=f"{FAMILY}/retained_panel/T_open/representation_increment/bounded_negative_arms",
-         claim="arms whose added-representation increment on the open tier is a bounded negative "
-               "at the declared margin: the frozen representation adds nothing beyond the "
-               "likelihood-bearing supervised baseline, resolved against the margin rather than "
-               "merely unresolved",
-         family=FAMILY, support=supports["T_open"], unit="checkpoints", kind="count",
-         value=len(matching), level="representation")
+    _verdict_count(
+        emit, {arm: record["contrasts"][contrast]["across_seeds"] for arm, record in arms.items()},
+        lambda arm: ("E22", "arms", arm, "contrasts", contrast, "across_seeds", "verdict"),
+        verdict="bounded_negative",
+        identifier=f"{FAMILY}/retained_panel/T_open/representation_increment/bounded_negative_arms",
+        claim="arms whose added-representation increment on the open tier is a bounded negative "
+              "at the declared margin: the frozen representation adds nothing beyond the "
+              "likelihood-bearing supervised baseline, resolved against the margin rather than "
+              "merely unresolved",
+        support=supports["T_open"], level="representation")
+
+
+def _declared_protein_arms(panel: Mapping) -> list[str]:
+    """The arms the declaration itself names autoregressive protein, as the panel keys them.
+
+    The panel carries no interface class for its 33 arms, so this is the only
+    protein roster the artifact states: the declaration's own arm list, mapped
+    through the bindings the panel records for the two names that differ.
+    """
+    bindings = resolve(panel, ("contract", "arms", "name_bindings"))
+    declared = resolve(panel, ("contract", "arms", "manifest_declared", "autoregressive_protein"))
+    reported = set(resolve(panel, ("contract", "arms", "reported")))
+    arms = [bindings.get(arm, arm) for arm in declared]
+    missing = sorted(arm for arm in arms if arm not in reported)
+    if missing:
+        raise LedgerError(
+            f"{PANEL}: the declared autoregressive protein arms {missing} are not among the arms "
+            "this panel reports, so the panel cannot say what those arms resolved")
+    return arms
+
+
+def _declared_endpoint_counts(ledger, emit, panel: Mapping, supports: Mapping[str, str]) -> None:
+    """The panel's own verdicts on the two endpoints the declaration made primary.
+
+    E21's native-likelihood direction accuracy and the declared contrast
+    ``R_seqprof - R_like`` are pre-registered endpoints that this support
+    answers at full arm breadth, so their verdicts are reported rather than
+    left to the expanded support's nine arms. Each count is read off the
+    across-seed verdicts, and each carries the guard that the statement the
+    Note makes about the arms it leaves out is the one the artifact records:
+    the declaration's autoregressive protein arms are not among the open-tier
+    bounded negatives, and the arms supervision does not resolve a gain for on
+    the open tier are the arms whose native likelihood is strongest there.
+    """
+    del ledger
+    protein = _declared_protein_arms(panel)
+    native = {arm: record["D_open"]["across_seeds"] for arm, record in panel["E21"]["arms"].items()}
+    bounded = _verdict_count(
+        emit, native, lambda arm: ("E21", "arms", arm, "D_open", "across_seeds", "verdict"),
+        verdict="bounded_negative",
+        identifier=f"{FAMILY}/retained_panel/T_open/native_likelihood/bounded_negative_arms",
+        claim="arms whose native likelihood is a bounded negative on the open tier: its direction "
+              "accuracy there is resolved to lie inside the declared practical margin of chance, "
+              "which is a measurement against that margin and not an unresolved interval",
+        support=supports["T_open"])
+    inside = sorted(set(bounded) & set(protein))
+    unsupported = sorted(arm for arm in protein if native[arm]["verdict"] != "supported")
+    if inside or unsupported:
+        raise LedgerError(
+            f"{PANEL}: on the open tier the declared protein arms {inside} are themselves bounded "
+            f"negatives and the declared protein arms {unsupported} are not supported, so the "
+            "Note's statement that the bounded negative does not reach the protein arms is not "
+            "what the analysis records")
+
+    arms = panel["E22"]["arms"]
+    contrast = "R_seqprof_minus_R_like"
+    for tier, name, verdict, direction, side, claim in (
+        ("T_match", "matched tier", "unresolved", None, "unresolved_arms",
+         "arms for which supervision on the profile score and the sequence descriptors alone "
+         "resolves no gain over the native likelihood on the matched tier: the declared contrast "
+         "R_seqprof - R_like, whose interval covers zero, which is not evidence that the two "
+         "readouts order these pairs alike"),
+        ("T_open", "open tier", "supported", "above", "resolved_above_arms",
+         "arms for which supervision on the profile score and the sequence descriptors alone "
+         "resolves a gain over the native likelihood on the open tier: the declared contrast "
+         "R_seqprof - R_like, whose interval excludes zero from above"),
+    ):
+        key = f"{tier}/{contrast}"
+        matching = _verdict_count(
+            emit, {arm: record["contrasts"][key]["across_seeds"] for arm, record in arms.items()},
+            lambda arm, key=key: ("E22", "arms", arm, "contrasts", key, "across_seeds", "verdict"),
+            verdict=verdict, direction=direction,
+            identifier=f"{FAMILY}/retained_panel/{tier}/seqprof_minus_likelihood/{side}",
+            claim=claim, support=supports[tier])
+        if tier != "T_open":
+            continue
+        # What the Note reads into that count: supervision resolves a gain
+        # exactly where the native rule is the weaker scoring rule. The two
+        # groups' native-likelihood accuracies have to separate for that
+        # reading to be the artifact's rather than the reader's.
+        floor = {arm: min(float(point) for point
+                          in record["levels"][f"{tier}/R_like"]["across_seeds"]["points"].values())
+                 for arm, record in arms.items()}
+        resolved, held = set(matching), set(arms) - set(matching)
+        if not held or max(floor[arm] for arm in resolved) >= min(floor[arm] for arm in held):
+            raise LedgerError(
+                f"{PANEL}: the arms supervision resolves a gain for on the {name} do not all have "
+                "a lower native-likelihood accuracy there than every arm it does not, so the "
+                "Note's reading of which arms the native rule binds is not what the analysis "
+                "records")
 
 
 def _readout_validity(ledger, emit, panel: Mapping) -> None:
