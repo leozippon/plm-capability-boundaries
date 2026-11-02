@@ -1,0 +1,87 @@
+{
+  "declaration": {
+    "id": "matched_discrimination_20261102",
+    "experiments": ["E21", "E22"],
+    "declared_on": "2026-11-02",
+    "declared_before": "any model score was computed on any pair in this cohort",
+    "question": "Within one assay, with amino-acid composition identical by construction and the independent-site evolutionary profile score matched, does a model's native sequence likelihood rank the variant with the better measured phenotype above the worse one; and if it does not, can supervised readouts on the same pairs recover that direction?",
+    "why_it_matters": "R1 reports that adding an evolutionary profile removes 77-86% of the likelihood increment. This cohort removes composition and the independent-site profile component by construction rather than by regression adjustment, so it measures what directional ability survives. E21 measures the native scoring rule; E22 separates a failure of the scoring rule from absence of extractable information.",
+    "relation_to_manuscript": "The submitted draft states that this matched-variant test has not yet been performed. E21 attaches to Results 1 after the profile-overlap paragraph; E22 attaches to the supervised-readout paragraph in the same subsection."
+  },
+  "cohort": {
+    "source": "ProteinGym substitution assays, single substitutions only, restricted to the retained R1 common support",
+    "pair_rule": "Two single mutants of the same wild type in the same assay, carrying the same wild-type residue and the same mutant residue at two different positions. Both full-length sequences then have identical length and identical amino-acid composition, and differ only in which position is substituted. Composition, chemistry, substitution-matrix score and length are therefore matched exactly, not adjusted.",
+    "phenotype_target": "measured DMS score, z-scored within assay, oriented so that higher is the better phenotype as the assay declares its direction",
+    "phenotype_gap_threshold": {
+      "value": 1.0,
+      "units": "within-assay standard deviations of the z-scored DMS score",
+      "fixed": "declared as a constant, not tuned on any data"
+    },
+    "profile_score": "independent-site evolutionary log-odds s = log f(mutant | position) - log f(wild type | position) from the assay's own alignment, with the pseudocount and sequence-weighting convention recorded in the output artifact",
+    "profile_match_threshold": {
+      "rule": "absolute value fixed as the 20th percentile of |delta s| over development-cluster candidate pairs that already satisfy the phenotype-gap threshold, then applied unchanged to evaluation clusters",
+      "fixed_without_model_scores": true
+    },
+    "tiers": {
+      "T_open": "pair rule and phenotype gap only; validity tier",
+      "T_match": "T_open and the profile match; primary tier"
+    },
+    "disjointness": "each variant appears in at most one retained pair within a tier, by a seeded deterministic greedy rule that does not read any model score",
+    "development_evaluation_split": {
+      "unit": "wild-type family cluster at 50% identity, as used by R1",
+      "fractions": [0.3, 0.7],
+      "seed": 20261102,
+      "rule": "all thresholds and the greedy rule are fixed on development clusters; every reported number comes from evaluation clusters"
+    }
+  },
+  "endpoints": {
+    "E21_primary": "direction accuracy D_match: the fraction of T_match evaluation pairs where the native likelihood is higher for the better-phenotype member. Null value 0.5.",
+    "E21_validity": "direction accuracy D_open on T_open, and the cluster-paired contrast D_open - D_match, which is the share of apparent directional ability carried by the independent-site evolutionary component",
+    "E21_construction_check": "profile direction accuracy on both tiers; on T_match it is expected near 0.5 by construction and is a check on the matching, not a competitor",
+    "E22_readouts": {
+      "R_like": "native likelihood alone, identical to the E21 primary",
+      "R_seqprof": "the 444 sequence, mutation-identity, position and length descriptors plus the profile score",
+      "R_repr": "the primary frozen-state readout of the submitted Methods added on top of R_seqprof"
+    },
+    "E22_primary_contrasts": [
+      "R_seqprof - R_like: whether supervision alone recovers direction that the native rule misses",
+      "R_repr - R_seqprof: whether the frozen representation carries direction beyond profile and sequence features"
+    ],
+    "E22_validity": "the same fitted readouts must retain their established out-of-family predictive performance on unmatched variants; if they do not, the fold machinery is broken and the matched reading is void"
+  },
+  "inference": {
+    "resampling_unit": "wild-type family cluster",
+    "draws": 2000,
+    "interval": "pointwise 95% paired group-bootstrap percentile interval, matching the project default",
+    "practical_margin": {
+      "value": 0.05,
+      "units": "direction-accuracy points",
+      "justification": "a scoring rule that resolves fewer than 55 of 100 pairs whose measured phenotypes differ by at least one assay standard deviation cannot order candidates usefully for design"
+    },
+    "decision_rule": {
+      "supported": "interval excludes 0.5",
+      "bounded_negative": "interval lies inside (0.45, 0.55)",
+      "unresolved": "neither of the above"
+    },
+    "multiplicity": "declared per arm and per tier, unadjusted across arms; the arm list is frozen below and the two E22 contrasts form one declared family per arm",
+    "forbidden": "no threshold, tier, pair, arm or endpoint may be revised after any evaluation-cluster model score is read"
+  },
+  "arms": {
+    "autoregressive_protein": ["progen2-small", "progen2-medium", "progen2-large", "progen2-xlarge", "progen3-112m", "progen3-3b", "RITA_xl", "ProtGPT2"],
+    "different_scoring_rule_contrast": ["esm2_t33_650M_UR50D"],
+    "pooling": "the masked arm is reported separately and never pooled with the autoregressive arms",
+    "scale_axis": "the ProGen2 ladder is a declared capacity axis because functional constraint dilution predicts no gain in directional ability with capacity; it is not a causal scale intervention"
+  },
+  "mechanism_hypotheses": {
+    "scoring_rule_deficit": "R_repr clearly above 0.5 while R_like is a bounded negative: the direction is present in the representation and the native rule fails to expose it",
+    "information_absent_at_this_budget": "R_repr also inside the margin of 0.5: the direction is not extractable from the frozen representation at this label budget, which is what functional constraint dilution predicts",
+    "not_distinguished_by_this_design": "target mismatch versus compression loss during pretraining; that needs a matched training intervention and is out of scope here"
+  },
+  "declared_limitations": [
+    "The ProteinGym export carries no measurement replicates or uncertainty, so a large phenotype gap is an observed gap and is not independently confirmed as a true gap.",
+    "This cohort has been studied before, so this is a pre-specified reanalysis and not new external validation.",
+    "An interval covering 0.5 is not equivalence, zero information or absence of a biological effect; a bounded negative excludes an effect only at the declared margin.",
+    "Matching the independent-site profile does not match all evolutionary information; an alignment-based profile is not an upper bound on all sequence statistics.",
+    "Family clusters are the resampling unit; split seeds and pair rows are not additional biological replicates."
+  ]
+}
