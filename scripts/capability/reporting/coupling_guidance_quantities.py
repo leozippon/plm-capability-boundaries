@@ -689,9 +689,17 @@ def _selection_headroom(ledger, emit, payload: dict) -> None:
         emit(CONFIRMATORY,
              ("captured_fraction_of_oracle_headroom", "arms", arm, "mean_oracle_gain"),
              identifier=f"coupling_selection/{key}/oracle_headroom",
+             # The selection tables print this one headroom beside every row of
+             # the pool, so a claim holding only the pool's vocabulary loses the
+             # repeated column to whichever unrelated row shares the number and
+             # happens to share the row label's words. Naming the scorer roster
+             # is what keeps the column with the headroom it belongs to.
              claim="headroom an oracle ranking by the measured endpoint has over the pool mean in "
                    f"{prose} pools, at a budget of {capture['k']} candidates: what the pool "
-                   "already contains and no admissible scorer may read",
+                   "already contains and no admissible scorer may read. It is the one headroom "
+                   "every admissible scorer in this pool is read against, the full Potts score "
+                   "and its fields and couplings blocks, the permuted couplings control and the "
+                   "native likelihood",
              family="coupling_selection", support=support, unit=TM, kind="estimate",
              reason="the analysis resamples the captured fraction over the domains and records the "
                     "oracle headroom only as the mean over them, so no interval sits beside it",
