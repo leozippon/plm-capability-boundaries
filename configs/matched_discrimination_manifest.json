@@ -1,7 +1,10 @@
 {
   "declaration": {
     "id": "matched_discrimination_20261102",
-    "experiments": ["E21", "E22"],
+    "experiments": [
+      "E21",
+      "E22"
+    ],
     "declared_on": "2026-11-02",
     "declared_before": "any model score was computed on any pair in this cohort",
     "question": "Within one assay, with amino-acid composition identical by construction and the independent-site evolutionary profile score matched, does a model's native sequence likelihood rank the variant with the better measured phenotype above the worse one; and if it does not, can supervised readouts on the same pairs recover that direction?",
@@ -29,7 +32,10 @@
     "disjointness": "each variant appears in at most one retained pair within a tier, by a seeded deterministic greedy rule that does not read any model score",
     "development_evaluation_split": {
       "unit": "wild-type family cluster at 50% identity, as used by R1",
-      "fractions": [0.3, 0.7],
+      "fractions": [
+        0.3,
+        0.7
+      ],
       "seed": 20261102,
       "rule": "all thresholds and the greedy rule are fixed on development clusters; every reported number comes from evaluation clusters"
     }
@@ -67,8 +73,19 @@
     "forbidden": "no threshold, tier, pair, arm or endpoint may be revised after any evaluation-cluster model score is read"
   },
   "arms": {
-    "autoregressive_protein": ["progen2-small", "progen2-medium", "progen2-large", "progen2-xlarge", "progen3-112m", "progen3-3b", "RITA_xl", "ProtGPT2"],
-    "different_scoring_rule_contrast": ["esm2_t33_650M_UR50D"],
+    "autoregressive_protein": [
+      "progen2-small",
+      "progen2-medium",
+      "progen2-large",
+      "progen2-xlarge",
+      "progen3-112m",
+      "progen3-3b",
+      "RITA_xl",
+      "ProtGPT2"
+    ],
+    "different_scoring_rule_contrast": [
+      "esm2_t33_650M_UR50D"
+    ],
     "pooling": "the masked arm is reported separately and never pooled with the autoregressive arms",
     "scale_axis": "the ProGen2 ladder is a declared capacity axis because functional constraint dilution predicts no gain in directional ability with capacity; it is not a causal scale intervention"
   },
@@ -83,5 +100,17 @@
     "An interval covering 0.5 is not equivalence, zero information or absence of a biological effect; a bounded negative excludes an effect only at the declared margin.",
     "Matching the independent-site profile does not match all evolutionary information; an alignment-based profile is not an upper bound on all sequence statistics.",
     "Family clusters are the resampling unit; split seeds and pair rows are not additional biological replicates."
-  ]
+  ],
+  "amendment_01": {
+    "declared_on": "2026-11-02",
+    "declared_before": "any direction accuracy was computed on either support",
+    "reason": "The inventory established two facts the original declaration did not account for. First, the retained panel already carries per-variant native-likelihood values on a within-assay rank scale for all 33 models, together with stored out-of-family predictions for the profile_sequence, B and B_R readouts; a within-assay rank preserves the ordering of any two variants drawn from the same assay, which is the only quantity a direction test reads, so both E21 and E22 can be answered at full arm breadth without new scoring. Second, no ProteinGym alignments are on disk: the profile is a retained UniRef50 independent-site lookup whose per-variant score is already a column, so the profile match uses that column rather than a newly built alignment.",
+    "supports": {
+      "S1_retained_panel": "The retained R1 common support: 25,728 variants, 201 assays, 163 family clusters, all 33 panel arms and three fold seeds. Native-likelihood direction is read from the retained within-assay rank. No new scoring. Reported for arm breadth, including the full text and joint arms.",
+      "S2_expanded": "An expanded ProteinGym single-substitution cohort scored fresh on the local L20 GPUs for the nine arms declared above, sized to the pair count the endpoint needs rather than to the maximum available. Reported for sample size and for raw-nats magnitudes that a rank cannot carry."
+    },
+    "pooling": "The two supports are never pooled and every reported number names its support.",
+    "rank_scale_limit": "On S1 only the direction of a within-assay pair is read. No magnitude, difference in nats, or effect size in likelihood units may be computed from the rank scale, and none is reported.",
+    "what_this_amendment_may_not_do": "It fixes no threshold, adds no arm to S2, and changes no endpoint, margin or decision rule. It was written before any direction accuracy on either support was computed."
+  }
 }
