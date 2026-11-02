@@ -152,5 +152,32 @@
       "status": "This is a statement about resolution, declared here so it cannot later be mistaken for a finding. The margin itself is not moved."
     },
     "what_this_amendment_may_not_do": "It moves no threshold already fixed, changes no primary endpoint, does not alter the 0.05 margin or the decision rule, and does not retract or restate any number already computed. The three additions are new readings on the same declared cohort."
+  },
+  "amendment_04": {
+    "declared_on": "2026-11-02",
+    "declared_before": "any number from the additions below was computed on any support",
+    "trigger": "Both supports now agree that the two confounds are each individually beaten and never jointly controlled. On the open tier the arms exceed the position-only rule by a resolved +0.090 to +0.148, but the profile is uncontrolled there at 0.669. On the profile-balanced tier the profile is exactly 0.5 by construction, but the arms-minus-position margin resolves for zero of nine arms at 168 pairs. The quantity the paper's claim turns on -- directional ability that is neither site-wise conservation nor sequence position -- has therefore never been measured at adequate resolution. Also, the magnitude-matched position tier declared in amendment_03 failed its construction check on S1, putting the position rule at 0.418, below chance by more than the margin, so magnitude matching is the wrong instrument for position.",
+    "addition_1_sign_balanced_position": {
+      "tier": "T_position_balanced",
+      "definition": "A subset in which the position-only rule's directional vote is balanced exactly: equal counts of pairs where the site nearer a terminus belongs to the better-phenotype member and to the worse-phenotype member, selected by a seeded rule reading only position, length and phenotype. Position-neutral pairs are excluded rather than retained, so the balance is exact and not parity-dependent.",
+      "replaces": "the magnitude-matched position tier of amendment_03, which is retained in the S1 artifact with status failed and is not to be built again"
+    },
+    "addition_2_double_balanced": {
+      "tier": "T_double_balanced",
+      "definition": "A subset of T_match in which the profile vote and the position vote are each balanced exactly by the same construction. The script must refuse unless both balances are exact.",
+      "why_this_is_the_decisive_tier": "An arm whose accuracy excludes 0.5 here has pairwise directional ability that is neither the independent-site evolutionary profile nor sequence position, measured by construction rather than by adjustment. This is the strongest form of the question the manuscript asks, and it is the one reading that can support or refute the central claim on its own.",
+      "reading": "Arms resolved above 0.5 establish non-positional, non-profile direction and its size. Arms whose interval lies inside the declared margin are a bounded negative at that margin. Arms with wider intervals are unresolved and must not be read as either."
+    },
+    "addition_3_power": {
+      "change": "The per-cluster retention cap of 40 pairs is a sizing rule introduced during execution for variance control, not a declared threshold. It is retained for T_open, which already resolves every endpoint, and lifted for T_match, T_balanced, T_position_balanced and T_double_balanced, whose power is the binding constraint.",
+      "target": "at least 400 to 500 evaluation pairs in each balanced tier, which is the resolution the amendment_03 power statement names",
+      "guard": "Report the per-cluster pair-count distribution for every tier, so cluster dominance can be checked rather than assumed. The resampling unit stays the wild-type family cluster, so within-cluster counts affect a cluster's own precision and not the across-cluster inference.",
+      "not_a_threshold_change": "No phenotype gap, profile threshold, disjointness rule, dev/eval split, margin, decision rule or arm list is altered."
+    },
+    "reporting_convention_to_unify": {
+      "defect": "The two supports reported the practical-size reading against different oracle definitions: one took the oracle's gain as half the mean pair gap, the other as the full mean pair gap, and separately reported a share of the chance-to-oracle interval in accuracy units. Three different quantities were called a share.",
+      "requirement": "Report the accuracy-displacement share and the phenotype-gap-capture share as separately named quantities, each with its definition stated beside it, and state the oracle convention explicitly. Do not combine them into one number."
+    },
+    "what_this_amendment_may_not_do": "It moves no declared threshold, changes no primary endpoint, and does not alter the 0.05 margin, the decision rule or the arm list. It adds two sign-balanced tiers, lifts an execution-time sizing cap on the matched tiers, and fixes a reporting convention."
   }
 }
