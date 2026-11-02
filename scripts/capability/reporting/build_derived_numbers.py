@@ -4642,6 +4642,10 @@ REPRESENTATION_CONDITIONS = {
     "controlled_readout_gap": "readout_selection",
     "readout_sweeps": "readout_selection",
     "readout_design_resolution": "readout_selection",
+    # The matched-candidate supervised comparison reuses the primary frozen-state
+    # readout, whose class and extraction depth the sweeps above decided, so its
+    # one representation-level row waits on nothing further.
+    "matched_discrimination": "readout_selection",
     "pairwise": "gate_representation_recomputation",
     "remote_homology": "gate_representation_recomputation",
     "local_context": "local_context_gate_recomputation",
@@ -4725,6 +4729,8 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
         add_readout_design_resolution_quantities)
     from scripts.capability.reporting.interval_coverage_quantities import (
         add_interval_coverage_quantities)
+    from scripts.capability.reporting.matched_discrimination_quantities import (
+        add_matched_discrimination_quantities)
     # Runs last of all. It fills the cells of the R6 guidance and selection
     # tables that no other module binds, and it decides what to fill by reading
     # the rows already in the ledger, so every module that owns one of those
@@ -4740,6 +4746,7 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     add_progen3_robustness_quantities(ledger)
     add_readout_design_resolution_quantities(ledger)
     add_interval_coverage_quantities(ledger)
+    add_matched_discrimination_quantities(ledger)
     add_r6_guidance_table_quantities(ledger)
     assign_representation_conditions(ledger)
     payload = ledger.write(out_dir, scope=(
