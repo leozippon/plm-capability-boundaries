@@ -125,5 +125,32 @@
       "status": "descriptive and secondary; it carries no verdict, enters no multiplicity family, and cannot overturn the primary endpoint"
     },
     "what_this_amendment_may_not_do": "It fixes no threshold, adds no arm, and changes no primary endpoint, margin or decision rule."
+  },
+  "amendment_03": {
+    "declared_on": "2026-11-02",
+    "declared_before": "any number from the three additions below was computed on any support",
+    "trigger": "The declared construction check failed and the declaration required it be reported prominently. Profile direction accuracy on T_match is 0.5500 [0.4730, 0.6243] rather than near 0.5, because matching |delta profile score| constrains the magnitude of the profile difference and not its sign. A residual independent-site ordering therefore survives in T_match, and the protein arms' 0.58-0.64 cannot be read as entirely net of the profile.",
+    "addition_1_signed_balance": {
+      "tier": "T_balanced",
+      "definition": "A subset of T_match in which the profile's directional vote is balanced by construction: equal counts of pairs where the higher profile score belongs to the better-phenotype member and to the worse-phenotype member, selected by a seeded rule reading only the phenotype and the profile score and never a model score.",
+      "effect": "Profile direction accuracy on T_balanced is 0.5 up to integer parity, by construction rather than by estimation, so any arm above 0.5 there cannot be carrying the independent-site profile.",
+      "reporting": "T_match is retained and reported unchanged; T_balanced is reported beside it. Neither replaces the other."
+    },
+    "addition_2_net_of_profile": {
+      "endpoint": "the cluster-paired contrast D_model - D_profile on the same pairs, on T_match and on T_balanced",
+      "reason": "This is the quantity that answers whether a model orders a matched pair better than the residual profile does, and it was not derivable from what was already reported. It needs no new scoring."
+    },
+    "addition_3_position_control": {
+      "endpoint": "direction accuracy of declared position-only rules on the same pairs, plus a tier additionally matched on relative position",
+      "rules": "(a) prefer the member whose substituted site is nearer a sequence terminus; (b) prefer the member whose site has the larger relative distance from the sequence midpoint. Both read only the position and the length, never the phenotype, the profile or a model.",
+      "reason": "The two members of a pair differ only in which site was substituted, so any systematic dependence of likelihood on position becomes a directional vote. Terminal regions are both more tolerant and differently contexted for an autoregressive model, so a position-only prior could reproduce an accuracy near 0.6 without any mechanistic knowledge. This control decides whether the surviving signal is mechanistic or positional, and it is the strongest alternative explanation of the retained E21 result.",
+      "reading": "If a position-only rule matches the protein arms' accuracy, the retained signal is a positional prior and must be described as one. If the arms exceed it, that margin is the defensible measure of non-positional directional ability."
+    },
+    "power_statement_not_a_result": {
+      "observation": "At 190 matched pairs over 73 clusters the narrowest 95% interval across arms is 0.119 wide against a bounded-negative band 0.100 wide, so the bounded-negative verdict is arithmetically unreachable on S1 T_match. Every non-supported arm there is necessarily unresolved and none may be read as a bounded negative or as absence of an effect.",
+      "requirement": "Certifying the declared 0.05 margin needs roughly 400 to 500 matched pairs at this cluster structure.",
+      "status": "This is a statement about resolution, declared here so it cannot later be mistaken for a finding. The margin itself is not moved."
+    },
+    "what_this_amendment_may_not_do": "It moves no threshold already fixed, changes no primary endpoint, does not alter the 0.05 margin or the decision rule, and does not retract or restate any number already computed. The three additions are new readings on the same declared cohort."
   }
 }
