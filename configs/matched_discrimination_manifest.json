@@ -205,5 +205,29 @@
       "This axis carries its own declared multiplicity and does not enter the primary endpoint's family."
     ],
     "what_this_amendment_may_not_do": "It moves no threshold, changes no tier definition, and does not alter the primary endpoint, the 0.05 margin, the decision rule or the arm list."
+  },
+  "interpretation_bounds": {
+    "declared_on": "2026-11-02",
+    "declared_before": "the expanded support's balanced tiers were read",
+    "status": "scope statements that bind how every number from this experiment may be read. They add no endpoint and change no threshold.",
+    "adversarial_by_construction": {
+      "statement": "Requiring a phenotype gap of at least one within-assay standard deviation while matching the profile difference to near zero selects, by construction, the subset of pairs on which the independent-site profile cannot discriminate but the measured phenotype plainly does. The sign-balanced tiers go further and cancel the confound's vote exactly.",
+      "consequence": "Direction accuracy on T_match, T_balanced, T_position_balanced and T_double_balanced is accuracy on a subset chosen to be uninformative to the matched confound. It is NOT an estimate of how well a model orders a randomly drawn pair of variants, and it must never be quoted as a general mutation-ranking accuracy or compared with one.",
+      "why_this_is_the_right_instrument": "The question asked is whether a model knows anything beyond site-wise conservation and sequence position. Selecting the pairs where those cues fail is what makes the question answerable. The same selection makes the cohort harder than a random one, so these accuracies are expected to sit below a model's accuracy on unselected pairs, and that difference is a property of the cohort rather than a deficiency of the model.",
+      "required_in_reporting": "Any sentence quoting one of these accuracies states the tier and that the tier is matched or balanced on the named confound."
+    },
+    "balance_is_marginal_not_conditional": {
+      "statement": "A sign-balanced tier equalises a confound's directional vote over the whole tier, not inside every cluster, assay or subgroup.",
+      "consequence": "A confound can still carry signal within a subgroup of a balanced tier, so a resolved arm on a balanced tier is not proof that the confound is inert for that arm everywhere. Cluster-level balance was not imposed and is not claimed."
+    },
+    "units": {
+      "endpoint_unit": "the pair",
+      "inference_unit": "the wild-type family cluster",
+      "consequence": "Direction accuracy is a per-pair quantity and is not a per-variant accuracy, a per-assay accuracy, or a probability that a model ranks a whole assay correctly."
+    },
+    "measurement_floor": {
+      "statement": "The ProteinGym export carries no replicates or uncertainty, so a one-standard-deviation gap is an observed gap.",
+      "consequence": "Some fraction of every tier's pairs may be ordered by measurement noise rather than by biology, which bounds the attainable accuracy below 1.0 by an amount this cohort cannot estimate. An arm short of 1.0 is therefore not necessarily short of the biological ceiling."
+    }
   }
 }
