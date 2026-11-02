@@ -204,7 +204,14 @@
       "Parameter count is not the only thing that varies across a release ladder.",
       "This axis carries its own declared multiplicity and does not enter the primary endpoint's family."
     ],
-    "what_this_amendment_may_not_do": "It moves no threshold, changes no tier definition, and does not alter the primary endpoint, the 0.05 margin, the decision rule or the arm list."
+    "what_this_amendment_may_not_do": "It moves no threshold, changes no tier definition, and does not alter the primary endpoint, the 0.05 margin, the decision rule or the arm list.",
+    "correction": {
+      "declared_on": "2026-11-02",
+      "defect": "The statistic was written as a Spearman over 'five ProGen2 sizes', but the declared arm list for the expanded support carries four (small, medium, large, xlarge), and this amendment states it may not alter that list. The fifth checkpoint on disk, progen2-base, is not a declared arm and the repository records its training mixture as unidentified.",
+      "resolution": "Four sizes govern. The executing analysis used the four declared arms and recorded the discrepancy rather than quietly adding a checkpoint, which was correct.",
+      "consequence": "With four points the rank coefficient takes only eleven distinct values, so its interval is coarse and the largest-minus-smallest contrast is the better-resolved reading of the same axis. Any report of the coefficient must carry that limit.",
+      "additional_caveat_carried": "The repository's own caveat for progen2-large and progen2-xlarge reads 'staged non-member; 1024 budget imposed; no scale/window contrast'. The capacity reading must carry that verbatim. In this cohort the budget clips nothing, since the longest wild type is 934 residues, but the non-membership caveat stands on its own terms and bounds how far a capacity interpretation may be taken."
+    }
   },
   "interpretation_bounds": {
     "declared_on": "2026-11-02",
