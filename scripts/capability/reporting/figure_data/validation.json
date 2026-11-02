@@ -1,49 +1,61 @@
 {
-  "date": "2026-10-16T03:31:19.136677+00:00",
+  "date": "2026-11-02T19:07:45.644901+00:00",
   "journal": "Nature Computational Science",
   "article_type": "Analysis",
-  "status": "format_and_provenance_checks_qualified_pass",
-  "not_certified_scope": [
-    "Original supplied-raster text is not editable or font-certified; original colors are not recolored. Preview DPI is not native artwork DPI."
-  ],
-  "warnings": [
-    "Supplied raster: native [1536, 1024] at 298.41 DPI; burned-in text not certified; 450-DPI preview does not raise native resolution."
-  ],
-  "main_word_count": 3500,
-  "abstract_word_count": 150,
+  "status": "fail",
+  "not_certified_scope": [],
+  "warnings": [],
+  "main_word_count": 3363,
+  "abstract_word_count": 149,
   "count_convention": "Whitespace-separated prose after removing display environments, section headings and citation/reference commands; excludes abstract, Methods, references and legends. Hyphenated tokens count once; tildes and inline-math delimiters are normalized.",
-  "main_figures": 6,
-  "main_tables": 0,
+  "main_figures": 5,
+  "main_tables": 1,
   "main_display_count": 6,
-  "supplementary_figures": 4,
+  "supplementary_figures": 5,
   "subsections_by_section": {
-    "Results": 7,
-    "Discussion": 0,
-    "Limitations": 0,
-    "Methods": 10
+    "Results": 6,
+    "Discussion": 1,
+    "Methods": 11
   },
-  "references": 37,
-  "maximum_main_legend_words": 226,
+  "references": 32,
+  "maximum_main_legend_words": 127,
   "pdfs": {
     "main": {
-      "pages": 25,
-      "sha256": "7a3776beaaedef255033888fcd4a15c397c95db5ff9e9f484cb845f7376a86f6",
+      "pages": 27,
+      "sha256": "947a513c7b22991560c6db4f732558b2489ab2f03e114f913bef29d4c5fbcf34",
       "footer_faults": []
     },
     "supplementary-information": {
-      "pages": 17,
-      "sha256": "f52e866c4bd726e3fa2db07748fc28600f144a95da7e3664b495b271db61dd56",
+      "pages": 24,
+      "sha256": "505e5b6e2ca9581d492fcae03b6c9e640a25db20a7abb997ac18df6890c4d47e",
       "footer_faults": []
     }
   },
-  "failures": [],
+  "failures": [
+    "Missing or changed renderer_sha256 input: scripts/capability/reporting/render_figures.py",
+    "Missing or changed renderer_sha256 input: scripts/capability/reporting/checkpoint_labels.py",
+    "Missing or changed auxiliary_outputs_sha256 input: manuscript/submission/checkpoint-name-key.tex",
+    "Missing or changed rendered pdf: Fig1_framework",
+    "Invalid render receipt scripts/capability/reporting/figure_data/main/framework_validation.json: PDF must retain the single native-resolution artwork raster",
+    "Render receipt contains figures not included in the manuscript",
+    "No current render receipt for figure: figures/figure-1-framework.pdf",
+    "No current render receipt for figure: figures/figure-2-mutation-components.pdf",
+    "No current render receipt for figure: figures/figure-3-phenotypes-and-interactions.pdf",
+    "No current render receipt for figure: figures/figure-4-context-and-generation.pdf",
+    "No current render receipt for figure: figures/figure-5-guidance-selection.pdf",
+    "No current render receipt for figure: figures/supplementary-figure-1-mutation-diagnostics.pdf",
+    "No current render receipt for figure: figures/supplementary-figure-2-position.pdf",
+    "No current render receipt for figure: figures/supplementary-figure-3-conditional-class-yield.pdf",
+    "No current render receipt for figure: figures/supplementary-figure-4-generation-yield.pdf",
+    "No current render receipt for figure: figures/supplementary-figure-5-matched-generators.pdf"
+  ],
   "files_sha256": {
-    "main.tex": "c7cbfc0db0b03e5d4e7e1ee7240eaf3390df635c892b4f85088a447b15da3f4a",
-    "supplementary-information.tex": "695c69abbe6a43738bbcb465bf896c8af83e84db07fddd5abb6fe41de31f46cd",
-    "references.bib": "559e3e7c365dcb01f5f01c2bdebea8de56b40d4ecdc9779463cf498679d377fb",
+    "main.tex": "b5debbda01dc8f6aa0100ce61754263b157cdee607533565e2e148fece54bbc8",
+    "supplementary-information.tex": "6432fa706e4d70b8ed331e72b867afde979781f9e5c91cf586390cc404089ff3",
+    "references.bib": "d0632ab99709ff74c782597f2fd5aeb7bac0439690ed6385dec44d90a5ceada4",
     "sn-jnl.cls": "36d0c3273a59d48dc6a9c7b080dfa1ec50dc10229d8751568d1f2e490ffa5ecc",
     "sn-nature.bst": "638d68f5b0e92ffb25d64d29c7334e1bac6bbf54574b602bc633af8d96e1fd9b",
-    "validate_manuscript.py": "72280685fbd9dfa551e1bacaa77a895d39d75c5bc054cc03ded82b0259b0946b"
+    "validate_manuscript.py": "7224625f2f014a6d58f781c929432bf284885394f8189a1ded4571a807d8c70f"
   },
   "source_tables_sha256": {
     "capability-map-source.csv": "5a349f70229b04618cb91bc638d8c71f145ddb0967e3235e437386306d236b67",

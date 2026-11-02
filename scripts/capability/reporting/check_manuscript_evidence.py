@@ -55,8 +55,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.capability.core.evidence_ledger import EVIDENCE_DIR, REPO_ROOT, load_table  # noqa: E402
 from scripts.capability.reporting import publication_paths  # noqa: E402
+from scripts.capability.reporting.validate_manuscript import locate, read_document_mapped  # noqa: E402
 
 MANUSCRIPT = REPO_ROOT / publication_paths.SUBMISSION
+#: The two documents, each read as LaTeX assembles it from its local inputs.
 SOURCES = ("main.tex", "supplementary-information.tex")
 
 #: LaTeX constructs whose numbers are markup rather than evidence. Each is
@@ -75,7 +77,21 @@ NON_EVIDENCE_PATTERNS = (
     r"\\arraybackslash",
     r"[.\d]+\\(?:textwidth|linewidth|columnwidth|tabcolsep)",
     r"p\{[.\d]*\\?[A-Za-z]*\}",
+    # A whisker or fence convention: the multiplier of the interquartile range
+    # a box plot's whiskers reach. It states how the figure is drawn, so it is
+    # a legend convention rather than a measurement.
+    r"(?:(?<=within )|(?<=beyond )|(?<=outside )|(?<=to ))"
+    r"\d+(?:\.\d+)?(?=\s*(?:interquartile ranges?|IQRs?)\b)",
 )
+
+#: A minus sign as typeset: the text macro, an empty math minus and the Unicode
+#: minus. Each is a sign only where a digit follows, because ``Profile $-$
+#: unguided`` is the operator of a difference and not the sign of a number.
+TYPESET_MINUS = r"(?:\\textminus\b\s*(?:\{\})?|\$-\$|\\\(-\\\)|\u2212)\s*(?=\d)"
+#: Spacing between a number and the interval or bound that follows it. It is
+#: read as a space only where it separates numeric material, so a unit written
+#: ``kcal\,mol`` keeps the spelling the unit table looks for.
+NUMERIC_SPACING = r"(?<=[\d$,}])(?:(?:\\[;:,!]|\\ |~|\\q?quad)\s*)+(?=[\[(\$\-+\d])"
 
 #: How the manuscript may name each unit. A quantity whose unit is not
 #: dimensionless has to be quoted where one of these appears.
@@ -176,11 +192,23 @@ _BOUND = r"\$?\s*([-+]?[\d.,]+)\s*\$?\s*"
 #: two bounds 0.011 and 6. Only the declared 95\% level is read: an interval
 #: quoted at another level is not the convention the manuscript states, and the
 #: checker reporting the estimate as bare is the right way for that to surface.
+#: Words that say which kind of interval a parenthesised one is. They may stand
+#: either side of the coverage level, as in ``marginal 95\% BCa CI``, and are
+#: recorded rather than skipped: which convention an interval uses is evidence.
+_QUALIFIER = (r"(?:marginal|simultaneous|pointwise|BCa|"
+              r"bias-corrected(?:\s+and)?\s+accelerated)")
 INTERVAL = re.compile(
     r"\[\s*" + _BOUND + r",\s*" + _BOUND + r"\]"
     r"|"
-    r"\(\s*95\s*\\%\s*CI\s*,\s*" + _BOUND + r"(?:[–—-]\s*|(?<=\s))" + _BOUND + r"\)"
+    r"\(\s*(?:" + _QUALIFIER + r"\s+)*95\s*\\%\s*(?:" + _QUALIFIER + r"\s+)*CI\s*,\s*"
+    + _BOUND + r"(?:[–—-]\s*|\bto\s+|(?<=\s))" + _BOUND + r"(?:;[^()\[\]]*)?\)"
 )
+
+
+def interval_qualifiers(match: re.Match) -> list[str]:
+    """The convention words an interval names before its coverage label."""
+    head = match.group(0).split(",", 1)[0]
+    return [re.sub(r"\s+", " ", word) for word in re.findall(_QUALIFIER, head)]
 #: The dash a numeric range keeps once ``strip_markup`` has run. Every other
 #: dash is blanked, because an em or en dash elsewhere is punctuation and a
 #: hyphen before a digit would read as a sign; a dash *between two digits* is
@@ -252,24 +280,54 @@ def _fixed(value: float | Decimal) -> str:
     return text + "0" if text.endswith(".") else text
 
 
-def strip_markup(text: str) -> str:
-    body = text.split(r"\begin{document}", 1)[-1]
+def _rewrite(text: str, origin: list[int], pattern: str, replacement) -> tuple[str, list[int]]:
+    """``re.sub`` that also carries, for each output character, the input offset
+    it stands for; a replacement stands for where the match began."""
+    pieces: list[str] = []
+    carried: list[int] = []
+    last = 0
+    for match in re.finditer(pattern, text):
+        pieces.append(text[last:match.start()])
+        carried += origin[last:match.start()]
+        rendered = replacement(match) if callable(replacement) else replacement
+        pieces.append(rendered)
+        carried += [origin[match.start()]] * len(rendered)
+        last = match.end()
+    pieces.append(text[last:])
+    carried += origin[last:]
+    return "".join(pieces), carried
+
+
+def strip_markup_mapped(text: str) -> tuple[str, list[int]]:
+    """:func:`strip_markup` and, for each character of its result, the offset in
+    ``text`` the character was read from."""
+    marker = text.find(r"\begin{document}")
+    start = marker + len(r"\begin{document}") if marker >= 0 else 0
+    body, origin = text[start:], list(range(start, len(text)))
     for pattern in NON_EVIDENCE_PATTERNS:
-        body = re.sub(pattern, " ", body)
+        body, origin = _rewrite(body, origin, pattern, " ")
     # An em or en dash is punctuation, not a sign: "163--174" states two counts
     # and "strata---19 native" one. Blanking them keeps every offset. A dash
     # joining two digits is kept as one en dash, because it is what makes the
     # two numbers a range rather than two estimates; the trailing space keeps
     # every offset and keeps the dash out of the second number's sign.
-    body = body.replace("---", "   ")
-    body = re.sub(r"(?<=\d)--(?=\d)", RANGE_DASH + " ", body)
-    body = body.replace("--", "  ")
+    body, origin = _rewrite(body, origin, TYPESET_MINUS, "-")
+    body, origin = _rewrite(body, origin, NUMERIC_SPACING, " ")
+    body, origin = _rewrite(body, origin, "---", "   ")
+    body, origin = _rewrite(body, origin, r"(?<=\d)--(?=\d)", RANGE_DASH + " ")
+    body, origin = _rewrite(body, origin, "--", "  ")
     # A scientific form is one number. Rendering it in exponent notation would
     # re-tokenize as its mantissa, which reported 1.11 and 2.8 as numbers the
     # manuscript never wrote; a fixed-point rendering keeps it whole.
-    body = SCIENTIFIC.sub(lambda m: " " + _fixed(Decimal(m.group(1)) * Decimal(10) ** int(m.group(2))) + " ", body)
-    body = BARE_POWER.sub(lambda m: " " + _fixed(Decimal(10) ** int(m.group(1))) + " ", body)
-    return body
+    body, origin = _rewrite(body, origin, SCIENTIFIC.pattern,
+                            lambda m: " " + _fixed(Decimal(m.group(1)) * Decimal(10) ** int(m.group(2))) + " ")
+    body, origin = _rewrite(body, origin, BARE_POWER.pattern,
+                            lambda m: " " + _fixed(Decimal(10) ** int(m.group(1))) + " ")
+    return body, origin
+
+
+def strip_markup(text: str) -> str:
+    return strip_markup_mapped(text)[0]
 
 
 def _braced(body: str, start: int) -> tuple[str, int]:
@@ -614,13 +672,20 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
     unmatched_bounds: list[dict] = []
     verified_ranges: list[dict] = []
     unverified_ranges: list[dict] = []
+    interval_records: list[dict] = []
     traced = 0
     untraced: list[dict] = []
     accepted = set(policy.get("untraced_accepted", []))
 
     sections: dict[str, int] = {}
-    texts = {name: (manuscript / name).read_text()
-             for name in SOURCES if (manuscript / name).is_file()}
+    # Each document as LaTeX assembles it, so a number is read wherever the
+    # manuscript's own inputs put it and is attributed to the file it is in.
+    texts: dict[str, str] = {}
+    segments: dict[str, list] = {}
+    for name in SOURCES:
+        if (manuscript / name).is_file():
+            texts[name], _, segments[name] = read_document_mapped(
+                (manuscript / name).read_text(), manuscript, source=(manuscript / name).resolve())
     if not texts:
         raise FileNotFoundError(f"no manuscript source found under {manuscript}")
     if not interval_convention_present(policy, list(texts.values())):
@@ -636,12 +701,34 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
     # An exception's anchor is live when it is in any source, not in each.
     anchors_live(policy, "\n".join(texts.values()), findings)
     for name, text in texts.items():
-        body = strip_markup(text)
+        body, origin = strip_markup_mapped(text)
         for kind, scope, block in scopes(body):
+            hint = body.find(scope.strip()[:60])
+
+            def where(offset: int = 0, token_length: int = 1, scope: str = scope, hint: int = hint,
+                      name: str = name, text: str = text, body: str = body, origin: list = origin) -> dict:
+                """The file and line of the character at ``offset`` in ``scope``.
+
+                A scope is usually one stretch of the body, but a table row is
+                joined to its interval row, so the character is found by the
+                few characters that follow it, searching on from where the
+                scope begins.
+                """
+                for length in range(20, token_length - 1, -1):
+                    position = body.find(scope[offset:offset + length], max(hint, 0))
+                    if position >= 0:
+                        file, line = locate(text, segments[name], origin[position])
+                        return {"file": file.relative_to(manuscript.resolve()).as_posix(), "line": line}
+                raise ValueError(f"cannot place {scope[offset:offset + 20]!r} in {name}")
+
             intervals = [interval_extent(match) for match in INTERVAL.finditer(scope)]
             scope_words = _words(scope)
+            for interval in INTERVAL.finditer(scope):
+                interval_records.append({"source": name, **where(interval.start(), 1),
+                                         "interval": interval.group(0),
+                                         "qualifiers": interval_qualifiers(interval)})
             numeric_scope = NAME.sub(lambda m: " " * len(m.group(0)), scope)
-            matched: list[tuple[str, list[dict], bool, bool]] = []
+            matched: list[tuple[str, list[dict], bool, bool, int]] = []
             # Each quoted range, matched as a pair against the recorded spans.
             # Where it matches, the endpoint is attributed to that span's own
             # bound rather than to whatever else shares the number; where it
@@ -655,7 +742,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 low, high = (group.rstrip(",") for group in quoted.groups())
                 spans = index.span_candidates(low, high)
                 record = {"source": name, "scope_kind": kind, "range": f"{low}{RANGE_DASH}{high}",
-                          "context": scope.strip()[:200]}
+                          "context": scope.strip()[:200], **where(quoted.start(1))}
                 range_extents.append((quoted.start(1), quoted.end(2)))
                 if spans:
                     record["spans"] = sorted(prefix for prefix, _, _ in spans)[:4]
@@ -706,8 +793,10 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                             traced += 1
                             findings.append({
                                 "check": "point_interval_mismatch", "source": name,
+                                **where(match.start(), len(token)),
                                 "scope_kind": kind, "token": token,
                                 "interval": paired.group(0),
+                                "interval_qualifiers": interval_qualifiers(paired),
                                 "detail": "the ordered pair of quoted bounds matches no interval "
                                           "for this point at the bounds' stated precision, in "
                                           "either orientation",
@@ -729,7 +818,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                         # estimate, and reporting it as an untraced number of
                         # its own invites a correction to a sentence that is
                         # written correctly. It is recorded as what it is.
-                        unmatched_bounds.append({"source": name, "scope_kind": kind, "token": token,
+                        unmatched_bounds.append({"source": name, **where(match.start(), len(token)),
+                                                 "scope_kind": kind, "token": token,
                                                  "context": scope.strip()[:180]})
                         continue
                     if token not in accepted:
@@ -740,19 +830,21 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                             half = "main_declarative"
                         else:
                             half = "main_claim_bearing"
-                        untraced.append({"source": name, "scope_kind": kind, "token": token,
+                        untraced.append({"source": name, **where(match.start(), len(token)),
+                                         "scope_kind": kind, "token": token,
                                          "half": half, "context": scope.strip()[:220]})
                     continue
                 traced += 1
                 if not strong and len({entry["family"] for entry in candidates}) > 1:
-                    weak.append({"source": name, "scope_kind": kind, "token": token,
+                    weak.append({"source": name, **where(match.start(), len(token)),
+                                 "scope_kind": kind, "token": token,
                                  "families": sorted({entry["family"] for entry in candidates}),
                                  "entries": sorted({entry["id"] for entry in candidates})[:6],
                                  "context": scope.strip()[:180]})
                     continue
-                matched.append((token, candidates, endpoint, strong))
+                matched.append((token, candidates, endpoint, strong, match.start()))
 
-            for token, candidates, endpoint, strong in matched:
+            for token, candidates, endpoint, strong, offset in matched:
                 if endpoint:
                     continue
                 families = {entry["family"] for entry in candidates}
@@ -761,7 +853,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     # so no condition can be checked against it. That is worth
                     # reporting --- a number the table cannot attribute is a
                     # number a reader cannot check --- but it is not a refusal.
-                    ambiguous.append({"source": name, "scope_kind": kind, "token": token,
+                    ambiguous.append({"source": name, **where(offset, len(token)),
+                                      "scope_kind": kind, "token": token,
                                       "families": sorted(families),
                                       "entries": sorted({entry["id"] for entry in candidates})[:6],
                                       "context": scope.strip()[:180]})
@@ -775,7 +868,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 if parse(token)[1] >= SPECIFIC_DECIMALS and agrees(candidates, "unit") and \
                         all(not unit_named(entry["unit"], block if kind == "table row" else scope) for entry in candidates):
                     findings.append({
-                        "check": "unit_not_named", "source": name, "scope_kind": kind, "token": token,
+                        "check": "unit_not_named", "source": name, **where(offset, len(token)),
+                        "scope_kind": kind, "token": token,
                         "units": sorted({entry["unit"] for entry in candidates}),
                         "entries": sorted({entry["id"] for entry in candidates})[:4],
                         "context": scope.strip()[:220],
@@ -786,7 +880,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 if with_interval and len(with_interval) == len(candidates) and not intervals \
                         and not exempt(policy, "bare_estimate_exceptions", scope):
                     findings.append({
-                        "check": "bare_point_estimate", "source": name, "scope_kind": kind,
+                        "check": "bare_point_estimate", "source": name, **where(offset, len(token)),
+                        "scope_kind": kind,
                         "token": token, "entries": sorted({entry["id"] for entry in with_interval})[:4],
                         "detail": "the table carries an interval for this estimate and the manuscript "
                                   "quotes it without one",
@@ -799,6 +894,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     if not entry["resampling_unit"]:
                         findings.append({
                             "check": "interval_without_resampling_unit", "source": name,
+                            **where(offset, len(token)),
                             "token": token, "entry": entry["id"], "context": scope.strip()[:220],
                         })
 
@@ -812,6 +908,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     if not named:
                         findings.append({
                             "check": "effective_count_without_convention", "source": name,
+                            **where(offset, len(token)),
                             "scope_kind": kind, "token": token,
                             "entries": sorted({entry["id"] for entry in effective})[:4],
                             "detail": "an effective (Kish) count computed under a weighting the "
@@ -831,7 +928,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                         and not exempt(policy, "provisional_exceptions", scope):
                     if not any(marker in block.lower() for marker in PROVISIONAL_MARKERS):
                         findings.append({
-                            "check": "provisional_not_marked", "source": name, "scope_kind": kind,
+                            "check": "provisional_not_marked", "source": name, **where(offset, len(token)),
+                            "scope_kind": kind,
                             "token": token,
                             "entries": sorted({entry["id"] for entry in provisional})[:4],
                             "context": scope.strip()[:220],
@@ -840,7 +938,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
             # one support per comparison: refuse only when no assignment of the
             # scope's estimates to candidate entries keeps them on one support
             estimate_tokens = [(token, [entry for entry in candidates if entry["kind"] == "estimate"])
-                               for token, candidates, endpoint, _ in matched
+                               for token, candidates, endpoint, *_ in matched
                                if not endpoint and agrees(candidates, "support_id")]
             estimate_tokens = [(token, entries) for token, entries in estimate_tokens if entries]
             # one unit per comparison: two supports now carry different
@@ -848,7 +946,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
             # difference between them is not a quantity at all.
             unit_tokens = [(token, [entry for entry in candidates
                                     if entry["unit"] in MEASURED_SCALES])
-                           for token, candidates, endpoint, _ in matched if not endpoint]
+                           for token, candidates, endpoint, *_ in matched if not endpoint]
             unit_tokens = [(token, entries) for token, entries in unit_tokens if entries]
             if len(unit_tokens) > 1 and not exempt(policy, "cross_unit_exceptions", scope):
                 shared_units = None
@@ -857,7 +955,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     shared_units = units if shared_units is None else (shared_units & units)
                 if not shared_units:
                     findings.append({
-                        "check": "cross_unit_comparison", "source": name, "scope_kind": kind,
+                        "check": "cross_unit_comparison", "source": name, **where(), "scope_kind": kind,
                         "tokens": [token for token, _ in unit_tokens],
                         "units": sorted({entry["unit"] for _, entries in unit_tokens
                                          for entry in entries}),
@@ -875,7 +973,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 if not shared and not supports_named(
                         [supports[key] for key in involved if key in supports], scope_words):
                     findings.append({
-                        "check": "cross_support_comparison", "source": name, "scope_kind": kind,
+                        "check": "cross_support_comparison", "source": name, **where(), "scope_kind": kind,
                         "tokens": [token for token, _ in estimate_tokens],
                         "supports": sorted({entry["support_id"]
                                             for _, entries in estimate_tokens for entry in entries}),
@@ -912,6 +1010,8 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
         "ranges_matching_no_recorded_span": len(unverified_ranges),
         "verified_ranges": verified_ranges,
         "ranges_without_a_recorded_span": unverified_ranges,
+        "intervals": interval_records,
+        "intervals_by_qualifier": _qualifier_tally(interval_records),
         "ambiguous_matches": ambiguous,
         "weak_attributions": weak,
         "findings_by_check": _tally(findings),
@@ -920,6 +1020,14 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
     }
     (directory / "consistency-report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
+
+
+def _qualifier_tally(records: list[dict]) -> dict[str, int]:
+    tally: dict[str, int] = {}
+    for record in records:
+        key = " ".join(record["qualifiers"]) or "unqualified"
+        tally[key] = tally.get(key, 0) + 1
+    return dict(sorted(tally.items()))
 
 
 def _tally(findings: list[dict]) -> dict[str, int]:

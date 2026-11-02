@@ -1,9 +1,18 @@
-"""Local input files participate in reference and freshness checks."""
+"""Local input files participate in reference and freshness checks.
+
+A modular manuscript keeps its structure in the files its root file inputs, so
+every structure check has to read the assembled document. A root file holding
+nothing but inputs otherwise presents no front matter, no sections and no
+figures, and each check passes on an empty document instead of failing.
+"""
 import pytest
 
 from scripts.capability.reporting.validate_manuscript import (
     arguments,
+    float_environments,
     float_placement_faults,
+    headings,
+    read_document,
     tex_inputs,
     without_comments,
     words,
@@ -57,6 +66,49 @@ def test_invalid_input_refuses_instead_of_being_ignored(tmp_path):
         tex_inputs(r'\input{cycle}', tmp_path)
     with pytest.raises(ValueError, match='Nonlocal'):
         tex_inputs(r'\input{../outside}', tmp_path)
+
+
+def test_a_modular_document_is_assembled_where_its_inputs_stand(tmp_path):
+    (tmp_path / 'frontmatter.tex').write_text('\\abstract{Two words}\n\\maketitle\n')
+    (tmp_path / 'results.tex').write_text(
+        '\\section{Results}\n\\subsection{One}\nFive counted body words here.\n')
+    (tmp_path / 'methods.tex').write_text('\\section{Methods}\n\\subsection{How}\n')
+    root = ('\\begin{document}\n\\input{frontmatter}\n\\input{results}\n'
+            '% \\input{dropped}\n\\input{methods}\n')
+    assembled, dependencies = read_document(root, tmp_path)
+
+    # The root file alone carries no structure at all; the assembled document
+    # carries it in reading order, and a commented-out input is not read.
+    assert arguments(root, 'abstract') == [] and arguments(root, 'section') == []
+    assert arguments(assembled, 'abstract') == ['Two words']
+    assert [section for section, _ in headings(assembled)] == ['Results', 'Methods']
+    assert dict(headings(assembled)) == {'Results': ['One'], 'Methods': ['How']}
+    assert [path.name for path, _ in dependencies] == ['frontmatter.tex', 'results.tex',
+                                                       'methods.tex']
+    assert [path.name for path, _ in tex_inputs(root, tmp_path)] == \
+        [path.name for path, _ in dependencies]
+    # The front-matter boundary and the end of the counted body are both there
+    # to be found, which is what the word count is measured between.
+    front, titled, remainder = assembled.partition('\\maketitle')
+    assert titled and arguments(front, 'abstract') == ['Two words']
+    assert words(remainder.partition('\\section{Methods}')[0]) == 5
+
+
+def test_a_local_float_wrapper_is_a_float(tmp_path):
+    (tmp_path / 'preamble.tex').write_text(
+        '\\newenvironment{widefigurepage}{%\n  \\begin{figure}[!htbp]\n  \\centering\n'
+        '}{%\n  \\end{figure}\n}\n'
+        '\\newenvironment{sidenote}{\\begin{quote}}{\\end{quote}}\n')
+    assembled, _ = read_document('\\input{preamble}', tmp_path)
+
+    # A wrapper that opens a figure is a figure; one that opens anything else is
+    # not, or every environment would be excluded from the counted body.
+    assert float_environments(assembled) == {'figure', 'figure*', 'table', 'table*',
+                                             'widefigurepage'}
+    assert 'sidenote' not in float_environments(assembled)
+    # Its fixed placement is still what the float checker reads, through the
+    # definition rather than through each use.
+    assert float_placement_faults(assembled) == []
 
 
 def test_a_comment_is_not_body_text():

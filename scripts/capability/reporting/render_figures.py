@@ -775,7 +775,7 @@ def main_figures():
              'Upper block: sealed-eight confirmatory; lower: ProGen3 rungs, bf16/fp16 precision.\n'
              f'Dashed in a: the declared {margin:g} TM margin as a reference scale, with no verdict against it.\n'
              'Dashed in c: the oracle ceiling, a diagnostic reference and not a usable selector.\n'
-             'Filled points exclude zero; 95% BCa over eight domains, realised coverage near 0.89.\n'
+             'Filled points exclude zero; marginal 95% BCa over eight domains; coverage not calibrated.\n'
              f'{len(floor)} ProGen3 dose cells fell below the declared noise floor; the figure data flags them.',
              linespacing=1.4)
     save(fig, 'Fig6_guidance_and_selection',
@@ -783,8 +783,8 @@ def main_figures():
           contrasts[contrasts.endpoint == NOVELTY_RATE].assign(panel='b'),
           headroom.assign(panel='c'), floor.assign(panel='declared-context')],
          'eight sealed evaluation domains; the domain is the independence unit',
-         '95% BCa over domains, 9999 resamples; realised coverage near 0.89 at eight units, so bounds '
-         'read optimistic; unestimable cells carry no interval')
+         'Marginal 95% BCa intervals; 9,999 resamples of eight domains; coverage not calibrated; '
+         'unestimable cells carry no interval')
 
 
 def supplementary_figures():

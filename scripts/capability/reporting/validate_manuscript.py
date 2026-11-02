@@ -5,6 +5,7 @@ This checks format/provenance, not scientific completeness or author approval.
 """
 from pathlib import Path
 import argparse
+from bisect import bisect_right
 import csv
 import hashlib
 import json
@@ -34,7 +35,19 @@ MAIN_ART = HERE / "figure_data" / "main"
 # matrix and the nine frozen strata, sit there and are recorded in the log.
 TOUCH_TOLERANCE = 0.25
 FONT_TOLERANCE = 0.1
-EXPECTED_SECTIONS = ["Results", "Discussion", "Limitations", "Methods"]
+
+# The declared inventory of the assembled main document: the journal's headed
+# Analysis sections in order after an unheaded introduction, the Results roster,
+# and the display counts. These are literals on purpose and are pinned in both
+# directions, because the one new silent-failure mode of a modular manuscript is
+# a dropped \input: the build still succeeds and the section, its results and
+# their figure simply leave the PDF. Restructuring the document means restating
+# the inventory here, and the failures say what was found against what.
+EXPECTED_SECTIONS = ["Results", "Discussion", "Methods"]
+EXPECTED_RESULT_SUBSECTIONS = 6
+DISCUSSION_SUBSECTIONS = ["Limitations"]
+EXPECTED_MAIN_FIGURES = 5
+EXPECTED_SUPPLEMENTARY_FIGURES = 5
 
 # The text block of sn-jnl with the sn-nature option, in PDF points. Artwork is
 # scaled to these at insertion, so the type a reader sees is the type in the
@@ -134,20 +147,22 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def braced_argument(text, position, label="LaTeX"):
+    """The brace-balanced argument beginning at ``position``, just after its ``{``."""
+    depth, begin = 1, position
+    while depth and position < len(text):
+        char = text[position]
+        if char in "{}" and (position == 0 or text[position - 1] != "\\"):
+            depth += 1 if char == "{" else -1
+        position += 1
+    if depth:
+        raise ValueError(f"Unclosed {label} argument")
+    return text[begin:position - 1]
+
+
 def arguments(text, command):
-    values = []
-    for match in re.finditer(r"\\" + re.escape(command) + r"\{", text):
-        position, depth = match.end(), 1
-        begin = position
-        while depth and position < len(text):
-            char = text[position]
-            if char in "{}" and (position == 0 or text[position - 1] != "\\"):
-                depth += 1 if char == "{" else -1
-            position += 1
-        if depth:
-            raise ValueError(f"Unclosed {command} argument")
-        values.append(text[begin:position - 1])
-    return values
+    return [braced_argument(text, match.end(), command)
+            for match in re.finditer(r"\\" + re.escape(command) + r"\{", text)]
 
 
 def without_comments(text):
@@ -198,6 +213,24 @@ def placed_scale(options, source_width, source_height):
 
 def figures(text):
     return re.findall(r"\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}", text)
+
+
+def float_environments(text):
+    """Every float environment name the document uses, local wrappers included.
+
+    ``\\newenvironment{widefigurepage}{\\begin{figure}[!htbp]...}`` is a figure
+    to the page and to the word count alike, so an environment whose definition
+    opens a float counts as that float. Naming only the class's own environments
+    left a wrapped legend inside the counted body, which is the one thing the
+    count convention says it excludes.
+    """
+    names = {"figure", "figure*", "table", "table*"}
+    uncommented = without_comments(text)
+    for match in re.finditer(r"\\newenvironment\{([^}]+)\}\s*\{", uncommented):
+        definition = braced_argument(uncommented, match.end(), "newenvironment")
+        if re.match(r"\s*\\begin\{(?:figure\*?|table\*?)\}", definition):
+            names.add(match[1])
+    return names
 
 
 def repository_path(relative):
@@ -438,23 +471,75 @@ def pdf_footer_faults(content):
     return faults
 
 
-def tex_inputs(text, root, active=()):
-    """Read literal manuscript-local inputs, preserving repeated inclusions."""
-    dependencies = []
-    uncommented = without_comments(text)
-    for name in arguments(uncommented, 'input'):
-        path = root / name
-        if not path.suffix:
-            path = path.with_suffix('.tex')
-        path = path.resolve()
-        if not path.is_relative_to(root.resolve()):
-            raise ValueError(f'Nonlocal TeX input: {name}')
-        if path in active:
-            raise ValueError(f'Cyclic TeX input: {name}')
+def input_path(name, root, active):
+    """The manuscript-local file one \\input names, or a refusal."""
+    path = root / name
+    if not path.suffix:
+        path = path.with_suffix('.tex')
+    path = path.resolve()
+    if not path.is_relative_to(root.resolve()):
+        raise ValueError(f'Nonlocal TeX input: {name}')
+    if path in active:
+        raise ValueError(f'Cyclic TeX input: {name}')
+    return path
+
+
+def read_document_mapped(text, root, active=(), source=None):
+    """:func:`read_document`, plus where every stretch of the result came from.
+
+    The third value lists ``(start, file, line)`` for each stretch of the
+    assembled text taken from one file, ``line`` being that file's own line at
+    the stretch's start. Comment removal keeps every newline, so a line inside
+    a stretch is the stretch's first line plus the newlines since it began;
+    :func:`locate` reads it that way.
+    """
+    text = without_comments(text)
+    pieces, dependencies, segments = [], [], []
+    length = cursor = 0
+
+    def take(end):
+        nonlocal length, cursor
+        segments.append((length, source, 1 + text.count('\n', 0, cursor)))
+        pieces.append(text[cursor:end])
+        length += end - cursor
+
+    for match in re.finditer(r'\\input\{([^{}]*)\}', text):
+        take(match.start())
+        path = input_path(match[1], root, active)
         content = path.read_text()
         dependencies.append((path, content))
-        dependencies.extend(tex_inputs(content, root, (*active, path)))
-    return dependencies
+        expanded, nested, inner = read_document_mapped(content, root, (*active, path), path)
+        dependencies.extend(nested)
+        segments.extend((length + start, file, line) for start, file, line in inner)
+        pieces.append(expanded)
+        length += len(expanded)
+        cursor = match.end()
+    take(len(text))
+    return ''.join(pieces), dependencies, segments
+
+
+def read_document(text, root, active=()):
+    """The document as LaTeX reads it, and the local files it is assembled from.
+
+    Returned text has every manuscript-local \\input substituted where it stands
+    and every comment dropped, so the structure checks see the typeset document
+    rather than whichever file a fragment of it happens to live in. A modular
+    manuscript whose root file holds nothing but \\input lines otherwise
+    presents an empty body, no front-matter boundary and no sections at all.
+    """
+    return read_document_mapped(text, root, active)[:2]
+
+
+def locate(assembled, segments, position):
+    """The file and line an offset of the assembled text was written at."""
+    index = bisect_right([start for start, _, _ in segments], position) - 1
+    start, file, line = segments[index]
+    return file, line + assembled.count('\n', start, position)
+
+
+def tex_inputs(text, root, active=()):
+    """Read literal manuscript-local inputs, preserving repeated inclusions."""
+    return read_document(text, root, active)[1]
 
 
 def float_placement_faults(text):
@@ -468,17 +553,50 @@ def float_placement_faults(text):
     return faults
 
 
-def section_faults(sections, subsections):
+def headings(text):
+    """Numbered sections in reading order, each with its subsection titles.
+
+    Starred headings are the back matter's unnumbered declarations and are not
+    part of the document's structure, so they are left out as they always were.
+    """
+    ordered = []
+    for match in re.finditer(r'\\(section|subsection)\{', text):
+        title = braced_argument(text, match.end(), match[1])
+        if match[1] == 'section':
+            ordered.append((title, []))
+        elif not ordered:
+            raise ValueError(f'Subsection outside any section: {title}')
+        else:
+            ordered[-1][1].append(title)
+    return ordered
+
+
+def section_faults(structure):
+    """Structure faults of the assembled main document.
+
+    ``structure`` is :func:`headings` output: the headed sections in order, each
+    with its own subsection titles. Limitations is a heading inside Discussion
+    and the only one it carries, so the check reads the title rather than a
+    count --- a Discussion that grew a second subheading and lost Limitations
+    would otherwise pass.
+    """
     faults = []
+    sections = [title for title, _ in structure]
+    subsections = dict(structure)
+    if len(subsections) != len(structure):
+        faults.append(f'Repeated section heading: {sections}')
     if sections != EXPECTED_SECTIONS:
-        faults.append('Expected unheaded introduction, Results, Discussion, Limitations, Methods')
-    if subsections.get('Results') != 7:
-        faults.append('Results must contain the seven deliberate result titles')
-    if not subsections.get('Methods', 0):
+        faults.append('Expected an unheaded introduction then ' + ', '.join(EXPECTED_SECTIONS) +
+                      f'; found {sections}')
+    results = subsections.get('Results', [])
+    if len(results) != EXPECTED_RESULT_SUBSECTIONS:
+        faults.append(f'Results must contain the {EXPECTED_RESULT_SUBSECTIONS} deliberate result '
+                      f'titles; found {len(results)}')
+    if not subsections.get('Methods'):
         faults.append('Methods needs topical subheadings')
-    for section in ['Discussion', 'Limitations']:
-        if subsections.get(section, 0):
-            faults.append(f'{section} contains subheadings')
+    if subsections.get('Discussion', []) != DISCUSSION_SUBSECTIONS:
+        faults.append(f'Discussion must carry {DISCUSSION_SUBSECTIONS} as its subheadings; '
+                      f'found {subsections.get("Discussion", [])}')
     return faults
 
 
@@ -489,20 +607,20 @@ def validate(source_only=False):
         if not condition:
             failures.append(message)
 
-    main = (ROOT / "main.tex").read_text()
-    supp = (ROOT / "supplementary-information.tex").read_text()
     bib = (ROOT / "references.bib").read_text()
     bibkeys = re.findall(r"^@\w+\{([^,]+),", bib, re.M)
     require(len(bibkeys) == len(set(bibkeys)), "Duplicate bibliography keys")
     allkeys = set()
     included = {}
-    for name, text in [("main", main), ("supplement", supp)]:
+    assembled = {}
+    for name, root_file in [("main", "main.tex"), ("supplement", "supplementary-information.tex")]:
+        source = (ROOT / root_file).read_text()
         try:
-            included[name] = tex_inputs(text, ROOT)
+            assembled[name], included[name] = read_document(source, ROOT)
         except (OSError, ValueError) as exc:
             require(False, f'Invalid TeX inputs in {name}: {exc}')
-            included[name] = []
-        text += '\n' + '\n'.join(content for _, content in included[name])
+            assembled[name], included[name] = without_comments(source), []
+        text = assembled[name]
         failures.extend(f'{name}: {fault}' for fault in float_placement_faults(text))
         keys = {key.strip() for group in arguments(text, "cite") for key in group.split(",")}
         allkeys |= keys
@@ -511,12 +629,20 @@ def validate(source_only=False):
         require(set(arguments(text, "ref")) <= set(labels), f"Undefined local references in {name}")
         require(keys <= set(bibkeys), f"Missing bibliography entries in {name}: {sorted(keys-set(bibkeys))}")
     require(allkeys == set(bibkeys), "Uncited bibliography entries remain")
-    sections = arguments(main, "section")
-    body = main.split(r"\maketitle", 1)[1].split(r"\section{Methods}", 1)[0]
-    body = without_comments(body)
-    body = re.sub(r"\\begin\{(figure|table)\}.*?\\end\{\1\}", "", body, flags=re.S)
+    main, supp = assembled["main"], assembled["supplement"]
+
+    # Where the counted body begins and ends. Neither boundary is derivable from
+    # anything else, so a missing one is reported rather than defaulted: a silent
+    # fallback either counted nothing or counted Methods into the limit.
+    front_matter, titled, remainder = main.partition(r"\maketitle")
+    require(bool(titled), r'Main document has no \maketitle to begin the counted body after')
+    body, headed, _ = remainder.partition(r"\section{Methods}")
+    require(bool(headed), r'Main document has no \section{Methods} to end the counted body at')
+    for environment in float_environments(main):
+        body = re.sub(r"\\begin\{" + re.escape(environment) + r"\}.*?\\end\{" + re.escape(environment) + r"\}",
+                      "", body, flags=re.S)
     body_words = words(body)
-    abstracts = arguments(main, "abstract")
+    abstracts = arguments(front_matter, "abstract")
     require(len(abstracts) == 1, "Expected one abstract")
     abstract_words = words(abstracts[0]) if abstracts else 0
     require(100 <= abstract_words <= 150, f"Analysis abstract has {abstract_words} words; allowed 100–150")
@@ -526,7 +652,10 @@ def validate(source_only=False):
     insertion = figure_options(main) | figure_options(supp)
     main_tables = len(re.findall(r"\\begin\{table\}", main))
     require(len(main_figures) + main_tables <= 6, "More than six main displays")
-    require(len(main_figures) == 6 and len(supp_figures) == 4, 'Expected six main and four supplementary figures')
+    require(len(main_figures) == EXPECTED_MAIN_FIGURES and
+            len(supp_figures) == EXPECTED_SUPPLEMENTARY_FIGURES,
+            f'Expected {EXPECTED_MAIN_FIGURES} main and {EXPECTED_SUPPLEMENTARY_FIGURES} '
+            f'supplementary figures; found {len(main_figures)} and {len(supp_figures)}')
 
     # A note number declared in the shared numbering source but never rendered
     # is invisible: LaTeX ignores a \supnote placed after \end{document} and
@@ -537,13 +666,15 @@ def validate(source_only=False):
             f'Declared and rendered Supplementary Notes differ: '
             f'declared-not-rendered {sorted(declared_notes - rendered_notes)}, '
             f'rendered-not-declared {sorted(rendered_notes - declared_notes)}')
-    subsections = {}
-    for index, section in enumerate(sections):
-        chunk = main.split(r"\section{" + section + "}", 1)[1]
-        chunk = chunk.split(r"\section", 1)[0]
-        subsections[section] = len(arguments(chunk, "subsection"))
-    failures.extend(section_faults(sections, subsections))
-    require(not re.search(r"\\cite\{", abstracts[0]), "Abstract contains references")
+    try:
+        structure = headings(main)
+    except ValueError as exc:
+        require(False, f'Cannot read the main document structure: {exc}')
+        structure = []
+    subsections = {section: len(titles) for section, titles in structure}
+    failures.extend(section_faults(structure))
+    if abstracts:
+        require(not re.search(r"\\cite\{", abstracts[0]), "Abstract contains references")
     # A caption-less main text used to satisfy the length limit on a sentinel of
     # zero, so the one state in which no caption can be measured was the one
     # state that passed. Having nothing to read is its own failure.

@@ -1,4 +1,4 @@
-"""Single source for concise plot labels and the public checkpoint-name key."""
+"""Single source for concise plot labels and the public model-name key."""
 from pathlib import Path
 import csv
 import io
@@ -68,13 +68,13 @@ def key_tex():
     rows = '\n'.join(f'{short} & {full} \\\\' for short, full in CHECKPOINTS.values())
     return ('% Generated from checkpoint_labels.py; do not edit independently.\n'
             '\\begin{table}[!htbp]\n\\centering\n\\small\n'
-            '\\caption{Checkpoint-name key for all quantitative figures. '
+            '\\caption{Model-name key for all quantitative figures. '
             'S/B/M/L/XL denote small/base/medium/large/extra-large; M and B after a number denote million and billion parameters. '
             'S1/S2 preserve adaptation stage and I denotes instruction tuning. '
-            '$\\dagger$ marks a requested-condition generation cell, not a different checkpoint; '
+            '$\\dagger$ marks a requested-condition generation cell, not a different model; '
             'unmarked cells use the unconditioned procedure. Mismatched conditions are labelled explicitly.}\n'
             '\\label{tab:checkpoint-key}\n'
-            '\\begin{tabular}{lp{0.73\\textwidth}}\n\\hline\nShort label & Full checkpoint identity \\\\\n\\hline\n'
+            '\\begin{tabular}{lp{0.73\\textwidth}}\n\\hline\nShort label & Full model identity \\\\\n\\hline\n'
             + rows + '\n\\hline\n\\end{tabular}\n\\end{table}\n')
 
 

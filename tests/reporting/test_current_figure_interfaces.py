@@ -274,17 +274,33 @@ def test_placed_7_8_typography_is_measured_with_explicit_panel_ids():
             validator.placed_scale(option, 370.08, 144)
 
 
-def test_new_deliberate_section_structure_and_seven_results():
-    text = r'\section{Results}' + r'\subsection{Result}' * 7
-    text += r'\section{Discussion}\section{Limitations}\section{Methods}\subsection{Method}'
-    sections = validator.arguments(text, 'section')
-    subsections = {'Results': 7, 'Discussion': 0, 'Limitations': 0, 'Methods': 1}
-    assert validator.section_faults(sections, subsections) == []
-    assert validator.section_faults([s for s in sections if s != 'Limitations'], subsections)
-    # The count is exact in both directions: the generative-guidance section is
-    # the seventh, and neither six nor eight titles may pass.
-    assert validator.section_faults(sections, dict(subsections, Results=6))
-    assert validator.section_faults(sections, dict(subsections, Results=8))
+def test_the_deliberate_section_structure_is_read_off_the_assembled_document():
+    results = r'\section{Results}' + r'\subsection{Result}' * validator.EXPECTED_RESULT_SUBSECTIONS
+    text = (results + r'\section{Discussion}\subsection{Limitations}'
+            r'\section{Methods}\subsection{Method}\section*{Data availability}')
+    structure = validator.headings(text)
+    # Reading order survives: the back matter's starred headings are not
+    # structure, and Limitations is a heading inside Discussion.
+    assert [section for section, _ in structure] == validator.EXPECTED_SECTIONS
+    assert dict(structure)['Discussion'] == ['Limitations']
+    assert validator.section_faults(structure) == []
+    # The roster count is exact in both directions: neither one title fewer nor
+    # one more may pass.
+    for count in (validator.EXPECTED_RESULT_SUBSECTIONS - 1,
+                  validator.EXPECTED_RESULT_SUBSECTIONS + 1):
+        assert validator.section_faults(validator.headings(
+            text.replace(results, r'\section{Results}' + r'\subsection{Result}' * count)))
+    # Limitations promoted back to a section of its own, Methods without
+    # subheadings, and a second Discussion subheading are each faults.
+    assert validator.section_faults(validator.headings(
+        text.replace(r'\section{Discussion}\subsection{Limitations}',
+                     r'\section{Discussion}\section{Limitations}')))
+    assert validator.section_faults(validator.headings(
+        text.replace(r'\section{Methods}\subsection{Method}', r'\section{Methods}')))
+    assert validator.section_faults(validator.headings(
+        text.replace(r'\subsection{Limitations}', r'\subsection{Limitations}\subsection{Caveats}')))
+    with pytest.raises(ValueError, match='outside any section'):
+        validator.headings(r'\subsection{Orphan}\section{Results}')
     # Concrete support counts remain retained data, not specimen uncertainty.
     table = pd.DataFrame({'arm': ['x'], 'assays': [3], 'source_path': ['fit.json'],
                           'source_sha256': ['0' * 64], 'source_pointer': ['assays']})
