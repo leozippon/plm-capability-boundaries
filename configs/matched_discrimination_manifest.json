@@ -179,5 +179,31 @@
       "requirement": "Report the accuracy-displacement share and the phenotype-gap-capture share as separately named quantities, each with its definition stated beside it, and state the oracle convention explicitly. Do not combine them into one number."
     },
     "what_this_amendment_may_not_do": "It moves no declared threshold, changes no primary endpoint, and does not alter the 0.05 margin, the decision rule or the arm list. It adds two sign-balanced tiers, lifts an execution-time sizing cap on the matched tiers, and fixes a reporting convention."
+  },
+  "amendment_05": {
+    "declared_on": "2026-11-02",
+    "declared_before": "any trend statistic was computed on the expanded support, whose doubly balanced tier has not yet been read",
+    "trigger": "The declared capacity axis shows an ordering that runs opposite to the one R1 reports for overall mutation ranking. On the retained-variant doubly balanced tier the smallest ProGen2 arm is the strongest (0.6506) and the largest is the weakest and unresolved (0.5361), and the same ordering appears on both earlier matched tiers of both supports. The manifest already declares this ladder as a capacity axis on the grounds that functional constraint dilution predicts no gain in directional ability with capacity, so the trend is the direct reading of a declared axis rather than a new question. It has not been tested.",
+    "statistic": {
+      "definition": "Spearman correlation between direction accuracy and log parameter count across the five ProGen2 sizes, with a cluster-bootstrap interval using the same resampling unit, draw count and draw matrix as every other endpoint, plus the cluster-paired contrast of the largest arm minus the smallest arm.",
+      "primary_support": "the expanded support's doubly balanced tier, which has not been read and where the statistic is prospective",
+      "secondary": "the retained-variant support and the other tiers, reported as an explicitly post-hoc consistency check, because their per-arm points were already seen when this amendment was written"
+    },
+    "readings": {
+      "dilution_supported": "A negative trend with an interval excluding zero would show directional ability falling as capacity rises while R1 shows overall ranking improving with capacity. That dissociation is the strongest evidence this programme could offer for functional constraint dilution, because it is a within-family comparison at fixed data and objective.",
+      "dilution_not_supported": "A positive trend would show capacity buying functional direction and would contradict the hypothesis.",
+      "flat_or_unresolved": "A flat trend bounded inside a declared margin shows capacity buys no directional ability, which supports the weaker claim that scale does not help. A wide interval is unresolved and establishes neither."
+    },
+    "declared_margin_for_the_trend": {
+      "value": 0.05,
+      "units": "direction-accuracy points across the full ladder, read on the largest-minus-smallest contrast",
+      "rationale": "the same practical margin the primary endpoint uses, so a capacity effect is called meaningful on the same scale as a scoring-rule effect"
+    },
+    "limits": [
+      "Five released checkpoints of one family are five releases, not five training trials at controlled data and compute, so this identifies no causal effect of capacity.",
+      "Parameter count is not the only thing that varies across a release ladder.",
+      "This axis carries its own declared multiplicity and does not enter the primary endpoint's family."
+    ],
+    "what_this_amendment_may_not_do": "It moves no threshold, changes no tier definition, and does not alter the primary endpoint, the 0.05 margin, the decision rule or the arm list."
   }
 }
