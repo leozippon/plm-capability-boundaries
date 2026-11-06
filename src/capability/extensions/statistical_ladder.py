@@ -97,7 +97,11 @@ PROFILE_COLUMN = 'profile_delta'
 #: Top-level keys under which an upstream document may list its per-sample records.
 RECORD_CONTAINERS = ('samples', 'records', 'variants', 'rows')
 
-PILOT_SCHEMA = 'statistical_ladder_reuse_pilot_v1'
+#: The schema this module's reuse receipts carry now, and the recorded spelling of the
+#: same receipt. A receipt is admitted by exact identity, never by stripping a suffix, so
+#: any other label is still refused.
+PILOT_SCHEMA = 'statistical_ladder_reuse_pilot'
+PILOT_SCHEMAS = (PILOT_SCHEMA, 'statistical_ladder_reuse_pilot_v1')
 _HEX64 = re.compile(r'^[0-9a-f]{64}$')
 
 #: The completion contract of each upstream baseline document this ladder reads,
@@ -708,13 +712,14 @@ def _row_field(table, name):
     return None
 
 
-def validate_pilot(pilot, *, source_contract_sha256, source_completion_sha256, models,
+def validate_pilot(pilot, *, source_contract_sha256, source_completion_sha256,
+                   current_script_sha256, current_module_sha256, models,
                    threads, designs=REPRODUCTION_DESIGNS) -> dict[str, Any]:
-    """Refuse to reuse archived fits without a bit-exact reproduction pilot."""
+    """Require a bit-exact reproduction pilot bound to the current code bytes."""
     if not isinstance(pilot, dict):
         raise ValueError('a reuse pilot is a record object')
-    if pilot.get('schema') != PILOT_SCHEMA:
-        raise ValueError(f"reuse pilot schema is not {PILOT_SCHEMA}")
+    if pilot.get('schema') not in PILOT_SCHEMAS:
+        raise ValueError(f"reuse pilot schema is {pilot.get('schema')!r}, not {PILOT_SCHEMAS}")
     if pilot.get('status') != 'passed':
         raise ValueError(f"reuse pilot status is {pilot.get('status')!r}, not passed")
     if pilot.get('source_contract_sha256') != source_contract_sha256:
@@ -723,9 +728,12 @@ def validate_pilot(pilot, *, source_contract_sha256, source_completion_sha256, m
         raise ValueError('reuse pilot was not run against the current source completion receipt')
     if pilot.get('threads') != threads:
         raise ValueError('reuse pilot used a different BLAS thread count; reuse would not be exact')
-    for name in ('script_sha256', 'module_sha256'):
+    for name, current in (('script_sha256', current_script_sha256),
+                          ('module_sha256', current_module_sha256)):
         if not isinstance(pilot.get(name), str) or not _HEX64.match(pilot[name]):
             raise ValueError(f'reuse pilot {name} is not a recorded digest')
+        if pilot[name] != current:
+            raise ValueError(f'reuse pilot {name} does not match the current code')
     if list(pilot.get('designs', [])) != list(designs):
         raise ValueError('reuse pilot did not reproduce the designs being reused')
     reproduction = pilot.get('reproduction')

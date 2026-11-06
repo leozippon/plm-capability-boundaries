@@ -35,7 +35,7 @@ from src.capability.core.io import write_json  # noqa: E402
 from src.capability.extensions import bidirectional, responses  # noqa: E402
 from src.capability.extensions import statistical_ladder as sl  # noqa: E402
 
-SCHEMA = 'baseline_strength_summary_v1'
+SCHEMA = 'baseline_strength_summary'
 ANALYSIS = 'statistical_baseline_strength_20261106'
 #: The four declared qualification pairs: the enhanced control set extends the baseline.
 PAIRS = (('P+E', 'P'), ('P+G', 'P'), ('P+E+G', 'P'), ('C0+E+G', 'C0'))

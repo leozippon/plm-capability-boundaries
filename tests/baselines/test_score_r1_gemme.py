@@ -255,6 +255,61 @@ def test_a_complete_wildtype_publishes_one_numeric_column_and_a_matching_dump(tm
         assert all(arrays["n_runs"] == 3)
 
 
+def test_written_labels_are_stable_ids_and_the_consumed_export_keeps_its_identity():
+    """New documents carry no version tag; the export this stage reads keeps its own."""
+
+    assert (rung.SCHEMA_CHECKPOINT, rung.SCHEMA_SCORES) == (
+        "r1_gemme_wildtype", "r1_gemme_scores")
+    # The variant table is an input of this stage, not a document it owns, so its schema
+    # stays the export's exact recorded literal.
+    assert rung.SCHEMA_VARIANT_TABLE == "r1_msa_variant_table_v1"
+
+
+def test_an_unknown_variant_table_schema_is_refused_not_normalised(tmp_path):
+    root = export_root(tmp_path)
+    table = json.loads((root / "inputs" / "variant_table.json").read_text())
+    table["schema"] = "r1_msa_variant_table"
+    write(root / "inputs" / "variant_table.json", json.dumps(table))
+    with pytest.raises(ValueError, match="r1_msa_variant_table_v1"):
+        rung.verify_export(root)
+
+
+def test_run_key_keeps_the_recorded_spellings_so_completed_runs_stay_reusable():
+    """A label rename must not move a key: the 174x3 official runs cannot be repeated."""
+
+    entry = {"wildtype_id": "q00000", "alignment_sha256": "a" * 64, "mutations": ["A4V", "K2A:Q9F"]}
+    assert rung.run_key(entry, image_digest="sha256:" + "d" * 64, nseqs=20000, iterations=1) == (
+        "19ece5f079e8ff5f125f832fc4e1fc57c74cbb08bfa2453df21039bc10498fc6")
+
+
+def test_a_new_checkpoint_carries_the_stable_schema_and_fails_closed(tmp_path, monkeypatch):
+    entry = {
+        "wildtype_id": "q00000",
+        "length": len(QUERY),
+        "assays": ["assay_a"],
+        "samples": 1,
+        "mutations": ["A4V"],
+        "shared_mutations": 0,
+        "alignment": "inputs/msa/q00000.fa",
+        "alignment_path": str(tmp_path / "inputs" / "msa" / "q00000.fa"),
+        "alignment_sha256": "a" * 64,
+    }
+    args = Namespace(out=str(tmp_path / "gemme"), image="i", nseqs=20000, iterations=1,
+                     timeout_seconds=60)
+    key = rung.run_key(entry, image_digest="d", nseqs=20000, iterations=1)
+
+    def refuse(*arguments, **keywords):
+        raise RuntimeError("docker exited 1")
+
+    monkeypatch.setattr(rung.G, "execute", refuse)
+    checkpoint = rung.run_wildtype(entry, args, "d", key, tmp_path / "logs" / "gemme.log")
+    assert checkpoint["schema"] == "r1_gemme_wildtype"
+    assert checkpoint["run_key"] == key
+    assert checkpoint["status"] == "failed"
+    assert checkpoint["failure"].startswith("repeat 1 of 3 failed")
+    assert [run["status"] for run in checkpoint["runs"]] == ["failed"]
+
+
 def test_run_key_covers_every_input_that_could_move_a_score():
     entry = {"wildtype_id": "q00000", "alignment_sha256": "a" * 64, "mutations": ["A4V", "K2A"]}
     base = rung.run_key(entry, image_digest="i", nseqs=20000, iterations=1)

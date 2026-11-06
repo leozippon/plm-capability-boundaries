@@ -50,7 +50,7 @@ The runner executes `tests/extensions/test_statistical_ladder.py` before touchin
 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 \
 /home/lzp/miniconda3/envs/ct/bin/python scripts/capability/extensions/fit_statistical_ladder.py \
   --stage profile_only --threads 2 \
-  --out results/extensions/statistical_ladder_20261106/profile-panel-v2
+  --out results/extensions/statistical_ladder_20261106/checks/profile-replay
 ```
 
 `--stage profile_only` is a declared partial pilot: only `P`, `M`, `P+M` and the original `C0` control are computed, no Potts or GEMME table is read, and the receipt is written as `partial_profile_only` with `ladder_complete: false`. It also refits `M` and `MP` for every model it covers and requires bit-exact reproduction of the archived predictions, the archived design-matrix digests and the archived alpha choices. That record is `reuse-pilot.json`.
@@ -60,17 +60,17 @@ The complete ladder additionally needs both score tables, all 33 models and all 
 ```bash
 ... fit_statistical_ladder.py --stage full --threads 2 \
   --scores results/extensions/statistical_ladder_20261106/accepted-scores \
-  --reuse-pilot results/extensions/statistical_ladder_20261106/profile-panel-v2/reuse-pilot.json \
-  --out results/extensions/statistical_ladder_20261106/full-v1
+  --reuse-pilot results/extensions/statistical_ladder_20261106/checks/profile-replay/reuse-pilot.json \
+  --out results/extensions/statistical_ladder_20261106/full
 ```
 
-The full stage requires a passing reuse pilot that covers every model in the run and used the same number of BLAS threads, because reuse is only exact under the same numerics. A 33-model `profile_only` run costs about five minutes and is the cheapest way to produce that receipt; the full stage's own new fits, dominated by the two wide `C0+E+G` designs, are the remaining cost.
+The full stage requires a passing reuse pilot that covers every model in the run and used the same number of BLAS threads, because reuse is only exact under the same numerics. `profile-panel` holds the accepted profile stage exactly as it was run; its receipt binds the digests of the source that produced it, so the current runner refuses it as not matching the current code and it stays the accepted original evidence rather than a launch permit. The freshly rerun pilot under `checks/profile-replay` is the one the full stage reads. A 33-model `profile_only` run costs about five minutes and is the cheapest way to produce that receipt; the full stage's own new fits, dominated by the two wide `C0+E+G` designs, are the remaining cost.
 
 ## Outputs
 
 `contract.json` records the frozen registry, realized scope, support digest, declared hypothesis family, bootstrap, sensitivity, reuse policy, code hashes and provenance. `reuse-verification.json` lists each reused cell with its archive digest and the largest recomputed metric difference; `reuse-pilot.json` holds the reproduction evidence; `scores.json` binds the two upstream tables and their metadata digests. `cells/` holds the newly fitted designs only, each archive read back through the same verifier that admitted the reused ones. `assay-metrics.json` holds per-assay held-out Spearman and rank MSE, `aggregate-<metric>.npz` the family-level contrast and absolute matrices with their labels, `contrasts.json` the per-hypothesis points, pointwise and simultaneous intervals with verdicts plus the standardized-maxT sensitivity, and `zero-shot.json` the unsupervised assay-internal ranking of the raw profile, Potts and GEMME scores. Only `completion.json` attests a status: `complete` for the full ladder, `partial_profile_only` otherwise.
 
-An incomplete or unconverged upstream table is refused even when its scores are finite. Code changes invalidate an existing reuse receipt because `reuse-pilot.json` binds the script and module digests; run the `profile_only` stage again after such a change. `--models` can limit that stage to a smoke test, but a subset receipt cannot admit the full 33-model ladder. Execution status and scientific findings belong in the project log and evidence summary rather than this usage guide.
+An incomplete or unconverged upstream table is refused even when its scores are finite. Code changes invalidate an existing reuse receipt because `reuse-pilot.json` binds the script and module digests; run the `profile_only` stage into a fresh `checks/profile-replay` after such a change and leave the accepted `profile-panel` untouched. `--models` can limit that stage to a smoke test, but a subset receipt cannot admit the full 33-model ladder. Execution status and scientific findings belong in the project log and evidence summary rather than this usage guide.
 
 ## Limits
 

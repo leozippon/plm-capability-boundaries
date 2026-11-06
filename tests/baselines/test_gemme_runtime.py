@@ -202,6 +202,11 @@ def test_a_new_output_directory_is_created_before_anything_runs(tmp_path):
     with pytest.raises(gemme.GemmeError, match="does not exist"):
         gemme.execute(tmp_path / "missing.fasta", tmp_path / "missing.txt", out, "elodielaine/gemme:gemme", 20000, 1, 120)
     assert out.is_dir()
+    # What a run is comes from the image digest and the probed digests; the record's
+    # own shape label carries no version tag.
+    record = json.loads((out / gemme.RECORD).read_text())
+    assert record["schema_version"] == gemme.SCHEMA_VERSION == "gemme_runtime"
+    assert record["status"] == "failed"
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="the official GEMME image needs docker")

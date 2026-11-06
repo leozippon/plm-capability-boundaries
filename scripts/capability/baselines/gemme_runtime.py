@@ -66,7 +66,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.capability.core.io import sha256_file, write_json  # noqa: E402
 
-SCHEMA_VERSION = "gemme_runtime_v1"
+# The run record's own shape label. What a run actually is comes from the image
+# digest and the probed package digests, never from this string.
+SCHEMA_VERSION = "gemme_runtime"
 RECORD = "gemme_run.json"
 SCORES = "gemme_scores.tsv"
 

@@ -63,8 +63,16 @@ sys.path.insert(0, str(ROOT))
 from scripts.capability.baselines import gemme_runtime as G  # noqa: E402
 from src.capability.baselines import msa_baselines as B  # noqa: E402
 
-SCHEMA_CHECKPOINT = "r1_gemme_wildtype_v2"
-SCHEMA_SCORES = "r1_gemme_scores_v1"
+SCHEMA_CHECKPOINT = "r1_gemme_wildtype"
+SCHEMA_SCORES = "r1_gemme_scores"
+
+#: ``run_key`` is a protocol identity, not a label. The 174x3 official runs that already
+#: exist hashed these recorded spellings into their keys, and a completed GEMME run cannot
+#: be reproduced (JET2 samples cluster partitions and exposes no seed), so renaming a label
+#: must never move a key. They stay in the key material only: the checkpoint and the score
+#: table carry the stable IDs above, and old and new checkpoints share one key space.
+RUN_KEY_SCHEMA = "r1_gemme_wildtype_v2"
+RUN_KEY_RUNTIME = "gemme_runtime_v1"
 
 #: The export's own variant-table schema string. It is a literal in the export
 #: entrypoint rather than a shared constant, so it is restated here and checked,
@@ -258,8 +266,8 @@ def run_key(entry: dict[str, Any], *, image_digest: str, nseqs: int, iterations:
     """
 
     material = {
-        "schema": SCHEMA_CHECKPOINT,
-        "gemme_runtime": G.SCHEMA_VERSION,
+        "schema": RUN_KEY_SCHEMA,
+        "gemme_runtime": RUN_KEY_RUNTIME,
         "wildtype_id": entry["wildtype_id"],
         "alignment_sha256": entry["alignment_sha256"],
         "mutations_sha256": hashlib.sha256("\n".join(entry["mutations"]).encode()).hexdigest(),

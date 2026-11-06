@@ -348,6 +348,8 @@ def declare_scope(source, *, stage, scores, pilot, models, seeds, threads,
               for name, column in (('potts', potts_column), ('gemme', gemme_column))}
     gate = sl.validate_pilot(load_json(pilot), source_contract_sha256=contract_sha256,
                              source_completion_sha256=completion_sha256,
+                             current_script_sha256=digest(Path(__file__)),
+                             current_module_sha256=digest(Path(sl.__file__)),
                              models=models, threads=threads)
     return models, seeds, dict(tables=tables,
                                pilot=dict(path=str(pilot), sha256=digest(pilot), gate=gate))

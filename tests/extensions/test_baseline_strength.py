@@ -93,7 +93,7 @@ WORSE = dict(PE=-.05, PG=-.04, PEG=-.06, BPLEG=-.03)
 def test_effect_signs_cover_both_metrics_and_qualification_is_native_only(tmp_path):
     fixture = write_stage(tmp_path, spearman=STRONG, rank_mse=STRONG)
     summary = strength.summarise(fixture['directory'])
-    assert summary['schema'] == strength.SCHEMA
+    assert summary['schema'] == 'baseline_strength_summary' == strength.SCHEMA
     assert summary['support']['families'] == FAMILIES
     assert summary['support']['designs'] == list(DESIGNS)
     assert summary['bootstrap'] == dict(draws=10000, seed=20261106, unit='biological family',

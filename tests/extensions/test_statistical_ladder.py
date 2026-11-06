@@ -3,7 +3,9 @@
 Every fixture here is synthetic, so these tests run without the ignored
 prediction archives or any phenotype data.
 """
+import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -401,13 +403,26 @@ def potts_table(*, status='fitted', rows=SUPPORT, metadata=None):
                               counts=complete_counts('potts')) if metadata is None else metadata)
 
 
-def gemme_table(*, status='scored', n_runs=3, repeats=3, incomplete=(), counts=None):
+def gemme_table(*, status='scored', n_runs=3, repeats=3, incomplete=(), counts=None,
+                schema='r1_gemme_scores'):
     return dict(path='gemme/scores.json', sample_id=identifiers(),
                 columns={'gemme_score': np.zeros(SUPPORT), 'n_runs': np.full(SUPPORT, n_runs)},
                 annotations={'status': np.asarray([status] * SUPPORT)},
-                metadata=dict(schema='r1_gemme_scores_v1', repeats=repeats,
+                metadata=dict(schema=schema, repeats=repeats,
                               incomplete=list(incomplete),
                               counts=complete_counts('gemme') if counts is None else counts))
+
+
+def test_the_upstream_schema_is_provenance_and_both_recorded_ids_are_admitted():
+    """The ladder's own new table carries the stable ID; the recorded one still reads.
+
+    A score document's schema is provenance bound by digest, not a shape gate, so
+    nothing here strips a suffix: both known labels are read and an unknown one is
+    simply carried as provenance like any other metadata value.
+    """
+    for schema in ('r1_gemme_scores', 'r1_gemme_scores_v1'):
+        gemme = sl.require_complete_baseline('gemme', gemme_table(schema=schema))
+        assert gemme['repeats'] == 3 and gemme['rows'] == SUPPORT
 
 
 def test_complete_baselines_are_counted_and_summarised():
@@ -633,7 +648,9 @@ def pilot_record(**overrides) -> dict:
 
 def test_reuse_pilot_gate_requires_exact_reproduction_for_every_model():
     gate = sl.validate_pilot(pilot_record(), source_contract_sha256='c' * 64,
-                             source_completion_sha256='d' * 64, models=['arm'], threads=2)
+                             source_completion_sha256='d' * 64,
+                             current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                             models=['arm'], threads=2)
     assert gate == dict(models=1, designs=list(sl.REPRODUCTION_DESIGNS), seeds=3, threads=2)
     cases = [
         (pilot_record(status='partial'), 'not passed'),
@@ -645,20 +662,73 @@ def test_reuse_pilot_gate_requires_exact_reproduction_for_every_model():
     for record, message in cases:
         with pytest.raises(ValueError, match=message):
             sl.validate_pilot(record, source_contract_sha256='c' * 64,
-                              source_completion_sha256='d' * 64, models=['arm'], threads=2)
+                              source_completion_sha256='d' * 64,
+                              current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                              models=['arm'], threads=2)
     with pytest.raises(ValueError, match='other'):
         sl.validate_pilot(pilot_record(), source_contract_sha256='c' * 64,
-                          source_completion_sha256='d' * 64, models=['arm', 'other'], threads=2)
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm', 'other'], threads=2)
     broken = pilot_record()
     broken['reproduction']['arm'][str(SEEDS[1])]['MP']['max_absolute_difference'] = 1e-9
     with pytest.raises(ValueError, match='differs above zero'):
         sl.validate_pilot(broken, source_contract_sha256='c' * 64,
-                          source_completion_sha256='d' * 64, models=['arm'], threads=2)
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm'], threads=2)
     missing_seed = pilot_record()
     del missing_seed['reproduction']['arm'][str(SEEDS[2])]
     with pytest.raises(ValueError, match='three seeds'):
         sl.validate_pilot(missing_seed, source_contract_sha256='c' * 64,
-                          source_completion_sha256='d' * 64, models=['arm'], threads=2)
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm'], threads=2)
+
+
+def test_reuse_pilot_schema_is_the_stable_id_and_the_recorded_spelling_still_reads():
+    assert sl.PILOT_SCHEMA == 'statistical_ladder_reuse_pilot'
+    assert set(sl.PILOT_SCHEMAS) == {'statistical_ladder_reuse_pilot',
+                                     'statistical_ladder_reuse_pilot_v1'}
+    for schema in sl.PILOT_SCHEMAS:
+        gate = sl.validate_pilot(pilot_record(schema=schema), source_contract_sha256='c' * 64,
+                                 source_completion_sha256='d' * 64,
+                                 current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                                 models=['arm'], threads=2)
+        assert gate == dict(models=1, designs=list(sl.REPRODUCTION_DESIGNS), seeds=3, threads=2)
+    # Exact identities only: an unknown label is refused, never stripped into a known one.
+    for schema in ('statistical_ladder_reuse_pilot_v999', 'statistical_ladder_reuse_pilot_v2',
+                   'Statistical_Ladder_Reuse_Pilot_v1'):
+        with pytest.raises(ValueError, match='schema'):
+            sl.validate_pilot(pilot_record(schema=schema), source_contract_sha256='c' * 64,
+                              source_completion_sha256='d' * 64,
+                              current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                              models=['arm'], threads=2)
+    # Admitting the recorded spelling relaxes nothing else in the gate.
+    unverified = pilot_record(schema='statistical_ladder_reuse_pilot_v1')
+    unverified['reproduction']['arm'][str(SEEDS[0])]['M']['prediction_identical'] = False
+    with pytest.raises(ValueError, match='did not reproduce'):
+        sl.validate_pilot(unverified, source_contract_sha256='c' * 64,
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm'], threads=2)
+    unbound = pilot_record(schema='statistical_ladder_reuse_pilot_v1', script_sha256='not-a-digest')
+    with pytest.raises(ValueError, match='recorded digest'):
+        sl.validate_pilot(unbound, source_contract_sha256='c' * 64,
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm'], threads=2)
+
+
+@pytest.mark.parametrize('schema', sl.PILOT_SCHEMAS)
+@pytest.mark.parametrize('field', ['script_sha256', 'module_sha256'])
+def test_reuse_pilot_refuses_different_valid_code_digests(schema, field):
+    record = pilot_record(schema=schema, **{field: '0' * 64})
+    with pytest.raises(ValueError, match=f'{field} does not match the current code'):
+        sl.validate_pilot(record, source_contract_sha256='c' * 64,
+                          source_completion_sha256='d' * 64,
+                          current_script_sha256='e' * 64, current_module_sha256='f' * 64,
+                          models=['arm'], threads=2)
 
 
 def test_runner_refuses_unspecified_stages_and_prior_outputs(tmp_path):
@@ -717,8 +787,11 @@ def test_declared_scope_gates_the_full_stage_before_any_artifact_is_read(tmp_pat
                       seeds=[19990101], threads=2, **columns)
 
 
-def test_declared_scope_requires_both_tables_and_a_matching_pilot(tmp_path):
-    from scripts.capability.extensions.fit_statistical_ladder import declare_scope
+@pytest.mark.parametrize('schema', sl.PILOT_SCHEMAS)
+def test_declared_scope_requires_both_tables_and_a_matching_pilot(tmp_path, schema):
+    from scripts.capability.extensions import fit_statistical_ladder as runner
+
+    declare_scope = runner.declare_scope
 
     models = [f'arm{index:02d}' for index in range(33)]
     source = source_stub(tmp_path, models)
@@ -731,8 +804,12 @@ def test_declared_scope_requires_both_tables_and_a_matching_pilot(tmp_path):
     write_baseline(scores, 'gemme', gemme_records(), complete_counts('gemme'),
                    extra=dict(repeats=3, incomplete=[]))
     contract_sha, completion_sha = sl.digest(source/'contract.json'), sl.digest(source/'completion.json')
-    record = pilot_record(source_contract_sha256=contract_sha,
-                          source_completion_sha256=completion_sha)
+    # Independent byte hashes: the real runner must bind both current files,
+    # not merely accept any well-formed digest from a passing receipt.
+    record = pilot_record(schema=schema, source_contract_sha256=contract_sha,
+                          source_completion_sha256=completion_sha,
+                          script_sha256=hashlib.sha256(Path(runner.__file__).read_bytes()).hexdigest(),
+                          module_sha256=hashlib.sha256(Path(sl.__file__).read_bytes()).hexdigest())
     record['reproduction'] = {model: record['reproduction']['arm'] for model in models}
     pilot = tmp_path/'p.json'
     pilot.write_text(json.dumps(record))
@@ -742,6 +819,12 @@ def test_declared_scope_requires_both_tables_and_a_matching_pilot(tmp_path):
     assert preflight['pilot']['path'] == str(pilot)
     assert preflight['pilot']['gate']['models'] == 33
     assert set(preflight['tables']) == {'potts', 'gemme'}
+    for field in ('script_sha256', 'module_sha256'):
+        stale = dict(record, **{field: '0' * 64})
+        pilot.write_text(json.dumps(stale))
+        with pytest.raises(ValueError, match=f'{field} does not match the current code'):
+            declare_scope(source, stage='full', scores=scores, pilot=pilot, models=None,
+                          seeds=None, threads=2, **columns)
     # The baseline contract wins over the reuse gate: what the operator cannot
     # repair by re-running a pilot is reported first.
     (scores/'potts'/'scores.json').unlink()
