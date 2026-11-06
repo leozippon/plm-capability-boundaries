@@ -14,8 +14,8 @@ from scripts.capability.campaigns import ARCHIVE, records
 
 
 def _load_admit():
-    path = REPO / "scripts/capability/mutation/first_wave_v2_admit.py"
-    spec = importlib.util.spec_from_file_location("first_wave_v2_admit", path)
+    path = REPO / "scripts/capability/mutation/first_wave_admit.py"
+    spec = importlib.util.spec_from_file_location("first_wave_admit", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
