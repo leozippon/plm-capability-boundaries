@@ -1,9 +1,9 @@
 """The abundance three-arm declaration, its two paired families and its reproduction gate.
 
-These tests are data-independent: they exercise the declared designs, the two
-readings, the common-support rule and the pilot gate on synthetic records, so they
-run before the archived per-arm extraction is restored and without pretending that
-it is.
+Synthetic tests exercise the actual fitter and replay consumers as well as the
+declarations and reproduction gate. The frozen-input test additionally checks
+assembly against the restored gpt2 archives when those local inputs are present;
+it never fits the large frozen panel.
 """
 import numpy as np
 import pytest
@@ -67,6 +67,136 @@ def test_missing_archive_is_refused_rather_than_regenerated(tmp_path):
     (tmp_path / 'ec-gpt2').mkdir()
     (tmp_path / 'ec-gpt2' / 'manifest_gpt2.json').write_text('{}')
     assert module.locate_extraction(tmp_path, 'gpt2') == tmp_path / 'ec-gpt2'
+
+
+# --------------------------------------------------------------------------- #
+# The production fit boundary and the actual replay consumers.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def small_fit(monkeypatch):
+    rng = np.random.default_rng(41)
+    groups = np.repeat([f'g{i:02d}' for i in range(10)], 6)
+    panel = {'group': groups, 'domain': groups.copy(), 'site': np.arange(60),
+             'target': rng.normal(size=60),
+             'blocks': {name: rng.normal(size=(60, 1)) for name in QUALIFIED[:-1]}}
+    panel['weights'] = module.abundance.nested_weights(groups, panel['domain'], panel['site'])
+    model = {'M': rng.normal(size=(60, 1)), 'T': rng.normal(size=(60, 2))}
+    state = {'panel': panel, 'groups': sorted(set(groups.tolist()))}
+    monkeypatch.setattr(module, 'initialise', lambda: state)
+    module.torch.set_num_threads(1)
+    return panel, model
+
+
+@pytest.mark.parametrize('baseline', ['S', 'S_T'])
+def test_fit_seed_uses_real_fitter_and_replay_consumers(small_fit, monkeypatch, baseline):
+    panel, model = small_fit
+    designs, roles = module.fold_designs(baseline, QUALIFIED)
+    first_stage = QUALIFIED[:-1]
+    seed = SEEDS[0]
+    # Construct an old-style reference with the real fitter's schema, without
+    # inventing an archived pure M fit (nor requesting representation R).
+    fitter = module.abundance.fold_predictions
+    old = fitter(panel, dict(panel['blocks'], **model),
+                 {name: columns for name, columns in designs.items() if name != 'M'},
+                 seed=seed, first_stage=first_stage, device='cpu')
+    previous = module.replay.summary_metrics(module.abundance, panel, old, baseline, 'abundance')
+    previous.update(alpha=[fold['alpha'] for fold in old['folds']],
+                    dimensions=old['folds'][0]['dimensions'],
+                    held_groups_per_fold=[fold['held_groups'] for fold in old['folds']],
+                    nuisance=old['nuisance'])
+    reference = {'per_seed': {str(seed): previous}}
+    prepared = {'arm': 'synthetic', 'reference': reference, 'baseline': baseline,
+                'roles': roles, 'designs': designs, 'blocks': model, 'first_stage': first_stage}
+    originals = {name: value.copy() for name, value in dict(panel['blocks'], **model).items()}
+    target = panel['target'].copy()
+    calls = []
+
+    def observed(actual_panel, blocks, actual_designs, **kwargs):
+        calls.append(actual_designs)
+        assert actual_panel is panel
+        assert set(blocks) == set(QUALIFIED[:-1]) | {'M', 'T'}
+        assert 'G' not in blocks and 'R' not in blocks
+        for name, value in blocks.items():
+            source = model[name] if name in model else panel['blocks'][name]
+            assert value is source
+            assert value.dtype == originals[name].dtype
+            np.testing.assert_array_equal(value, originals[name])
+        return fitter(actual_panel, blocks, actual_designs, **kwargs)
+
+    monkeypatch.setattr(module.abundance, 'fold_predictions', observed)
+    outcome = module.fit_seed(prepared, seed)
+    assert len(calls) == 1
+    assert calls[0]['M'] == ('M',)
+    assert ('T' in calls[0][roles['C']]) == (baseline == 'S_T')
+    assert not any('R' in columns for columns in calls[0].values())
+    assert set(prepared['blocks']) == {'M', 'T'}
+    np.testing.assert_array_equal(panel['target'], target)
+    for name, value in dict(panel['blocks'], **model).items():
+        np.testing.assert_array_equal(value, originals[name])
+    assert outcome['record']['disagreements'] == 0
+    assert outcome['record']['archived_metric_max_absolute_difference']['all'] == 0
+    assert outcome['heldout'].shape == panel['target'].shape
+    for fold in outcome['record']['folds']:
+        assert fold['dimensions']['M'] == 1
+        assert set(fold['alpha_expected']) == {'C', 'CM'}
+    for role in module.ROLES:
+        assert len(outcome['record']['mse'][role]) == 10
+        assert len(outcome['record']['rank'][role]) == 10
+    # Prove that the real validate_fit consumer still rejects a changed archive.
+    previous['held_groups_per_fold'] = list(reversed(previous['held_groups_per_fold']))
+    with pytest.raises(module.replay.ReplayError, match='Held groups/order'):
+        module.fit_seed(prepared, seed)
+
+
+@pytest.mark.parametrize('missing', ['ident', 'M', 'T', 'first_stage_only'])
+def test_fit_seed_refuses_missing_dependencies_before_fitter(small_fit, monkeypatch, missing):
+    panel, model = small_fit
+    designs, roles = module.fold_designs('S_T', QUALIFIED)
+    first_stage = QUALIFIED[:-1]
+    if missing == 'first_stage_only':
+        first_stage = (*first_stage, missing)
+    elif missing in model:
+        del model[missing]
+    else:
+        del panel['blocks'][missing]
+    prepared = {'arm': 'synthetic', 'reference': {}, 'baseline': 'S_T', 'roles': roles,
+                'designs': designs, 'blocks': model, 'first_stage': first_stage}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('missing dependency reached fold_predictions')
+
+    monkeypatch.setattr(module.abundance, 'fold_predictions', forbidden)
+    with pytest.raises(module.replay.ReplayError, match=f'before fold_predictions:.*{missing}'):
+        module.fit_seed(prepared, SEEDS[0])
+
+
+def test_frozen_gpt2_input_assembly_without_fitting(monkeypatch):
+    paths = module.shared_paths(module.DEFAULT_ROOT)
+    directory = module.DEFAULT_EXTRACTION / 'ec-gpt2'
+    if not all(path.is_file() for path in paths.values()) or not directory.is_dir():
+        pytest.skip('requires the frozen panel and restored original gpt2 extraction')
+    monkeypatch.setattr(module, 'STATE', {})
+    state = module.initialise(module.DEFAULT_ROOT, module.DEFAULT_EXTRACTION)
+    prepared = module.prepare('gpt2')
+    blocks = module.fit_blocks(state['panel'], prepared)
+    assert set(prepared['blocks']) == {'M', 'T'}
+    assert set(blocks) == set(QUALIFIED[:-1]) | {'M', 'T'}
+    assert blocks['M'].shape == (module.SUPPORT['rows'], 1)
+    assert prepared['designs']['M'] == ['M']
+    assert ('T' in prepared['designs'][prepared['roles']['C']]) == (prepared['baseline'] == 'S_T')
+    for name, value in blocks.items():
+        source = prepared['blocks'] if name in ('M', 'T') else state['panel']['blocks']
+        assert value is source[name]
+    for seed in SEEDS:
+        expectations = module.archived_expectations(prepared['reference'], seed, prepared['roles'])
+        assert set(expectations) == {'C', 'CM'}
+        assert len(expectations['C']) == module.abundance.OUTER_SPLITS
+
+
+def test_key_error_message_preserves_missing_feature_without_arbitrary_paths():
+    assert module.message(KeyError('ident')) == "KeyError: missing feature/schema key 'ident'"
+    assert '/private/path' not in module.message(KeyError('/private/path'))
 
 
 # --------------------------------------------------------------------------- #
