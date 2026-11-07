@@ -211,6 +211,19 @@ def test_pilot_gate_refuses_a_missed_alpha_or_error_reproduction():
         require(record)
 
 
+def test_pilot_schema_is_a_stable_id_and_the_written_label_stays_readable():
+    # The label is an identity, not a version counter: the format writes one stable
+    # name, and the single label already written stays readable beside it.
+    assert bidirectional.PILOT_SCHEMA == 'r3_bidirectional_pilot'
+    assert bidirectional.PILOT_SCHEMAS == ('r3_bidirectional_pilot', 'r3_bidirectional_pilot_v2')
+    assert require(pilot_record(schema='r3_bidirectional_pilot_v2'))['seeds'] == 3
+    # Nothing is stripped back to a version-free stem, so a label outside the two
+    # known ones is refused rather than guessed at.
+    for unknown in ('r3_bidirectional_pilot_v1', 'r3_bidirectional_pilot_v3'):
+        with pytest.raises(ValueError, match='schema'):
+            require(pilot_record(schema=unknown))
+
+
 def test_pilot_gate_never_loosens_the_tolerance():
     record = pilot_record(tolerance=1e-5)
     with pytest.raises(ValueError, match='tolerance differs'):

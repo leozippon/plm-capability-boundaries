@@ -152,7 +152,7 @@ def test_the_artifact_is_written_and_the_exit_code_follows_the_verdict(tmp_path)
     arguments = ['--previous', str(before), '--current', str(after), '--output', str(output)]
     assert integrity.main(arguments) == 0
     report = json.loads(output.read_text())
-    assert report['schema'] == 'manuscript_results_source_integrity_v1'
+    assert report['schema'] == 'manuscript_results_source_integrity'
     assert report['previous_revision']['tokens'] == report['current_revision']['tokens'] == 2
     assert '_sequence' not in report['previous_revision']
 

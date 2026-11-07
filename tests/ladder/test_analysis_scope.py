@@ -80,7 +80,7 @@ def test_shared_sequence_does_not_expand_declared_scope(scope_inputs):
     assert all(ladder["ladder_complete"] for ladder in payload["ladders"].values())
     assert len(payload["scientific_scope"]["omitted_crosspairs"]) == 2
     assert set(payload["scientific_scope"]["expected_ladders"]) == expected
-    assert payload["schema_version"] == "ladder_divergence_v2"
+    assert payload["schema_version"] == "ladder_divergence_analysis"
 
 
 def test_explicit_subset_keeps_only_selected_declared_ladders(scope_inputs):

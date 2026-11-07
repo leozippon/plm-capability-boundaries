@@ -8,13 +8,17 @@ test here, on fixtures rather than on the live manuscript, so the test says
 what the checker refuses and not what today's draft happens to contain.
 
 One test does run against the live manuscript, and it asserts only that the
-checker completes and writes a report: the manuscript is another agent's and
-its findings change under it.
+checker completes and writes a report. It runs on a throwaway copy of the
+evidence table, because the checker writes its report beside the table it read
+and this suite must not retype a stored one.
 """
 from pathlib import Path
+import hashlib
 import importlib.util
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -829,14 +833,28 @@ class TheLivePipelineRuns(unittest.TestCase):
     contract's bindings, that the checker completes against the current
     manuscript, and that the figures and the checker read one ledger. Not a
     finding count: the manuscript is another agent's and its findings move under
-    it. Running the checker rewrites its report in the evidence directory, which
-    is exactly what the entry point does and where its output belongs.
+    it. The checker writes its report beside the table it read, so it is given a
+    throwaway copy of that table: a suite may read the stored evidence, never
+    retype it.
     """
 
     def setUp(self) -> None:
         self.directory = BUILDER.EVIDENCE_DIR
         if not (self.directory / "derived-numbers.json").is_file():
             self.skipTest("no derived-number table has been built in this checkout")
+
+    def isolated_evidence(self) -> Path:
+        """A disposable copy of the table and declared policy the checker reads.
+
+        Same bytes as the stored evidence, so the verdict is the one the real
+        directory would produce, and the report it writes lands in the copy.
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="manuscript-evidence-test-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        for name in ("derived-numbers.json", "checker-policy.json"):
+            if (self.directory / name).is_file():
+                shutil.copyfile(self.directory / name, scratch / name)
+        return scratch
 
     def test_every_row_of_the_table_carries_what_it_needs(self):
         payload = json.loads((self.directory / "derived-numbers.json").read_text())
@@ -860,7 +878,7 @@ class TheLivePipelineRuns(unittest.TestCase):
     def test_the_checker_completes_against_the_current_manuscript(self):
         if not any((CHECKER.MANUSCRIPT / name).is_file() for name in CHECKER.SOURCES):
             self.skipTest("the manuscript is held locally and is not in this checkout")
-        report = CHECKER.check(self.directory)
+        report = CHECKER.check(self.isolated_evidence())
         # The submission location is declared once; the checker reads that one,
         # not a path of its own that the submission moved out from under.
         self.assertEqual(report["manuscript"],
@@ -872,6 +890,24 @@ class TheLivePipelineRuns(unittest.TestCase):
         # like agreement.
         self.assertGreater(report["traced_numbers"], 0)
         self.assertIn(report["status"], ("pass", "refused"))
+
+    def test_the_checker_writes_only_beside_the_copy_it_was_given(self):
+        if not any((CHECKER.MANUSCRIPT / name).is_file() for name in CHECKER.SOURCES):
+            self.skipTest("the manuscript is held locally and is not in this checkout")
+        watched = ("derived-numbers.json", "figure-data-contract.json",
+                   "checker-policy.json", "consistency-report.json")
+
+        def stored() -> dict[str, str]:
+            return {name: hashlib.sha256((self.directory / name).read_bytes()).hexdigest()
+                    for name in watched if (self.directory / name).is_file()}
+
+        before = stored()
+        scratch = self.isolated_evidence()
+        CHECKER.check(scratch)
+        self.assertEqual([path.name for path in sorted(scratch.iterdir())],
+                         ["checker-policy.json", "consistency-report.json",
+                          "derived-numbers.json"])
+        self.assertEqual(stored(), before)
 
     def test_the_figures_and_the_checker_read_one_ledger(self):
         # A plotted figure records which ledger it drew from, so the directory

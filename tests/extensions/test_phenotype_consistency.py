@@ -41,6 +41,7 @@ def test_release_means_weight_checkpoints_not_counts_of_other_releases():
 def test_real_frozen_panel():
     joined, releases, result = analyse(ROOT)
     assert len(joined) == 33 and len(releases) == 16
+    assert result["schema"] == "phenotype_consistency_descriptive"
     assert np.isfinite(joined[list(METRICS)].to_numpy(dtype=float)).all()
     assert len(result["pairwise"]) == 12
     assert len(result["leave_one_release_out"]) == 96

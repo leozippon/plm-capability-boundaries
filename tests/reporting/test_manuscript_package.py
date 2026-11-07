@@ -14,6 +14,7 @@ from, and a packaged copy that is gone with only such a source behind it.
 """
 from pathlib import Path
 import hashlib
+import json
 import sys
 
 import pytest
@@ -31,6 +32,21 @@ def staged_package() -> Path:
     return packager.PACKAGE
 
 
+def test_manifest_schema_accepts_the_written_id_and_the_one_it_replaced():
+    assert packager.SCHEMA == 'compact-manuscript-handoff'
+    assert packager.accepted_schema('compact-manuscript-handoff')
+    assert packager.accepted_schema('compact-manuscript-handoff-v1')
+    for unknown in (None, '', 'compact-manuscript-handoff-v2',
+                    'compact_manuscript_handoff', ' compact-manuscript-handoff'):
+        assert not packager.accepted_schema(unknown)
+
+
+def test_the_staged_manifest_is_still_read_by_this_packager():
+    package = staged_package()
+    previous = json.loads((package / packager.MANIFEST_NAME).read_text())
+    assert packager.accepted_schema(previous['schema'])
+
+
 def test_package_carries_every_module_the_entry_points_import():
     package = staged_package()
     derived, _ = packager.derived_code()
@@ -45,6 +61,23 @@ def test_closure_reaches_modules_imported_inside_a_function_and_beside_a_script(
                     'followup_quantities'):
         assert f'{ANALYSIS}/reporting/{emitter}.py' in derived
     assert f'{ANALYSIS}/generation/analyse_selection_factorial.py' in derived
+
+
+def test_a_copy_of_the_same_size_is_still_compared_by_its_bytes(tmp_path):
+    """Staging compares what the two files carry, not how large they are."""
+    derived, _ = packager.derived_code()
+    for path, source in derived.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((packager.REPO_ROOT / source).read_bytes())
+    path = f'{ANALYSIS}/reporting/palette.py'
+    source = derived[path]
+    original = (packager.REPO_ROOT / source).read_bytes()
+    changed = bytes([original[0] ^ 0x01]) + original[1:]
+    assert len(changed) == len(original)
+    (tmp_path / path).write_bytes(changed)
+
+    assert packager.missing_modules(derived, tmp_path) == [f'{path}: differs from {source}']
 
 
 def test_a_module_the_package_lacks_or_has_moved_on_from_is_named(tmp_path):

@@ -5,6 +5,8 @@ declarations and reproduction gate. The frozen-input test additionally checks
 assembly against the restored gpt2 archives when those local inputs are present;
 it never fits the large frozen panel.
 """
+import json
+
 import numpy as np
 import pytest
 
@@ -169,6 +171,55 @@ def test_fit_seed_refuses_missing_dependencies_before_fitter(small_fit, monkeypa
     monkeypatch.setattr(module.abundance, 'fold_predictions', forbidden)
     with pytest.raises(module.replay.ReplayError, match=f'before fold_predictions:.*{missing}'):
         module.fit_seed(prepared, SEEDS[0])
+
+
+def test_written_labels_are_stable_ids_and_the_v3_labels_stay_readable():
+    # A declaration is identified by one stable name; the labels already written by
+    # earlier invocations of this stage stay readable beside it.
+    assert module.PILOT_SCHEMA == 'r2_abundance_pilot'
+    assert module.FIT_SCHEMA == 'r2_abundance_fit'
+    assert module.CONTRACT_SCHEMA == 'bidirectional_abundance_contract'
+    assert module.PANEL_SCHEMA == 'bidirectional_abundance'
+    assert module.PILOT_SCHEMAS == ('r2_abundance_pilot', 'r2_abundance_pilot_v3')
+    assert module.FIT_SCHEMAS == ('r2_abundance_fit', 'r2_abundance_fit_v3')
+    # Only the labels that were actually written are known; invented earlier format
+    # versions are refused instead of being stripped down to the stable stem.
+    fitted = fit_record()
+    assert gate(pilot_record(fitted, schema='r2_abundance_pilot_v3'), [fitted])['arms'] == ['gpt2']
+    for unknown in ('r2_abundance_pilot_v2', 'r2_abundance_pilot_v4'):
+        with pytest.raises(ValueError, match='schema'):
+            gate(pilot_record(fitted, schema=unknown), [fitted])
+
+
+def test_an_old_fit_label_passes_the_schema_check_and_still_fails_its_contract(tmp_path, monkeypatch):
+    record = fit_record()
+    record['schema'] = 'r2_abundance_fit_v3'
+    # The label is readable, but the record was written by code under a contract that
+    # no longer holds; accepting the label never accepts that binding.
+    record['contract_sha256'] = '0' * 64
+    (tmp_path / 'fits').mkdir()
+    (tmp_path / 'fits' / 'gpt2.json').write_text(json.dumps(record))
+    monkeypatch.setattr(module, 'OUT', tmp_path)
+    with pytest.raises(ValueError, match='different contract'):
+        module.reusable('gpt2', 'e' * 64)
+    # An unknown label is refused before any other check.
+    record['schema'] = 'r2_abundance_fit_v2'
+    (tmp_path / 'fits' / 'gpt2.json').write_text(json.dumps(record))
+    with pytest.raises(ValueError, match='is not a r2_abundance_fit record'):
+        module.reusable('gpt2', 'e' * 64)
+
+
+def test_frozen_cohort_and_plan_digests_match_the_recorded_replay_contract():
+    paths = module.shared_paths(module.DEFAULT_ROOT)
+    recorded_path = (module.DEFAULT_ROOT / 'results/extensions/bidirectional_ablation_20261106'
+                     / 'r2/checks/abundance-replay/contract.json')
+    if not all(path.is_file() for path in paths.values()) or not recorded_path.is_file():
+        pytest.skip('requires the frozen cohort/plan and the recorded replay contract')
+    recorded = json.loads(recorded_path.read_text())['source']['hashes']
+    # The original input identity survives the rename: the cohort, its profiles, the
+    # qualified controls and the archive plan hash to what the replay recorded.
+    for key in ('cohort', 'plan', 'controls', 'profiles'):
+        assert module.replay.digest(paths[key]) == recorded[key], key
 
 
 def test_frozen_gpt2_input_assembly_without_fitting(monkeypatch):

@@ -199,6 +199,7 @@ def summarize(out, declaration):
                                for s in declaration['split_seeds']}
         if record['groups_order'] != groups:
             raise ValueError(f'{arm}: group alignment mismatch')
+        assert reference_folds is not None
         per_seed = []
         for seed in declaration['split_seeds']:
             row = record['seeds'][str(seed)]
@@ -211,6 +212,8 @@ def summarize(out, declaration):
             per_seed.append(delta)
         errors.append(per_seed)
         receipts[arm] = fit.digest(path)
+    if groups is None:
+        raise ValueError('no completed arms to summarize')
     values = np.asarray(errors)  # arm, seed, group
     primary = simultaneous_bands(values.mean(axis=1).T)
     diagnostic = simultaneous_bands(values.reshape(-1, len(groups)).T)
@@ -222,7 +225,7 @@ def summarize(out, declaration):
                        'resolved_positive': lo > 0, 'resolved_negative': hi < 0,
                        'per_seed_simultaneous95': {str(seed): diagnostic['interval'][index*3+j]
                                                   for j, seed in enumerate(declaration['split_seeds'])}}
-    report = {'schema': 'pairwise_residual_full_panel_v1', 'declaration_sha256': fit.digest(out/'declaration.json'),
+    report = {'schema': 'pairwise_residual_full_panel', 'declaration_sha256': fit.digest(out/'declaration.json'),
               'arms': records, 'receipts_sha256': receipts, 'groups_order': groups,
               'primary_bootstrap': primary, 'split_diagnostic_bootstrap': diagnostic,
               'resolved_positive_arms': sum(r['resolved_positive'] for r in records.values()),

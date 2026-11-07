@@ -271,7 +271,7 @@ class Export:
         self.gaps.append("Historical unconditional grouped ledgers retain stop_status but not decoder token traces/checkpoint revisions; corresponding raw ledgers were not located in the bounded loose-file inventory. Original grouped rows are retained without inferring EOS from length.")
 
     def replication(self):
-        self.config(f"configs/generation_replication_manifest.json")
+        self.config("configs/generation_replication_manifest.json")
         for p in self.paths(f"{REPLICATION}/cells/*/attempts.jsonl", 40):
             producer = self.config(p.with_name("run_manifest.json"))
             summary = self.data(p.with_name("generation_replication.json"), "attempt_terminal_receipt")
@@ -509,12 +509,12 @@ class Export:
             g.update(attempts=1, empty=int(r["empty"]), main_comparison_members=int(r["main_comparison_member"]), truncation_unknown=int(r["truncated"] is None), truncated=int(r["truncated"] is True), folding_records=r["folding_record_count"], pfam_coverage_present=int(r.get("pfam_max_profile_coverage") is not None))
         group_rows = [dict(zip(["campaign", "cell", "arm", "condition", "class_key", "source_key"], key), **value) for key, value in sorted(groups.items(), key=lambda item: compact(item[0]))]
         csv_gzip(out / "groups.csv.gz", group_rows, ["campaign", "cell", "arm", "condition", "class_key", "source_key", "attempts", "empty", "main_comparison_members", "truncation_unknown", "truncated", "folding_records", "pfam_coverage_present"])
-        provenance = {"schema": "generation_details_v1", "exporter_sha256": sha(Path(__file__).read_bytes()), "sources": dict(sorted(self.sources.items())), "producer_and_evaluator_configurations": dict(sorted(self.configs.items())), "inventories": self.inventories, "aliases": self.aliases}
+        provenance = {"schema": "generation_details", "exporter_sha256": sha(Path(__file__).read_bytes()), "sources": dict(sorted(self.sources.items())), "producer_and_evaluator_configurations": dict(sorted(self.configs.items())), "inventories": self.inventories, "aliases": self.aliases}
         (out / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
         report = {"counts": counts, "gaps": self.gaps + ["Global completeness across arbitrary older experiments is not asserted; inventories list the exact bounded campaign files read.", "Missing checkpoint revisions remain explicit; producer file/configuration hashes, where retained, are in provenance.json.", "Retained-only Pfam booleans outside verified scan support do not establish missing profile coverage. No union-domain coverage, new thresholds, selection, bootstrap, scan, inference or folding was performed.", "Retired ESMFold-v1 records are excluded: superseded evaluator, incompatible calibration. Every retained ESMFold2 record in the enumerated 21 files is exported, including failures and controls.", "Text controls use character length, not protein residue length; their Pfam fields are not applicable.", "Probe reports retain aggregate Pfam counts, not per-attempt hit assignments; these are not imputed to individual records. Raw probe delimiters are observable, but decoder EOS/token traces are not reconstructed.", "Historical conditional per-sample termination is unavailable; truncation stays null, regardless of length.", "Historical reclassification rows enrich their exact original ID/sequence rather than contributing another attempt. Probe first/current runs remain distinct unless byte-identical."], "null_encoding": "blank CSV field", "boolean_encoding": "true/false", "profile_coverage_definition": "maximum over SINGLE retained domain instances of (hmm_to-hmm_from+1)/target_length; never union", "plddt_scale": "mean CA pLDDT 0–100 from structure summaries, never PDB 0–1 B-factor tokens"}
         (out / "coverage-and-gaps.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         (out / "README.md").write_text(README)
-        manifest = {"schema": "generation_details_export_v1", "counts": counts, "files": {p.name: {"bytes": p.stat().st_size, "sha256": sha(p.read_bytes())} for p in sorted(out.iterdir()) if p.is_file()}}
+        manifest = {"schema": "generation_details_export", "counts": counts, "files": {p.name: {"bytes": p.stat().st_size, "sha256": sha(p.read_bytes())} for p in sorted(out.iterdir()) if p.is_file()}}
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         return counts
 

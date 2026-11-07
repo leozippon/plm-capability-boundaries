@@ -984,7 +984,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                     })
 
     report = {
-        "schema": "manuscript_evidence_consistency_report_v1",
+        "schema": "manuscript_evidence_consistency_report",
         "manuscript": manuscript.as_posix(),
         "derived_number_table": {
             "quantities": table["counts"]["quantities"],

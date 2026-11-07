@@ -304,7 +304,19 @@ class TestBalancedRetainedAnalysis:
         for name in ("simultaneous", "simultaneous_all_units"):
             assert {column["column"] for column in panel[name]["columns"]} == set(D.ARMS)
             assert panel[name]["band_weights"] == {"short": 0.5, "long": 0.5}
-        assert payload["schema"] == "forcing_gate_divergence_v2"
+        assert payload["schema"] == "forcing_gate_divergence"
+        assert payload["analysis_method"] == "equal_length_band_backbone_mean"
+
+    def test_the_two_estimands_keep_two_distinct_names(self):
+        from src.capability.forcing import gate_divergence as G
+
+        values = {"P1": 0.1, "P2": 0.2, "P3": 0.3, "P4": 0.4}
+        bands = {"P1": "short", "P2": "short", "P3": "long", "P4": "long"}
+        banded = G.bootstrap_interval(values, draws=20, seed=1, bands=bands)
+        unweighted = G.bootstrap_interval(values, draws=20, seed=1)
+        assert banded["method_version"] == G.METHOD == "equal_length_band_backbone_mean"
+        assert unweighted["method_version"] == "backbone_mean"
+        assert banded["estimand"] != unweighted["estimand"]
 
     def test_join_rejects_generation_band_contradicting_cohort(self):
         unit = {"unit_id": "P:40:70", "accession": "P", "length_band": "short",

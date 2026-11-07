@@ -32,7 +32,7 @@ def main():
                for arm in sorted(run.ROSTER)]
     report = json.loads((out / 'panel.json').read_text())
     completion = json.loads((out / 'completion.json').read_text())
-    assert report['schema'] == 'bidirectional_stability_v2'
+    assert report['schema'] in run.PANEL_SCHEMAS
     assert completion['status'] == 'complete'
     assert completion['panel_sha256'] == run.sha256_file(out / 'panel.json')
     assert report['contract_sha256'] == run.sha256_file(out / 'contract.json')

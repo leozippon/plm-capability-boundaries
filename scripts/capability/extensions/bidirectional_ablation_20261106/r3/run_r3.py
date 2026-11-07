@@ -46,7 +46,10 @@ DESIGNS = {'U': ('G', 'T'), 'U_M': ('G', 'T', 'M'), 'M': ('M',),
 OLD_NAMES = {'U_C': 'C_G_T', 'U_C_M': 'C_G_T+M'}
 DRAWS = bidirectional.DRAWS
 SEED = bidirectional.SEED
-RELATIVE_OUT = Path('results/extensions/bidirectional_ablation_20261106/r3-v2')
+#: Stable labels of the frozen declaration and of the summary it produces.
+CONTRACT_SCHEMA = 'r3_bidirectional'
+SUMMARY_SCHEMA = 'r3_bidirectional_summary'
+RELATIVE_OUT = Path('results/extensions/bidirectional_ablation_20261106/r3-bidirectional')
 RELATIVE_OLD = Path('results/R3/pairwise_residual_full_panel_indel_excluded_20260928')
 RELATIVE_EXCLUSION = Path('results/R3/pairwise_indel_exclusion_20260928/pairwise_indel_exclusion.json')
 RELATIVE_INPUTS = {
@@ -134,7 +137,7 @@ def freeze():
     if hashes != DECL['input_sha256']:
         raise ValueError('frozen input digest differs from the archived declaration')
     contract = {
-        'schema': 'r3_bidirectional_v2',
+        'schema': CONTRACT_SCHEMA,
         'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'git_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         'arms': DECL['arms'], 'support': DECL['support_counts'], 'split_seeds': DECL['split_seeds'],
@@ -523,7 +526,7 @@ def summarize_errors(errors, perseed, arms, names, target):
             'verdict': sensitivity_verdicts[a]}}
         records[arm] = record
     return {
-        'schema': 'r3_bidirectional_summary_v2', 'columns': columns, 'target': target,
+        'schema': SUMMARY_SCHEMA, 'columns': columns, 'target': target,
         'arms': records,
         'primary': {'designs': {'U_C': 'full controls: C blocks + G + T',
                                'M': 'pure scalar likelihood readout',

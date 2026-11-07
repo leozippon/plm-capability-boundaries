@@ -46,8 +46,10 @@ from ..core.amino_acids import AA20
 from ..generation.near_duplicates import near_duplicate_groups
 from . import forcing_design as D
 
-SCHEMA = "forcing_gate_divergence_v2"
-METHOD = "equal_length_band_backbone_mean_v2"
+SCHEMA = "forcing_gate_divergence"
+#: The declared band-balanced estimand. Its unweighted companion below is a different
+#: quantity and keeps its own name: the two are never interchangeable.
+METHOD = "equal_length_band_backbone_mean"
 DECLARED_BANDS = tuple(name for name, _, _ in D.LENGTH_BANDS)
 
 #: Fewest usable draws a condition must contribute at a position for the
@@ -496,7 +498,7 @@ def _groups(universe, bands, required_bands):
 
 def _metadata(groups, bands):
     return {
-        "method_version": METHOD if bands is not None else "backbone_mean_v1",
+        "method_version": METHOD if bands is not None else "backbone_mean",
         "estimand": (
             "equal-weight mean of within-length-band backbone means; each backbone is "
             "the equal-weight mean of its resolved paired units"

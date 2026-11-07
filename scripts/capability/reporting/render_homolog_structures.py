@@ -37,7 +37,12 @@ CE_PARAMETERS = {"target_state": 1, "mobile_state": 1, "quiet": 1, "guide": 1,
 COHORT = ROOT / "results/R1/external_confirmation_20260924/cohort.json"
 PFAM = ROOT / "data/interpro/pfam_residue.tsv"
 QUERY = "O14640_PF00595_246"
-VERSION = "homolog-illustration-v2-ce"
+VERSION = "homolog-illustration-ce"
+#: The salt the authored contact sheet was first hashed under. ``svg.hashsalt``
+#: seeds matplotlib's element IDs, so changing it would change the SVG bytes and
+#: the hashes that bind the handed-off asset; the original bytes stay as the
+#: salt while the schema label above is free to become version-free.
+SVG_HASH_SALT = "homolog-illustration-v2-ce"
 CAPTION = "illustrative pairwise sequence identity to DVL1; not phylogenetic distances or the corpus-defined remote-cohort test"
 # Standard BLOSUM62, canonical amino acids, order ARNDCQEGHILKMFPSTWYV.
 LETTERS = "ARNDCQEGHILKMFPSTWYV"
@@ -376,7 +381,7 @@ def contact_sheet(selected: list[dict]) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    plt.rcParams.update({"svg.fonttype": "none", "font.family": "DejaVu Sans", "svg.hashsalt": VERSION})
+    plt.rcParams.update({"svg.fonttype": "none", "font.family": "DejaVu Sans", "svg.hashsalt": SVG_HASH_SALT})
     fig, axes = plt.subplots(1, len(selected), figsize=(3.4 * len(selected), 4.6))
     for ax, row in zip(axes, selected):
         ax.imshow(plt.imread(OUT / f"{row['id']}.png")); ax.axis("off")
@@ -423,7 +428,7 @@ def main() -> None:
     manifest = {"schema": VERSION, "policy": POLICY, "caption": CAPTION, "inputs": inputs,
                 "implementation": {"script": source_receipt(Path(__file__)), "framework_helpers": source_receipt(Path(__file__).with_name("render_framework_structures.py")),
                                    "palette": source_receipt(palette.PATH), "python": sys.version, "numpy": np.__version__,
-                                   "alignment_version": "homolog-illustration-v1:global-affine-dp", "rigid_version": "homolog-illustration-v1:proper-kabsch"},
+                                   "alignment_version": "global-affine-dp", "rigid_version": "proper-kabsch"},
                 "sequence_metric_fields": "Top-level identity, pairs, pair_count and query/candidate_coverage are GLOBAL SEQUENCE metrics. rigid_alignment contains separate CE structural-fit metrics (query uses identity transform).",
                 "method_correction": "Selection unchanged. CE structural correspondence replaces global-sequence correspondence for rendering; original all-sequence-pair Kabsch RMSDs remain in sequence_pair_kabsch_diagnostic.",
                 "eligibility": stats, "selected_ids": [r["id"] for r in selected],

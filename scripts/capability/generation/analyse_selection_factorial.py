@@ -26,10 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.capability.context.family_potts import encode, load_family_model  # noqa: E402
 from src.capability.context.potts_gauge import to_zero_sum  # noqa: E402
-from src.capability.core.io import sha256_file, write_json  # noqa: E402
+from src.capability.core.io import write_json  # noqa: E402
 from src.capability.decoding.guided_decoding import permutation_for, select_cross_domain_donor  # noqa: E402
 
-SCHEMA = "selection_factorial_v2"
+SCHEMA = "selection_factorial"
 KS = (1, 5, 10, 25)
 #: Potts scores are computed in the zero-sum gauge; the two ``*_raw`` selectors repeat the
 #: component scores on the stored parameters so the gauge sensitivity of the contrast is visible.
@@ -328,14 +328,18 @@ def main(argv=None):
         "shrinkage": shrinkages, "summaries": summaries, "cells": cells})
     for s in summaries:
         print(render(s))
-    print(f"sha256 {sha256_file(args.out)}  {args.out}")
+    print(f"Wrote {args.out}")
     print(ORACLE_STATEMENT)
     for name, per_k in shrinkages.items():
         print(f"== shrinkage, stratum {name}: restricted gain vs unrestricted on matched cells / on all cells ==")
         for k, per in per_k.items():
             for sel, r in per.items():
-                f = lambda v: "   n/a" if v is None else f"{v:+.4f}"
-                flag = lambda t: " (unreliable)" if r[f"shrinkage_{t}_unreliable"] else ""
+                def f(v):
+                    return "   n/a" if v is None else f"{v:+.4f}"
+
+                def flag(t):
+                    return " (unreliable)" if r[f"shrinkage_{t}_unreliable"] else ""
+
                 print(f"k={k:<3}{sel:<24} restricted {f(r['gain_restricted'])}  matched {f(r['gain_unrestricted_matched'])} "
                       f"shrink {f(r['shrinkage_matched'])}{flag('matched')}  all-cells {f(r['gain_unrestricted_vs_all_cells'])} "
                       f"shrink {f(r['shrinkage_vs_all_cells'])}{flag('vs_all_cells')}")

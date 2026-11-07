@@ -99,6 +99,10 @@ PANELS = {
         f"{PHENOTYPE}/fit-panel10/panels/cellular_fitness_sge-ranking.json",
 }
 MATCHED = f"{PHENOTYPE}/matched-panel10/matched_phenotype_analysis.json"
+#: The matched panel is read whatever stable name wrote it: the archived artefact
+#: carries the original versioned schema and a re-run writes the stable one. No
+#: other schema is a matched panel, so an unknown one is refused rather than read.
+MATCHED_SCHEMAS = ("matched_phenotype_v1", "matched_phenotype_analysis")
 GRID_ROOT = ("results/external_baseline/20261008095614_7e8ae4b18a4d/"
              "stability_ranking_error_grid_cpu")
 GRID = f"{GRID_ROOT}/panel.json"
@@ -360,9 +364,9 @@ def _quantitative_share(ledger, emit, cells: dict[tuple[str, str], dict]) -> Non
 def _matched_components(ledger, emit) -> None:
     """The matched phenotype-pair panel: every headline contrast, none resolved."""
     payload = ledger.artifacts.json(MATCHED)
-    if payload["schema"] != "matched_phenotype_v1" or payload["status"] != "complete":
-        raise LedgerError(f"{MATCHED}: the matched panel is not a complete matched_phenotype_v1 "
-                          "analysis")
+    if payload["schema"] not in MATCHED_SCHEMAS or payload["status"] != "complete":
+        raise LedgerError(f"{MATCHED}: the matched panel is not a complete analysis of an accepted "
+                          f"schema {list(MATCHED_SCHEMAS)} (got {payload.get('schema')!r})")
     pooled = payload["pooled_inference"]
     contrasts, arms = pooled["contrast_family"], payload["arms"]
     results = pooled["results"]

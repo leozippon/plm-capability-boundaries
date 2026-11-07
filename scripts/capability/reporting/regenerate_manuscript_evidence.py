@@ -110,7 +110,7 @@ def regenerate(out_dir: Path = EVIDENCE_DIR, *, dry_run: bool = False) -> dict[s
     result = build(target)
     after_report = check(target)
     change = {
-        "schema": "manuscript_evidence_regeneration_report_v1",
+        "schema": "manuscript_evidence_regeneration_report",
         "dry_run": dry_run,
         "table": diff_tables(before_table, result["table"]),
         "gaps": diff_gaps(before_table, result["table"]),

@@ -21,6 +21,11 @@ Everything here is a definition, not an analysis: the bootstrap statistic, the
 verdict rule that turns a simultaneous interval into positive, negative or
 unresolved, the two-direction pairing, and the pilot gate that a reused arm must
 pass before any summary may be written.
+
+A schema label is an identity, not a version counter: this format writes one
+stable name and a reader accepts that name plus the labels already written for the
+same declaration. Nothing is stripped back to a version-free stem, so an unknown
+label is refused rather than guessed at.
 """
 from __future__ import annotations
 
@@ -60,7 +65,11 @@ SENSITIVITY_DESIGNS = {'controls_given_model_U_M_conditioned': ('U_M', 'U_C_M')}
 #: units. A reproduced arm matches the archived per-group errors to this tolerance
 #: or it is not reused at all; no weaker tolerance is accepted downstream.
 PILOT_TOLERANCE = 1e-7
-PILOT_SCHEMA = 'r3_bidirectional_pilot_v2'
+#: The stable label of this pilot declaration.
+PILOT_SCHEMA = 'r3_bidirectional_pilot'
+#: Every pilot label this reader knows: the stable id and the one already written.
+#: Any other label is refused rather than stripped back to a version-free stem.
+PILOT_SCHEMAS = (PILOT_SCHEMA, 'r3_bidirectional_pilot_v2')
 _HEX64 = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -213,8 +222,8 @@ def require_pilot(pilot, *, contract_sha256: str, manifest_sha256: str, split_se
                          'independent pilot run, not a fit record or a re-read of one')
     if pilot.get('status') != 'complete':
         raise ValueError(f"pilot status is {pilot.get('status')!r}, not complete")
-    if pilot.get('schema') != PILOT_SCHEMA:
-        raise ValueError(f"pilot schema is {pilot.get('schema')!r}, not {PILOT_SCHEMA}")
+    if pilot.get('schema') not in PILOT_SCHEMAS:
+        raise ValueError(f"pilot schema is {pilot.get('schema')!r}, not {PILOT_SCHEMAS}")
     if pilot.get('tolerance') != PILOT_TOLERANCE:
         raise ValueError('pilot tolerance differs from the declared reproduction tolerance')
     if tolerance > PILOT_TOLERANCE:

@@ -50,7 +50,7 @@ from src.capability.ladder import design, divergence  # noqa: E402
 
 COMPLETION = "ladder_divergence.json"
 REPORT = "ladder_divergence.md"
-SCHEMA_VERSION = "ladder_divergence_v2"
+SCHEMA_VERSION = "ladder_divergence_analysis"
 
 #: Structural readouts the ladder correlates likelihood against. The first is the
 #: primary; the others are reported beside it and are not substitutes for it.

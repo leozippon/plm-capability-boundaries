@@ -45,7 +45,7 @@ from ..core.statistics import bootstrap_unit_floor
 from . import phenotype_breadth as breadth
 from .overlap import rerank
 
-SCHEMA = 'matched_phenotype_v1'
+SCHEMA = 'matched_phenotype_analysis'
 
 #: Columns this module reads from each processed ProteinGym substitution table
 #: and from the release reference. Nothing else is read.

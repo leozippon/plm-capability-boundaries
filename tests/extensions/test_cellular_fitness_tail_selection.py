@@ -34,6 +34,13 @@ def test_the_budget_is_the_declared_two_percent_of_the_admission_cap():
     assert tail.K == 6 == math.ceil(tail.SELECTION_FRACTION * tail.GROUP_CAP)
 
 
+def test_the_completion_record_carries_the_stable_schema_name():
+    # The stable name is the record's identity; the file name it is written to is
+    # unchanged because readers locate the artefact by path, not by schema.
+    assert tail.SCHEMA == 'cellular_fitness_tail_selection'
+    assert tail.COMPLETION == 'cellular_fitness_tail_selection.json'
+
+
 def test_percentile_is_the_within_group_rank_and_runs_with_higher_fitness():
     percentiles = tail.tail_percentile(LABELS)
     assert list(percentiles) == [0.25, 0.5, 0.75, 1.0]

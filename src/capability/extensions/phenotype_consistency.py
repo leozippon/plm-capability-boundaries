@@ -210,7 +210,7 @@ def analyse(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     gates["stability_mse"]["original_pointwise_multiplicity"] = stability_original["multiplicity"]
     gates["abundance_rank"]["panel_verdict_rule"] = abundance_panel["verdict_rule"]
     gates["abundance_mse"]["panel_verdict_rule"] = abundance_panel["verdict_rule"]
-    return joined, releases, {"schema": "phenotype_consistency_descriptive_v1", "metrics": gates,
+    return joined, releases, {"schema": "phenotype_consistency_descriptive", "metrics": gates,
         "families": families, "source_sha256": hashes, "source_rows": source_rows,
         "pairwise": main, "leave_one_release_out": loo, "leave_one_release_out_ranges": ranges,
         "shared_parent_joint_exclusion": correlations(excluded, "exclude_Llama2_and_ProLLaMA_release_means"),

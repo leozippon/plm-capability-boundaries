@@ -102,10 +102,11 @@ def breadth_payload(panels: dict[tuple[str, str], dict]) -> dict:
     }
 
 
-def matched_payload(*, resolved: bool = False) -> dict:
+def matched_payload(*, resolved: bool = False,
+                    schema: str = "matched_phenotype_analysis") -> dict:
     contrasts = ["increment_mean", "increment_difference", "shared_residual_change"]
     return {
-        "schema": "matched_phenotype_v1", "status": "complete", "arms": list(ARMS),
+        "schema": schema, "status": "complete", "arms": list(ARMS),
         "within_protein_partition": "mutated-position-held-out folds inside each protein",
         "matched_pair_counts": {"pooled": {"assay_pairs": 15, "independent_groups": 13,
                                            "matched_substitution_rows": 60002}},
@@ -312,6 +313,19 @@ def test_each_cell_states_either_what_resolved_or_what_bounds_it(tmp_path):
     assert f"{resolving}/simultaneous_upper_bound" not in emitted
     assert emitted["phenotype_breadth/matched_proteingym/headline_contrasts"].value == 30.0
     assert emitted["phenotype_breadth/matched_proteingym/contrasts_resolving"].value == 0.0
+
+
+@pytest.mark.parametrize("schema", ["matched_phenotype_v1", "matched_phenotype_analysis"])
+def test_the_matched_panel_is_read_under_either_stable_name(tmp_path, schema):
+    # The archived artefact carries the original versioned schema and a re-run
+    # writes the stable one; both name the same panel and both are read.
+    emitted = rows(stage(tmp_path, matched=matched_payload(schema=schema)))
+    assert emitted["phenotype_breadth/matched_proteingym/headline_contrasts"].value == 30.0
+
+
+def test_an_unknown_matched_panel_schema_is_refused(tmp_path):
+    with pytest.raises(LedgerError, match="matched panel"):
+        stage(tmp_path, matched=matched_payload(schema="matched_phenotype_v2"))
 
 
 def test_the_procedural_constants_these_panels_record_are_not_emitted(tmp_path):

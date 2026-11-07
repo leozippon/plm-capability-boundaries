@@ -74,7 +74,11 @@ from scripts.capability.reporting import publication_paths  # noqa: E402
 
 PACKAGE = REPO_ROOT / "manuscript"
 MANIFEST_NAME = "package-manifest.json"
-SCHEMA = "compact-manuscript-handoff-v1"
+SCHEMA = "compact-manuscript-handoff"
+#: The ID this manifest was written under before the stable one. ``manuscript/``
+#: is outside Git and the staged package records that ID, so a refresh reads it
+#: exactly; the whitelist stays closed and anything else is refused.
+PREVIOUS_SCHEMAS = ("compact-manuscript-handoff-v1",)
 
 #: Entry points whose closure is packaged under ``code/analysis/`` at
 #: repository paths, so the packaged copies import each other by the names the
@@ -333,7 +337,7 @@ def missing_modules(derived: dict[str, str], package: Path = PACKAGE) -> list[st
         target = package / path
         if not target.is_file():
             faults.append(f"{path}: not packaged, but the entry points import {source}")
-        elif digest_file(target) != digest_file(REPO_ROOT / source):
+        elif target.read_bytes() != (REPO_ROOT / source).read_bytes():
             faults.append(f"{path}: differs from {source}")
     return faults
 
@@ -470,6 +474,11 @@ def git_head() -> str:
                           check=True, text=True, capture_output=True).stdout.strip()
 
 
+def accepted_schema(schema: object) -> bool:
+    """Whether a manifest's schema is the one written here or the one it replaced."""
+    return schema in (SCHEMA, *PREVIOUS_SCHEMAS)
+
+
 def arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stage the manuscript package and its manifest.")
     parser.add_argument("--check", action="store_true",
@@ -486,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"{manifest_path}: no manifest to refresh; the curated inventory and "
                          "the provenance history exist nowhere else")
     previous = json.loads(manifest_path.read_text())
-    if previous.get("schema") != SCHEMA:
+    if not accepted_schema(previous.get("schema")):
         raise SystemExit(f"{manifest_path}: unexpected schema {previous.get('schema')!r}")
     problems: list[str] = []
 

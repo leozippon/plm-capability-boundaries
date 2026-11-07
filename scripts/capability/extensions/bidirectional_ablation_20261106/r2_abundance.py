@@ -49,6 +49,10 @@ inputs), a cheap input-availability check (``--check-inputs``) and the summary
 (``--summarize``), which refuses to write a completed panel unless a real pilot
 reproduced the archived fits for every arm it covers and every requested arm has
 its own reproduced fit record.
+
+Every record this stage writes carries a stable schema label; a reader accepts that
+label beside the ``_v3`` labels already written and refuses any other one, so no
+version suffix is stripped and no frozen record is rewritten.
 """
 from __future__ import annotations
 
@@ -87,7 +91,7 @@ from src.capability.stability import stability_gate
 
 DEFAULT_ROOT = ROOT
 DEFAULT_EXTRACTION = ROOT / 'results/external_baseline/20260924085613_5f8d32cf0368'
-DEFAULT_OUT = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/abundance-v2'
+DEFAULT_OUT = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/abundance-bidirectional'
 #: The earlier abundance attempt; never written by this stage.
 HISTORICAL_OUT = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/abundance'
 #: Relative to ``--root``: the frozen cohort, profiles, controls and archives plan.
@@ -117,11 +121,17 @@ METRICS = {
         'direction': 'joint minus reduced: positive when the joint arm raises the rank correlation'},
 }
 ATOL, RTOL = replay.ATOL, replay.RTOL
-PILOT_SCHEMA = 'r2_abundance_pilot_v3'
+#: Stable labels of this stage's declarations; a declaration is identified by one
+#: name, so a changed declaration is a different label rather than a version suffix.
+PILOT_SCHEMA = 'r2_abundance_pilot'
+FIT_SCHEMA = 'r2_abundance_fit'
+CONTRACT_SCHEMA = 'bidirectional_abundance_contract'
+PANEL_SCHEMA = 'bidirectional_abundance'
 PILOT_TOLERANCE = bidirectional.PILOT_TOLERANCE
-FIT_SCHEMA = 'r2_abundance_fit_v3'
-CONTRACT_SCHEMA = 'bidirectional_abundance_contract_v3'
-PANEL_SCHEMA = 'bidirectional_abundance_v3'
+#: The labels this stage already wrote; its readers accept these beside the stable
+#: names and refuse every other label rather than stripping a version suffix.
+PILOT_SCHEMAS = (PILOT_SCHEMA, 'r2_abundance_pilot_v3')
+FIT_SCHEMAS = (FIT_SCHEMA, 'r2_abundance_fit_v3')
 #: Fully fixed support of the archived endpoint, asserted rather than assumed.
 SUPPORT = {'rows': 109568, 'groups': 96, 'domains': 428}
 #: The archived arms whose penalties, widths and metrics a pilot must reproduce.
@@ -601,7 +611,7 @@ def reusable(arm: str, contract_sha256: str):
     if not path.is_file():
         return None
     record = replay.read_json(path)
-    if record.get('schema') != FIT_SCHEMA or record.get('arm') != arm:
+    if record.get('schema') not in FIT_SCHEMAS or record.get('arm') != arm:
         raise ValueError(f'{path} is not a {FIT_SCHEMA} record of {arm}')
     if record.get('contract_sha256') != contract_sha256:
         raise ValueError(f'{path} was written under a different contract; rerun into a new --out '
@@ -742,8 +752,8 @@ def require_pilot(pilot, *, contract_sha256: str, code: dict, shared: dict, samp
                          'three-seed pilot invocation, not a fit record')
     if pilot.get('status') != 'complete':
         raise ValueError(f"pilot status is {pilot.get('status')!r}, not complete")
-    if pilot.get('schema') != PILOT_SCHEMA:
-        raise ValueError(f"pilot schema is {pilot.get('schema')!r}, not {PILOT_SCHEMA}")
+    if pilot.get('schema') not in PILOT_SCHEMAS:
+        raise ValueError(f"pilot schema is {pilot.get('schema')!r}, not {PILOT_SCHEMAS}")
     if pilot.get('tolerance') != PILOT_TOLERANCE:
         raise ValueError('pilot tolerance differs from the declared reproduction tolerance')
     if tolerance > PILOT_TOLERANCE:

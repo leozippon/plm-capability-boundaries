@@ -60,7 +60,7 @@ def main() -> None:
             lineage_paths = [source / "release_means.csv", source / "analysis.json", source / "completion_receipt.json",
                              declaration, Path(__file__), args.root / "src/capability/extensions/phenotype_consistency.py",
                              args.root / "tests/extensions/test_phenotype_consistency.py"]
-            result = {"schema": "phenotype_consistency_within_frozen_categories_v1", "pairwise": records,
+            result = {"schema": "phenotype_consistency_within_frozen_categories", "pairwise": records,
                       "source_sha256": {str(p.relative_to(args.root)): digest(p) for p in lineage_paths},
                       "initial_source_sha256": json.loads((source / "analysis.json").read_text())["source_sha256"],
                       "limitations": ["Frozen release categories, not protein-exposure or independent-training-history labels.",

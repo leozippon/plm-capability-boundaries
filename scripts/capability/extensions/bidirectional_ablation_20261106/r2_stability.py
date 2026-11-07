@@ -33,8 +33,13 @@ from src.capability.interactions.pairwise_epistasis import ROSTER
 from src.capability.stability import stability_gate as gate, gate_inputs, ranking_error as metric
 
 DEFAULT_SOURCE = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/stability'
-DEFAULT_OUT = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/stability-v2'
+DEFAULT_OUT = ROOT / 'results/extensions/bidirectional_ablation_20261106/r2/stability-native-bands'
 OLD = ROOT / 'results/external_baseline/20261008095614_7e8ae4b18a4d/stability_ranking_error_grid_cpu'
+PANEL_SCHEMA = 'bidirectional_stability'
+CONTRACT_SCHEMA = 'bidirectional_stability_contract'
+#: The panel labels this reader accepts: the stable name and the one already written
+#: for this declaration. Any other label is refused rather than stripped of a suffix.
+PANEL_SCHEMAS = (PANEL_SCHEMA, 'bidirectional_stability_v2')
 
 #: Endpoint readings and the native units each contrasted quantity carries.
 READINGS = {'ranking': 'within-background Spearman rho',
@@ -239,7 +244,7 @@ def aggregate(records):
                              'pointwise_interval': interval_matrix(absolutes)}}
     np.savez_compressed(OUT / 'group_contrasts.npz', groups=np.array(groups), **matrices)
     write(OUT / 'panel.json', {
-        'schema': 'bidirectional_stability_v2', 'arms': arms, 'groups': groups,
+        'schema': PANEL_SCHEMA, 'arms': arms, 'groups': groups,
         'contract_sha256': sha256_file(OUT / 'contract.json'),
         'method': {'primary': bidirectional.NATIVE_METHOD,
                    'sensitivity': bidirectional.STANDARDIZED_METHOD,
@@ -265,7 +270,7 @@ def contract(source=None, arms=None, workers=None):
 
     reused = source is not None
     return {
-        'schema': 'bidirectional_stability_contract_v2',
+        'schema': CONTRACT_SCHEMA,
         'support': {'rows': 25856, 'groups': 101},
         'designs': DESIGNS,
         'G': 'training-fold derived nonlinear additive response; belongs to C, not M',

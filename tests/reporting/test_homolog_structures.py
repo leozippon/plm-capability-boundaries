@@ -84,6 +84,13 @@ def test_kabsch_is_proper_rigid_and_uses_all_pairs():
         homologs.kabsch(np.zeros((3,3)), np.zeros((3,3)))
 
 
+def test_the_stable_schema_label_leaves_the_svg_hash_salt_as_written():
+    # The label names the illustration; the salt is original identity material
+    # that seeds the SVG element IDs, so it keeps the bytes it was authored with.
+    assert homologs.VERSION == 'homolog-illustration-ce'
+    assert homologs.SVG_HASH_SALT == 'homolog-illustration-v2-ce'
+
+
 def test_frozen_local_universe_and_rendered_provenance():
     if not homologs.COHORT.is_file() or not homologs.PFAM.is_file():
         pytest.skip("Local cached research inputs are not distributed")

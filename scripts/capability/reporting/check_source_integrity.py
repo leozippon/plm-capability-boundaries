@@ -170,7 +170,7 @@ def compare(previous_submission: Path, current_submission: Path) -> dict:
                                            autojunk=False).get_matching_blocks())
     first = difference[0] if difference else None
     return {
-        'schema': 'manuscript_results_source_integrity_v1',
+        'schema': 'manuscript_results_source_integrity',
         'generated_utc': datetime.now(timezone.utc).isoformat(),
         'claim': 'every numeric token of the Results files retains its original order',
         'number_rule': 'check_manuscript_evidence.strip_markup with checkpoint names blanked; '

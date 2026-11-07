@@ -55,7 +55,7 @@ from src.capability.extensions import phenotype_breadth as breadth  # noqa: E402
 from src.capability.extensions import phenotype_cohorts as sources  # noqa: E402
 from src.capability.stability.stability_gate import load_profiles  # noqa: E402
 
-SCHEMA = 'cellular_fitness_tail_selection_v1'
+SCHEMA = 'cellular_fitness_tail_selection'
 COMPLETION = 'cellular_fitness_tail_selection.json'
 COHORT = 'cellular_fitness_sge'
 ENDPOINT = 'ranking'
