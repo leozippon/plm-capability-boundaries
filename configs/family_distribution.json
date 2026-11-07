@@ -1,0 +1,148 @@
+{
+  "declaration": {
+    "id": "family_distribution_20261106",
+    "declared_before": "any model score; heldout-only and containment corrections are unaccepted preflight repairs, not an unchanged old queue",
+    "question": "How much of a causal protein model's log-likelihood on natural continuous HSP fragments survives a null that permutes the amino acid at each query column among homologous rows while leaving every row's length, inserted residues, gap mask and fragment boundaries identical?",
+    "why_it_matters": "The retained 174 wild-type alignment is a query-coordinate projection: it deletes subject insertions and therefore cannot stand in for a natural protein. The native corpus strings are lossless, so an autocorrelation contrast can be built on them; the declared lower-order controls separate composition, independent-site statistics and first-order Markov structure from whatever the contrast leaves.",
+    "unit_of_inference": "one query per independent merged family group; choose the wild type with most clusters, identifier breaking ties, and retain every merged source in the audit",
+    "not_reused": "the retained R1 folds, likelihoods, 132/396 statistical families and the 174-row projection are not used for inference; the projection's own control is never a natural sequence here",
+    "not_claimed": "the null breaks the association between a query column and its inserted residues and mask, so this is a column-permutation contrast, not a calibrated probability and not a pure query-query higher-order term; and a preference for the natural strings over this column null is not evidence that the distribution has been recovered, nor does it answer the broader question of how the natural distribution is encoded",
+    "stage": "first-stage diagnostic",
+    "scope": "one declared non-additive preference test: a model's sum log-likelihood on natural continuous HSP fragments against a null that permutes each query column among homologous rows while keeping every row's length, inserted residues, gap mask and fragment boundaries identical, with a composition shuffle and a train-only Profile/Markov pair as lower-order descriptions",
+    "out_of_scope": "single-site, pairwise, distance-dependent or higher-order recovery statistics, comparisons against MSA Transformer, arDCA or categorical-Jacobian analyses, and any generation or design proposal. Whether such a layer is added is undecided and is not implemented here."
+  },
+  "paths": {
+    "support": "results/extensions/statistical_ladder_20261106/inputs/support.json",
+    "wildtype_fasta": "results/R5/retrieval_bound_20260807/wildtypes.faa",
+    "wildtypes_catalogue": "results/R5/retrieval_bound_20260807/wildtypes.json",
+    "corpus_hits": "results/R5/retrieval_bound_20260807/corpus_hits.tsv",
+    "samples": "results/extensions/information_progression_20261006/full/samples.json"
+  },
+  "native": {
+    "coverage_floor_percent": 80.0,
+    "max_hits_per_wildtype": 5000,
+    "queue_cap": 512,
+    "length_min": 40,
+    "length_max": 512,
+    "alphabet": "AA20",
+    "dedup": "exact native string within one wild type, best bitscore kept",
+    "lossless_rule": "native = sseq_gapped without '-' and must roundtrip verbatim through the query-position map",
+    "queue_cap_rule": "candidates ordered by bitscore with the subject id breaking ties; at most queue_cap rows drawn without replacement by the queue seed and kept in bitscore order"
+  },
+  "null": {
+    "column_shuffles": 4,
+    "column_shuffle_seeds": [
+      20261106,
+      20261107,
+      20261108,
+      20261109
+    ],
+    "composition_shuffles": 1,
+    "column_shuffle_preserved": [
+      "row native length",
+      "inserted residue order and index",
+      "gap mask",
+      "query-column fragment boundaries"
+    ],
+    "composition_shuffle_preserved": [
+      "row native length",
+      "amino-acid composition"
+    ],
+    "column_shuffle_rng": "numpy default_rng(seed), one generator per (wild type, seed), consumed ONLY over test-cluster representatives in frozen row order and query columns in ascending order; no train or nonrepresentative donors",
+    "composition_shuffle_rng": "numpy default_rng(queue seed + row index), one whole-string permutation per row"
+  },
+  "clustering": {
+    "shared_query_positions_floor": 30,
+    "coverage_of_shorter_row_floor": 0.8,
+    "overlap_identity_floor": 0.9,
+    "containment_rule": "exact whole-native-row substring containment across wild types connects their groups; one shared 12-mer generates a candidate and exact substring comparison confirms it",
+    "min_clusters_per_wildtype": 16,
+    "max_test_clusters": 32,
+    "min_test_clusters": 8,
+    "min_train_clusters": 8,
+    "split_seed": 20261106,
+    "representative": "highest bitscore within the cluster, subject id breaking ties",
+    "split_rng": "one numpy default_rng(split_seed) consumed over qualifying wild types in sorted identifier order, one permutation of that wild type's cluster labels each"
+  },
+  "queue": {
+    "seed": 20261106,
+    "pilot_units": 4,
+    "max_evaluation_units": 64,
+    "pilot_models": [
+      "gpt2",
+      "protgpt2",
+      "progen2-medium",
+      "prollama"
+    ],
+    "partition_rng": "one numpy default_rng(seed) permutation over the sorted independent unit identifiers; the first pilot_units are the pilot and the next max_evaluation_units are the evaluation partition"
+  },
+  "statistics": {
+    "profile_pseudocount": 0.05,
+    "profile_pseudocount_rule": "train-cluster representatives only; per query-column residue count plus 1/20, renormalised over AA20",
+    "markov_pseudocount": 0.05,
+    "markov_rule": "AA20 start distribution and adjacent transitions of each continuous native HSP fragment, fitted on train-cluster representatives only, Laplace 1/20; query-map gaps do not break the native chain",
+    "bootstrap_draws": 10000,
+    "bootstrap_seed": 20261106,
+    "min_inference_units": 8,
+    "primary": "standardized maxT 95% over the 33 model columns, one statistical family",
+    "auxiliary": "pointwise 95% from the shared draws of the same family",
+    "secondary_family": "composition-shuffle contrast of the same 33 models, reported separately and never combined with the primary family",
+    "profile_null_audit_tolerance": 1e-10,
+    "aggregation": "independent family groups equally weighted; one query and one heldout representative batch per merged group",
+    "scored_token_diagnostic": {
+      "source": "the scored_tokens count of the native Readout scored span and stage46._target_nll",
+      "definition": "(mean over the declared column nulls of the summed scored targets minus the summed scored targets of the native sequences) / total native residues, in targets per residue",
+      "status": "descriptive, reported beside the main contrast",
+      "role": "no interval, no hypothesis family, and the main statistic is unchanged by it",
+      "not": "its size or sign does not rank models by how real their probabilities are, and it is not evidence of parametrised memory",
+      "reason": "a tokenizer may spell a native sequence and its column permutation with a different number of scored targets, so part of the canonical-path log-likelihood difference can come from tokenizer compression rather than from residue probabilities"
+    }
+  },
+  "scoring": {
+    "arms": [
+      "bygpt5-base-en",
+      "bygpt5-medium-en",
+      "bygpt5-small-en",
+      "dialogpt-small",
+      "galactica-1.3b",
+      "galactica-125m",
+      "galactica-30b",
+      "galactica-6.7b",
+      "gpt2",
+      "gpt2-large",
+      "gpt2-medium",
+      "gpt2-xl",
+      "instructprotein",
+      "llama-2-7b",
+      "llama-3.2-3b",
+      "progen2-base",
+      "progen2-large",
+      "progen2-medium",
+      "progen2-small",
+      "progen2-xlarge",
+      "progen3-112m",
+      "progen3-3b",
+      "prollama",
+      "prollama-stage-1",
+      "proteinglm-7b-clm",
+      "protgpt2",
+      "protgpt3-1.3b",
+      "qwen2.5-0.5b",
+      "qwen2.5-0.5b-instruct",
+      "qwen2.5-32b",
+      "qwen2.5-7b",
+      "qwen3-8b-base",
+      "rita-xl"
+    ],
+    "lineage_arms": [
+      "prollama",
+      "prollama-stage-1"
+    ],
+    "dtype_policy": "the frozen per-arm policy of src/capability/interactions/pairwise_epistasis.ARM_DTYPE: bfloat16 for progen3-112m/progen3-3b, float32 otherwise; the realised dtype is recorded per score document",
+    "score_function": "readout_extraction.pack_sequence/forward_readout_rows and stage46._target_nll; native packed scored span, summed NLL in nats, no hidden representations",
+    "max_len": 1024,
+    "batch_size_default": 1,
+    "normalisation": "nll_sum_nats only; no token mean across arms and no truncation"
+  },
+  "output": "results/extensions/family_distribution_20261106"
+}
