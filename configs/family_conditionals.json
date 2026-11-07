@@ -1,0 +1,64 @@
+{
+  "declaration": {
+    "id": "family_conditionals_20261107",
+    "declared_before": "any model score on this layer; sites and contexts are a deterministic function of the frozen first-stage cohort, so the selection cannot follow an observed effect",
+    "question": "With every other position of one natural HSP fragment fixed, what twenty-way conditional probability does a causal model's canonical sequence score induce for the residue actually observed at one query position, and how does that observed log-probability compare with a training-only Profile and a training-only Markov description normalised over the very same twenty complete strings?",
+    "quantity": "q_theta(a|rest) = softmax over AA20 of minus the summed native full-sequence NLL of the twenty complete single-substitution strings; the reported value is log q_theta of the observed residue",
+    "not_claimed": "q_theta is a local conditional induced by a canonical score with the fragment held fixed, not a native next-token probability and not a recovered generative distribution; the fixed background itself carries family information and pretraining exposure of that family is unknown; the two contrasts are direct differences of observed log-scores, not a joint-model conditional increment; the pilot is descriptive only",
+    "scope": "one new endpoint (conditional log-score) on the declared four pilot and sixty-four evaluation units of the first-stage cohort, each with its single fixed wild type and unchanged native fragments",
+    "out_of_scope": "per-position rank-20 order, sampled or ancestral generation, pairwise drift, sequence design, re-ranking models by generative quality, and any comparison with the first-stage column-permutation family",
+    "stage": "second-stage conditional diagnostic"
+  },
+  "parents": {
+    "cohort": "results/extensions/family_distribution_20261106/queue.json",
+    "declaration_id": "family_distribution_20261106",
+    "authority": "the frozen cohort's own protocol snapshot supplies the roster, the pilot models, the precision policy, the score function and the token budget; this layer writes no second roster",
+    "inherits": [
+      "scoring.arms",
+      "scoring.dtype_policy",
+      "scoring.score_function",
+      "scoring.max_len",
+      "queue.pilot_models",
+      "units and their partitions",
+      "wild types, native fragments, clusters and splits"
+    ],
+    "not_read": "first-stage score documents, nulls and contrasts; this layer depends on the cohort inputs only, so it can be prepared and analysed without any first-stage model output",
+    "natives": "native strings, query maps and cluster splits are taken from the frozen queue; the 198MB corpus hit table is not re-read"
+  },
+  "selection": {
+    "seed": 20261107,
+    "alphabet": "AA20",
+    "max_sites_per_unit": 8,
+    "min_training_rows_with_site": 4,
+    "min_heldout_rows_with_site": 4,
+    "max_contexts_per_site": 8,
+    "eligible_position": "one query position carried by at least min_training_rows_with_site training representatives and at least min_heldout_rows_with_site held-out representatives of the unit's fixed wild type",
+    "context": "one held-out representative that carries the site's query position; its entire native string is held fixed and only the queried position is enumerated",
+    "rng": "one numpy default_rng(seed) consumed in ascending unit_id order; per unit one without-replacement draw of positions from the ascending eligible list, then per selected position in ascending order one without-replacement draw of contexts from row_id order; draws consume only uniform doubles through a partial Fisher-Yates pass, and nothing is redrawn after a result",
+    "insufficient_support": "a unit with no eligible query position is recorded with its support counts and reported explicitly; it is never silently dropped",
+    "recorded": "unit, wild type, row_id, cluster, native string, native index, query position, observed residue, the AA20 order, the available and selected site/context counts, and fitted baseline parameters; twenty-way baseline log-probabilities are derived only in memory after full manifest validation"
+  },
+  "baselines": {
+    "profile_pseudocount": 0.05,
+    "markov_pseudocount": 0.05,
+    "fitting_rows": "training-cluster representatives only; no held-out row and no nonrepresentative row is used",
+    "profile": "per query-position residue counts plus 1/20 over AA20; because the twenty variants differ only at the queried position, the untouched terms are identical and cancel, leaving the position's twenty-way distribution",
+    "markov": "AA20 start distribution and adjacent transitions of each continuous native training fragment plus 1/20; query-map gaps do not split the native chain",
+    "normalisation": "each baseline is scored on the same twenty complete single-substitution strings as the model and normalised with the same log-sum-exp; the Markov description is the complete-string score, never the single forward transition alone",
+    "status": "the observed logscore is a proper score on the common twenty-AA target; a positive lower bound of a nondegenerate paired simultaneous 95% interval supports the model outperforming that individual baseline on this target and support, once formal evaluation is complete; it does not establish full generative-distribution recovery, superiority over all joint lower-order controls, or a causal memory mechanism"
+  },
+  "statistics": {
+    "bootstrap_draws": 10000,
+    "bootstrap_seed": 20261107,
+    "min_inference_units": 8,
+    "aggregation": "one value per site (mean of its contexts' observed log-scores), then one value per family (mean of its sites); families are equally weighted and a site's weight does not depend on its context count",
+    "columns": "two contrasts per model, both direct differences of observed log-scores: <arm>|minus_profile and <arm>|minus_markov, so the inherited 33 arms give 66 labelled columns",
+    "primary": "standardized maxT 95 over the 66 labelled columns, one new statistical family resampled by family",
+    "auxiliary": "pointwise 95 from the same matrix of resampled family means",
+    "uniform_reference": "log(1/20) nats is reported as a description of the twenty-way enumeration, not as a null",
+    "degeneracy": "a column with zero empirical SE is labelled bootstrap degeneracy, never certainty of capability or equivalence",
+    "separation": "this family is not the first-stage R1/R2/R3 families, nor the parent column-null family, and the three are never combined",
+    "formal_completion": "no formal completion or significance until all 33 inherited arms cover every declared evaluation unit"
+  },
+  "output": "results/extensions/family_conditionals_20261107"
+}
