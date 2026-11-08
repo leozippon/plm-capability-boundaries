@@ -1,0 +1,218 @@
+--- a/src/inference.c
++++ b/src/inference.c
+@@ -65,6 +65,9 @@
+ /* Internal to EstimatePairModelMAP: utility functions to L-BFGS */
+ const char *LBFGSErrorString(int ret);
+ 
++/* Independent producer: original initializer, bounded recovery optimizer. */
++#include "recovery.c"
++
+ numeric_t *InferPairModel(alignment_t *ali, options_t *options) {
+     /* Estimate the parameters of a maximum entropy model for a
+        multiple sequence alignment */
+@@ -119,12 +122,12 @@
+         /* Point estimates */
+         case INFER_MAP:
+             /* Maximum a posteriori estimates of model parameters */
+-            EstimatePairModelMAP(x, lambdas, ali, options);
++            RecoveryFit(x, lambdas, ali, options);
+             break;
+         /* For: future alternative estimators */
+         default:
+             /* Maximum a posteriori estimates of model parameters */
+-            EstimatePairModelMAP(x, lambdas, ali, options);
++            RecoveryFit(x, lambdas, ali, options);
+     }
+ 
+     /* Restore the alignment encoding after inference */
+--- a/src/lib/lbfgs.c
++++ b/src/lib/lbfgs.c
+@@ -109,6 +109,14 @@
+     lbfgsfloatval_t ys;     /* vecdot(y, s) */
+ };
+ typedef struct tag_iteration_data iteration_data_t;
++
++/* Observations only: count even a failed outer search against the total cap. */
++int recovery_attempted = 0, recovery_line_evaluations = 0;
++double recovery_last_step = 0.;
++extern int recovery_episode;
++#ifdef PLMC_RECOVERY_TESTING
++extern int recovery_test_error(int k);
++#endif
+ 
+ static const lbfgs_parameter_t _defparam = {
+     6, 1e-5, 0, 1e-5,
+@@ -270,6 +278,9 @@
+     lbfgsfloatval_t rate = 0.;
+     line_search_proc linesearch = line_search_morethuente;
+ 
++    recovery_attempted = recovery_line_evaluations = 0;
++    recovery_last_step = 0.;
++
+     /* Construct a callback data. */
+     callback_data_t cd;
+     cd.n = n;
+@@ -410,6 +421,7 @@
+ 
+     /* Evaluate the function value and its gradient. */
+     fx = cd.proc_evaluate(cd.instance, x, g, cd.n, 0);
++    if (!isfinite(fx)) { ret = LBFGSERR_CANCELED; goto lbfgs_exit; }
+     if (0. != param.orthantwise_c) {
+         /* Compute the L1 norm of the variable and add it to the object value. */
+         xnorm = owlqn_x1norm(x, param.orthantwise_start, param.orthantwise_end);
+@@ -458,6 +470,8 @@
+     k = 1;
+     end = 0;
+     for (;;) {
++        recovery_attempted = k;
++        recovery_line_evaluations = 0;
+         /* Store the current position and gradient vectors. */
+         veccpy(xp, x, n);
+         veccpy(gp, g, n);
+@@ -472,6 +486,10 @@
+                 param.orthantwise_c, param.orthantwise_start, param.orthantwise_end
+                 );
+         }
++        recovery_last_step = step;
++#ifdef PLMC_RECOVERY_TESTING
++        { int injected = recovery_test_error(k); if (injected) ls = injected; }
++#endif
+         if (ls < 0) {
+             /* Revert to the previous point. */
+             veccpy(x, xp, n);
+@@ -901,13 +919,21 @@
+ 
+         /* Evaluate the function and gradient values. */
+         *f = cd->proc_evaluate(cd->instance, x, g, cd->n, *stp);
++        recovery_line_evaluations = count + 1;
++        if (!isfinite(*f)) return LBFGSERR_CANCELED;
+         vecdot(&dg, g, s, n);
++        if (!isfinite(dg)) return LBFGSERR_CANCELED;
+ 
+         ftest1 = finit + *stp * dgtest;
+         ++count;
+ 
+         /* Test for errors and convergence. */
+         if (brackt && ((*stp <= stmin || stmax <= *stp) || uinfo != 0)) {
++            /* Record existing scalars only; do not change bracket arithmetic. */
++            fprintf(stderr, "RECOVERY event=rounding_trace episode=%d iteration=%d count=%d brackt=%d stage1=%d uinfo=%d step=%.17g stmin=%.17g stmax=%.17g stx=%.17g sty=%.17g fx=%.17g fy=%.17g dgx=%.17g dgy=%.17g f=%.17g dg=%.17g finit=%.17g dginit=%.17g dgtest=%.17g ftest1=%.17g width=%.17g prev_width=%.17g\n",
++                recovery_episode, recovery_attempted, count, brackt, stage1, uinfo,
++                *stp, stmin, stmax, stx, sty, fx, fy, dgx, dgy, *f, dg, finit,
++                dginit, dgtest, ftest1, width, prev_width);
+             /* Rounding errors prevent further progress. */
+             return LBFGSERR_ROUNDING_ERROR;
+         }
+--- /dev/null
++++ b/src/recovery.c
+@@ -0,0 +1,111 @@
++/* Included by inference.c in the separate recovery producer only.
++ * Original initialization, PLM arithmetic, and liblbfgs defaults are unchanged.
++ * Native little-endian dumps: 8-byte magic, int32 L/q/n, n doubles in xHi/xEij order. */
++#include <stdint.h>
++extern int recovery_attempted, recovery_line_evaluations;
++extern double recovery_last_step;
++int recovery_episode = 0;
++static int recovery_used = 0, recovery_nonfinite = 0;
++
++static double recovery_norm(const double *x, int n) {
++    double sum = 0.;
++    for (int k = 0; k < n; k++) sum += x[k] * x[k];
++    return sqrt(sum);
++}
++static int recovery_finite(const double *x, int n) {
++    for (int k = 0; k < n; k++) if (!isfinite(x[k])) return 0;
++    return 1;
++}
++static void recovery_dump(const char *name, const double *x, alignment_t *ali) {
++    FILE *fp = fopen(name, "wbx");
++    int32_t header[3] = {ali->nSites, ali->nCodes, ali->nParams};
++    if (!fp || fwrite("PLM64LE\n", 1, 8, fp) != 8 ||
++        fwrite(header, sizeof(header), 1, fp) != 1 ||
++        fwrite(x, sizeof(*x), ali->nParams, fp) != (size_t)ali->nParams || fclose(fp)) {
++        fprintf(stderr, "RECOVERY event=io_failure file=%s\n", name);
++        exit(3);
++    }
++}
++#ifdef PLMC_RECOVERY_TESTING
++/* Failure injection exists only in explicitly marked test binaries. */
++int recovery_test_error(int k) {
++    const char *errors = getenv("PLMC_TEST_ERRORS");
++    const char *at = getenv("PLMC_TEST_FAIL_AT");
++    if (!errors || k != (at ? atoi(at) : 2)) return 0;
++    if (recovery_episode) { errors = strchr(errors, ','); if (!errors) return 0; errors++; }
++    return atoi(errors);
++}
++#endif
++static double recovery_evaluate(void *d, const double *x, double *g, int n, double step) {
++    if (!recovery_finite(x, n)) { recovery_nonfinite = 1; return NAN; }
++    double f = PLMNegLogPosteriorGapReduce(d, x, g, n, step);
++#ifdef PLMC_RECOVERY_TESTING
++    if (getenv("PLMC_TEST_NONFINITE") && step != 0.) f = NAN;
++#endif
++    if (!isfinite(f) || !recovery_finite(g, n)) { recovery_nonfinite = 1; return NAN; }
++    return f;
++}
++static int recovery_progress(void *d, const double *x, const double *g,
++    double f, double xn, double gn, double step, int n, int k, int ls) {
++    (void)d; (void)x; (void)g; (void)n;
++    fprintf(stderr, "RECOVERY event=iteration episode=%d iteration=%d cumulative=%d objective=%.17g xnorm=%.17g gnorm=%.17g ratio=%.17g step=%.17g linesearch=%d\n",
++        recovery_episode, k, recovery_used + k, f, xn, gn, gn / fmax(1., xn), step, ls);
++    if (!isfinite(f) || !isfinite(xn) || !isfinite(gn) || !isfinite(step)) {
++        recovery_nonfinite = 1; return LBFGSERR_CANCELED;
++    }
++    return 0;
++}
++static void RecoveryFit(double *x, double *lambdas, alignment_t *ali, options_t *o) {
++    uint16_t endian = 1;
++    if (sizeof(numeric_t) != 8 || sizeof(lbfgsfloatval_t) != 8 || *(char *)&endian != 1 ||
++        o->estimatorMAP != INFER_MAP_PLM_GAPREDUCE || o->sgd || o->zeroAPC ||
++        o->lambdaH != .01 || o->lambdaE != 80. || o->lambdaGroup != 0. ||
++        o->theta != .2 || o->scale != 1. || o->maxIter < 1 || o->maxIter > 5000) {
++        fprintf(stderr, "RECOVERY event=unsupported_configuration\n"); exit(2);
++    }
++    void *d[3] = {ali, o, lambdas};
++    double *g = calloc((size_t)ali->nParams, sizeof(*g));
++    if (!g) exit(3);
++    lbfgs_parameter_t p;
++    lbfgs_parameter_init(&p);
++    p.epsilon = 1e-3;
++    fprintf(stderr, "RECOVERY event=protocol cap=%d epsilon=%.17g m=%d past=%d linesearch=%d max_linesearch=%d ftol=%.17g gtol=%.17g xtol=%.17g min_step=%.17g max_step=%.17g\n",
++        o->maxIter, p.epsilon, p.m, p.past, p.linesearch, p.max_linesearch, p.ftol, p.gtol, p.xtol, p.min_step, p.max_step);
++    int ret = LBFGSERR_UNKNOWNERROR, accepted = 0;
++    double f = NAN, xn = NAN, gn = NAN, ratio = NAN;
++    for (recovery_episode = 0; recovery_episode < 2; recovery_episode++) {
++        p.max_iterations = o->maxIter - recovery_used;
++        if (p.max_iterations <= 0) break; /* Never pass zero (unbounded) to liblbfgs. */
++        double returned_fx = NAN;
++        fprintf(stderr, "RECOVERY event=episode_start episode=%d remaining=%d cumulative=%d\n", recovery_episode, p.max_iterations, recovery_used);
++        ret = lbfgs(ali->nParams, x, &returned_fx, recovery_evaluate, recovery_progress, d, &p);
++        recovery_used += recovery_attempted;
++        /* liblbfgs restores x/g after search failure, but not its returned fx.
++         * Re-evaluate the actual double point, retaining both values in the record. */
++        f = recovery_evaluate(d, x, g, ali->nParams, 0.);
++#ifdef PLMC_RECOVERY_TESTING
++        if (getenv("PLMC_TEST_VERIFY_NONFINITE")) { f = NAN; recovery_nonfinite = 1; }
++#endif
++        xn = recovery_norm(x, ali->nParams); gn = recovery_norm(g, ali->nParams);
++        ratio = gn / fmax(1., xn);
++        int finite = !recovery_nonfinite && isfinite(f) && isfinite(returned_fx) &&
++                     isfinite(xn) && isfinite(gn) && isfinite(ratio);
++        accepted = (ret == LBFGS_SUCCESS || ret == LBFGS_ALREADY_MINIMIZED) &&
++                   finite && ratio <= p.epsilon && recovery_used <= o->maxIter;
++        fprintf(stderr, "RECOVERY event=episode_end episode=%d attempted=%d cumulative=%d return_code=%d returned_objective=%.17g objective=%.17g xnorm=%.17g gnorm=%.17g ratio=%.17g step=%.17g linesearch=%d finite=%d accepted=%d\n",
++            recovery_episode, recovery_attempted, recovery_used, ret, returned_fx, f, xn, gn, ratio, recovery_last_step, recovery_line_evaluations, finite, accepted);
++        if (ret < 0) {
++            char name[64]; snprintf(name, sizeof name, "failure-episode-%d.double", recovery_episode);
++            recovery_dump(name, x, ali);
++        }
++        if (accepted) break;
++        if (ret != LBFGSERR_ROUNDING_ERROR || recovery_episode != 0 || !finite || recovery_used >= o->maxIter) break;
++        fprintf(stderr, "RECOVERY event=restart episode=0 reason=ROUNDING_ERROR history_reset=1 cumulative=%d remaining=%d\n", recovery_used, o->maxIter - recovery_used);
++    }
++    recovery_dump("final.double", x, ali);
++    fprintf(stderr, "RECOVERY event=final episode=%d cumulative=%d return_code=%d objective=%.17g xnorm=%.17g gnorm=%.17g ratio=%.17g accepted=%d unquantized=1\n",
++        recovery_episode, recovery_used, ret, f, xn, gn, ratio, accepted);
++    free(g);
++    /* Failure never reaches OutputParametersFull; process zero is not a proxy. */
++    if (!accepted) exit(2);
++}
