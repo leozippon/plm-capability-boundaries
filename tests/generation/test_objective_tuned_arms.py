@@ -183,6 +183,46 @@ class TestLoaderOverride:
             ug.load_generator(arm, device="cpu")
             assert seen["path"] == ug.checkpoint_for_arm(arm)
 
+    def test_the_generate_ledger_names_the_checkpoint_the_loader_is_given(self, tmp_path):
+        """A pool must say which sibling produced it; the arm name does not say it.
+
+        ``interface-only`` already recorded the checkpoint and ``generate`` did
+        not, so a tuned pool and a base pool written under a ``--checkpoint``
+        override were indistinguishable in the one record the campaign keeps.
+        """
+
+        for arm in ("protgpt3-112m", "protgpt3-112m-dpo"):
+            out = tmp_path / arm
+            ug.generate(
+                arm,
+                n=1,
+                seed=20264011000,
+                generate_fn=lambda **_kwargs: ["MKTA"],
+                output_dir=out,
+                checkpoint=ug.checkpoint_for_arm(arm),
+            )
+            summary = json.loads((out / ug.EXPECT_GENERATE).read_text(encoding="utf-8"))
+            assert summary["checkpoint"] == str(ug.checkpoint_for_arm(arm))
+        base = json.loads(
+            (tmp_path / "protgpt3-112m" / ug.EXPECT_GENERATE).read_text(encoding="utf-8")
+        )
+        tuned = json.loads(
+            (tmp_path / "protgpt3-112m-dpo" / ug.EXPECT_GENERATE).read_text(encoding="utf-8")
+        )
+        assert base["checkpoint"] != tuned["checkpoint"]
+
+    def test_a_ledger_from_an_injected_generator_claims_no_checkpoint(self, tmp_path):
+        """No weights were opened, so the record says so rather than naming a default."""
+
+        ug.generate(
+            "protgpt3-112m-dpo",
+            n=1,
+            generate_fn=lambda **_kwargs: ["MK"],
+            output_dir=tmp_path,
+        )
+        summary = json.loads((tmp_path / ug.EXPECT_GENERATE).read_text(encoding="utf-8"))
+        assert summary["checkpoint"] is None
+
     def test_the_interface_record_names_the_checkpoint_the_loader_is_given(self, tmp_path):
         override = tmp_path / "ProtGPT2-tuned"
         record = ug.write_interface_record(tmp_path / "out", "protgpt2", checkpoint=override)

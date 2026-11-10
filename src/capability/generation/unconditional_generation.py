@@ -604,6 +604,7 @@ def generate(
     model: Any = None,
     tokenizer: Any = None,
     output_dir: Path | None = None,
+    checkpoint: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Sample retained attempts. A fake ``generate_fn`` keeps tests off the GPU.
 
@@ -614,6 +615,14 @@ def generate(
     declared, non-overlapping seeds. The realised seed is written into the ledger
     summary, because ``policy`` carries the default and a record that showed only
     the default would not say which stream produced it.
+
+    ``checkpoint`` is the directory whose weights produced these attempts: the
+    caller passes the same path it handed :func:`load_generator`, and the ledger
+    records it. A paired base-against-tuned contrast is only readable if each pool
+    says which of the two siblings it came from, and the arm name alone does not
+    say it -- a ``--checkpoint`` override is a second declaration of that. It is
+    ``None``, rather than the declared default, when an injected ``generate_fn``
+    produced the attempts and no weights were opened at all.
     """
 
     spec = generation_point(arm)
@@ -642,12 +651,19 @@ def generate(
         raise RuntimeError(f"{arm}: generator returned {len(raws)} continuations, not {count}")
     rows = [attempt_row(arm, raw, index) for index, raw in enumerate(raws)]
     if output_dir is not None:
-        write_attempt_ledger(Path(output_dir), rows, arm=arm, seed=draw_seed)
+        write_attempt_ledger(
+            Path(output_dir), rows, arm=arm, seed=draw_seed, checkpoint=checkpoint
+        )
     return rows
 
 
 def write_attempt_ledger(
-    output_dir: Path, rows: list[dict[str, Any]], *, arm: str, seed: int | None = None
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    *,
+    arm: str,
+    seed: int | None = None,
+    checkpoint: Path | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -663,6 +679,7 @@ def write_attempt_ledger(
         "prompt": prompt_for(arm),
         "close_token": close_token_for(arm),
         "batch_size": arm_batch_size(arm),
+        "checkpoint": None if checkpoint is None else str(checkpoint),
         "attempts_sha256": sha256_file(ledger),
         "is_scientific_measurement": len(rows) == POLICY["attempts"],
     }

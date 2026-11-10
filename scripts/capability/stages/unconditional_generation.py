@@ -79,12 +79,14 @@ def run_generate(args: argparse.Namespace) -> dict:
         model=model,
         tokenizer=tokenizer,
         output_dir=args.out,
+        checkpoint=checkpoint,
     )
     structure = write_structure_subset(args.out, rows, arm=args.arm)
     return {
         "arm": args.arm,
         "attempts": len(rows),
         "seed": args.seed,
+        "checkpoint": str(checkpoint),
         "out": str(args.out),
         "structure_records_including_shuffles": structure["structure_records_including_shuffles"],
     }
