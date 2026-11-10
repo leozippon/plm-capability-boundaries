@@ -180,8 +180,38 @@ def row(slot: int, gpu: int | str, cell_label: str, env: str, args: str) -> str:
     return "\t".join((str(slot), KEY, str(gpu), STAGE, cell_label, env, EXPECT, args)) + "\n"
 
 
+def dispatch_order(
+    cells: list[dict[str, Any]], deferred: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """The order the queue dispatches cells in, with named pairs scheduled last.
+
+    Dispatch order is not a declared property of the experiment. A cell's draw is
+    fixed by its own seed, which :func:`cell_plan` ties to its position in the
+    *declared* pair order, so moving a pair to the end of the queue changes which
+    slot runs when and nothing else. Seeds, labels and arguments are untouched,
+    and ``cell_plan.json`` keeps the declared order so that the seed-to-cell
+    mapping stays readable independently of how a run was scheduled.
+
+    It exists because a pair's weights can finish staging after the campaign
+    starts. Deferring that pair lets the rest of the campaign run while the
+    transfer completes, instead of reaching cells whose checkpoint is not yet on
+    the cluster and failing them into a re-dispatch.
+    """
+
+    unknown = sorted(set(deferred) - {cell["pair"] for cell in cells})
+    if unknown:
+        raise SystemExit(f"--defer names pairs this campaign does not schedule: {unknown}")
+    first = [cell for cell in cells if cell["pair"] not in deferred]
+    last = [cell for cell in cells if cell["pair"] in deferred]
+    return first + last
+
+
 def generate_manifest(
-    cells: list[dict[str, Any]], gpus: tuple[int, ...], env: str, skipped: dict[str, str]
+    cells: list[dict[str, Any]],
+    gpus: tuple[int, ...],
+    env: str,
+    skipped: dict[str, str],
+    deferred: tuple[str, ...] = (),
 ) -> str:
     out = [
         f"# {CAMPAIGN}_generate: {len(cells)} cells of {ug.POLICY['attempts']} attempts "
@@ -190,6 +220,12 @@ def generate_manifest(
         f"{len(gpus)} per slot on GPUs {','.join(str(gpu) for gpu in gpus)}. "
         "--device and --out are injected.\n",
     ]
+    for pair in deferred:
+        out.append(
+            f"# dispatched last: {pair} -- its cells keep their declared seeds and "
+            "labels; only the slot they run in moved, so the rest of the campaign "
+            "runs while this pair's weights finish staging\n"
+        )
     for pair, reason in sorted(skipped.items()):
         out.append(f"# not scheduled: {pair} -- {reason}\n")
     out.append("# slot\tkey\tgpu\tstage\tlabel\tenv\texpect\targs\n")
@@ -244,6 +280,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("/home/lzp/miniconda3/envs/ct/bin/python"),
         help="TRANSFER_PYTHON for the env column; the pod's staged runtime in production",
     )
+    parser.add_argument(
+        "--defer",
+        action="append",
+        default=None,
+        metavar="TUNED_PAIR",
+        help="repeatable; dispatch this pair's cells last, keeping their seeds and labels",
+    )
     args = parser.parse_args(argv)
 
     pairs = ot.staged_pairs(ot.LANE_FREE_LENGTH)
@@ -262,7 +305,12 @@ def main(argv: list[str] | None = None) -> int:
     queue.mkdir(parents=True, exist_ok=True)
     env = f"TRANSFER_PYTHON={args.python} {PRELUDE}"
     manifest = queue / f"campaign_{CAMPAIGN}_generate.tsv"
-    manifest.write_text(generate_manifest(cells, tuple(args.gpus), env, skipped))
+    deferred = tuple(args.defer or ())
+    manifest.write_text(
+        generate_manifest(
+            dispatch_order(cells, deferred), tuple(args.gpus), env, skipped, deferred
+        )
+    )
     plan = {
         "campaign": CAMPAIGN,
         "declaration": "docs/objective-alignment.md",
@@ -281,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             for pair in pairs
         ],
         "skipped_pairs": skipped,
+        "dispatched_last": list(deferred),
         "staging": ot.staging_report(),
         "cells": cells,
     }
