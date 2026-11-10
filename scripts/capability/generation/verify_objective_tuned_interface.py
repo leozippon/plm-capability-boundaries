@@ -30,6 +30,10 @@ contrast while the two sides share an architecture and a tokenizer, so both are
 asserted from the live configs and vocabularies. ``progen2-small-mix7`` adds seven
 ``<|pfXXXXX|>`` family tokens above its base's shared entries; the record names
 them, because a declared extension and an undetected mismatch must not look alike.
+The two checkpoints' stored precisions are recorded beside the compute dtype the
+lane loads them at, because the 10B pair is serialised asymmetrically -- bfloat16
+base, float32 sibling -- and a pair that sampled at two precisions would confound
+the optimisation it is there to measure.
 
 Usage
 =====
@@ -201,6 +205,7 @@ def verify_pairs(arms: list[str]) -> dict[str, Any]:
             loaded[name] = SimpleNamespace(
                 config=AutoConfig.from_pretrained(str(spec.path), trust_remote_code=trust),
                 tokenizer=load_tokenizer(name),
+                stored_dtype=ot.stored_dtype(spec.path),
             )
         out[pair.tuned] = ot.require_matched_pair(pair, loaded)
     return out
@@ -270,6 +275,13 @@ def main(argv: list[str] | None = None) -> int:
     for tuned, matched in record["pairs"].items():
         print(f"{tuned}: matched to {matched['base']} at {matched['depth_width']}, "
               f"added tokens {matched['tokens_added_by_tuning']}")
+        if not (matched["stored_dtype_agrees"] and matched["config_dtype_agrees"]):
+            print(
+                f"{tuned}: precisions differ, {matched['checkpoint_dtypes']}; both sides "
+                f"are loaded at the lane's compute dtype "
+                f"{ug.generation_point(tuned).dtype}, so the pair samples at one "
+                "precision and the deviation is declared rather than inherited"
+            )
     write_json(Path(args.out) / RECORD, record)
     print(Path(args.out) / RECORD)
     return 0

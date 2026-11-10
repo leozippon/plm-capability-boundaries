@@ -450,6 +450,61 @@ class TestMatchedPair:
         )
         assert matched["declared_boundary_ids"]["eos_token_id"] == (2,)
 
+    def test_differing_stored_precision_is_reported_and_not_refused(self):
+        """The 10B pair is serialised bfloat16 against float32 and is still matched.
+
+        The lane gives both sides one compute dtype, so the asymmetry is
+        neutralised at load; refusing here would reject two matched checkpoints
+        over how their files were written, and dropping it from the record would
+        hide a deliberate deviation from one arm's stored precision.
+        """
+
+        pair = self._pair()
+        base = self._side(torch_dtype="bfloat16")
+        base.stored_dtype = "bfloat16"
+        tuned = self._side(torch_dtype="bfloat16")
+        tuned.stored_dtype = "float32"
+        matched = ot.require_matched_pair(pair, {pair.base: base, pair.tuned: tuned})
+        assert matched["checkpoint_dtypes"] == {
+            pair.base: {"config": "bfloat16", "stored": "bfloat16"},
+            pair.tuned: {"config": "bfloat16", "stored": "float32"},
+        }
+        assert matched["config_dtype_agrees"] is True
+        assert matched["stored_dtype_agrees"] is False
+
+    def test_a_pair_stored_at_one_precision_agrees(self):
+        pair = self._pair()
+        sides = {}
+        for name in pair.arms:
+            side = self._side(torch_dtype="torch.bfloat16")
+            side.stored_dtype = "bfloat16"
+            sides[name] = side
+        matched = ot.require_matched_pair(pair, sides)
+        assert matched["stored_dtype_agrees"] is True
+        assert matched["config_dtype_agrees"] is True
+        assert {entry["config"] for entry in matched["checkpoint_dtypes"].values()} == {"bfloat16"}
+
+    def test_the_stored_dtype_is_read_from_the_weight_headers(self):
+        """The config can be wrong about its own tensors; the headers cannot.
+
+        ``ProtGPT3-10B-dpo`` ships ``dtype: bfloat16`` beside a stale
+        ``torch_dtype: float32`` and float32 tensors, which is exactly the case a
+        config-only comparison would call matched.
+        """
+
+        for arm, expected in (
+            ("protgpt3-112m", "bfloat16"),
+            ("protgpt3-10b", "bfloat16"),
+            ("protgpt3-10b-dpo", "float32"),
+        ):
+            path = ot.spec_for(arm).path
+            if not ot.weights_complete(arm):
+                pytest.skip(f"{arm} is not staged on this host")
+            assert ot.stored_dtype(path) == expected, arm
+
+    def test_an_unstaged_checkpoint_has_no_stored_dtype(self, tmp_path):
+        assert ot.stored_dtype(tmp_path) is None
+
     def test_a_different_shape_is_refused(self):
         pair = self._pair()
         with pytest.raises(ValueError, match=r"live \(depth, width\)"):

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
 
@@ -531,6 +532,83 @@ def require_residue_sequences(arm: str, sequences: Iterable[str]) -> dict[str, A
     }
 
 
+def declared_dtype(config: Any) -> str | None:
+    """The precision a loaded config declares, as a bare torch dtype name.
+
+    Both spellings are read because Transformers renamed the field: 4.x writes
+    ``torch_dtype`` and 5.x writes ``dtype``. ``None`` means the config declares
+    no precision at all, which is not the same as declaring float32.
+
+    This is what the *config* says, which on one checkpoint here is not what its
+    tensors are: ``ProtGPT3-10B-dpo``'s ``config.json`` carries both
+    ``dtype: bfloat16`` and a stale ``torch_dtype: float32``, Transformers 4.57
+    resolves the pair to bfloat16, and the tensors on disk are float32 -- twice
+    the base's size for the same 32x2048 architecture. :func:`stored_dtype` is
+    therefore the authoritative answer and this one is kept beside it, because a
+    config that disagrees with its own weights is worth recording rather than
+    silently preferring one of the two.
+    """
+
+    for field in ("torch_dtype", "dtype"):
+        value = getattr(config, field, None)
+        if value is not None:
+            return str(value).removeprefix("torch.")
+    return None
+
+
+#: safetensors spells dtypes in its own header vocabulary.
+_SAFETENSORS_DTYPES = {
+    "BF16": "bfloat16",
+    "F16": "float16",
+    "F32": "float32",
+    "F64": "float64",
+    "F8_E4M3": "float8_e4m3fn",
+    "F8_E5M2": "float8_e5m2",
+}
+
+
+def _safetensors_header(path: Path) -> dict[str, Any]:
+    """One safetensors file's header, read without mapping its tensors."""
+
+    with path.open("rb") as handle:
+        length = int.from_bytes(handle.read(8), "little")
+        return json.loads(handle.read(length).decode("utf-8"))
+
+
+def stored_dtype(path: Path) -> str | None:
+    """The floating precision a checkpoint's tensors are actually serialised in.
+
+    Read from the safetensors headers rather than from the config, because the
+    config can be wrong about its own weights and the loaded config object hides
+    which of two spellings won. Every shard's header is read; they are a few
+    kilobytes each and a checkpoint whose shards disagree must not be reported as
+    though it had one precision. Returns ``None`` for a checkpoint this cannot
+    read -- a ``.bin`` pickle, or a directory with no weights yet -- rather than
+    guessing, and a comma-joined list when the tensors genuinely are mixed.
+    """
+
+    path = Path(path)
+    index = path / "model.safetensors.index.json"
+    if index.is_file():
+        weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+        shards = sorted({path / shard for shard in weight_map.values()})
+    else:
+        shards = sorted(path.glob("*.safetensors"))
+    found: set[str] = set()
+    for shard in shards:
+        if not shard.is_file():
+            return None
+        for name, entry in _safetensors_header(shard).items():
+            if name == "__metadata__":
+                continue
+            spelled = _SAFETENSORS_DTYPES.get(str(entry.get("dtype")))
+            if spelled is not None:
+                found.add(spelled)
+    if not found:
+        return None
+    return ",".join(sorted(found))
+
+
 def require_matched_pair(
     pair: ObjectiveTunedPair, loaded: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -562,6 +640,26 @@ def require_matched_pair(
     head stays 32 wide -- so they cannot be emitted; they are returned as
     ``tokens_added_by_tuning`` so that a declared extension and an undetected
     mismatch cannot look alike.
+
+    The **precision** is reported rather than refused, for the same reason.
+    ``ProtGPT3-10B`` is serialised bfloat16 and ``ProtGPT3-10B-dpo`` float32 --
+    twice the size for the same 32x2048 architecture -- which is how each file was
+    written and not a difference in what either model is. The lane loads both
+    sides of a pair at one compute dtype: ``load_arm_spec`` is given it explicitly
+    and then refuses any parameter that did not arrive in it, so the asymmetry is
+    neutralised at load and would otherwise vanish from the record. Letting each
+    arm sample at its own stored precision is the thing that must not happen, as a
+    float32 tuned arm against a bfloat16 base would read any precision artefact as
+    an effect of the preference optimisation. Refusing the pair instead would
+    reject two matched checkpoints over how their files were written.
+
+    Both answers are carried, per arm, in ``checkpoint_dtypes``, because they
+    disagree on exactly the checkpoint that matters: ``ProtGPT3-10B-dpo``'s
+    ``config.json`` holds ``dtype: bfloat16`` beside a stale
+    ``torch_dtype: float32``, Transformers resolves that to bfloat16, and its
+    tensors are float32 regardless. ``stored`` comes from the caller, which reads
+    the weight headers through :func:`stored_dtype`; a caller that supplies none
+    leaves it ``None`` rather than letting the config stand in for it.
     """
 
     missing = [name for name in pair.arms if name not in loaded]
@@ -610,6 +708,13 @@ def require_matched_pair(
             f"{len(content)} content tokens, the first being {content[:5]}; the pair "
             "is not tokenizer-matched"
         )
+    dtypes = {
+        name: {
+            "config": declared_dtype(side.config),
+            "stored": getattr(side, "stored_dtype", None),
+        }
+        for name, side in zip(pair.arms, (base, tuned), strict=True)
+    }
     return {
         "base": pair.base,
         "tuned": pair.tuned,
@@ -617,6 +722,9 @@ def require_matched_pair(
         "live_model_type": live[0],
         "depth_width": list(shapes[0]),
         "declared_boundary_ids": boundary,
+        "checkpoint_dtypes": dtypes,
+        "config_dtype_agrees": len({entry["config"] for entry in dtypes.values()}) == 1,
+        "stored_dtype_agrees": len({entry["stored"] for entry in dtypes.values()}) == 1,
         "content_alphabet_tokens": len(set(base_vocab) - special),
         "tokens_added_by_tuning": sorted(set(tuned_vocab) - set(base_vocab)),
         "special_token_id_differences": {
