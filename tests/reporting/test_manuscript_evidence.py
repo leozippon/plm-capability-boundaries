@@ -492,6 +492,46 @@ class BothIntervalNotationsCarryTheirInterval(unittest.TestCase):
             self._sentence("(95\\% CI, 0.03601–0.07894)"))
         self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
 
+    #: One row of some other family, at the value the sentence happens to quote
+    #: and with a different interval. In the live table, 18,500 rows make such a
+    #: coincidence ordinary.
+    UNRELATED = dict(id="native_fitness/galactica-1.3b/raw_spearman",
+                     claim="a native-fitness raw rank correlation", family="other",
+                     value=0.05678, interval_low=0.03071, interval_high=0.06715)
+
+    def test_a_coincidental_value_match_is_reported_as_missing_not_as_a_mismatch(self):
+        """A mismatch has to be a disagreement with a row the sentence quotes.
+
+        The quantity here is absent from the table and an unrelated row rounds
+        to the same value. Refusing the sentence against *that* row's interval
+        is the strongest claim the checker can make about a manuscript -- a
+        systematic point-interval disagreement -- built on a coincidence. The
+        honest report is that the number is not in the table.
+        """
+
+        quantities = [entry(**self.UNRELATED)]
+        report = run(self.case, quantities, {"support_a": "the fixture support"},
+                     "The held-family increment is 0.05678 [0.0362, 0.0606].",
+                     dict(CHECKER.default_policy(), interval_convention_statement=None))
+        self.assertNotIn("point_interval_mismatch", report["findings_by_check"], report)
+        self.assertIn("0.05678", [item["token"] for item in report["untraced"]])
+        self.assertEqual(report["status"], "refused")
+
+    def test_the_same_row_does_refuse_the_sentence_that_identifies_it(self):
+        """The gate is about identification, not a blanket weakening.
+
+        Same row, same mismatched bounds; the only change is that the sentence
+        now repeats the row's own claim, which is how a sentence says which
+        quantity it is quoting.
+        """
+
+        quantities = [entry(**self.UNRELATED)]
+        report = run(self.case, quantities, {"support_a": "the fixture support"},
+                     "The raw rank correlation is 0.05678 [0.0362, 0.0606].",
+                     dict(CHECKER.default_policy(), interval_convention_statement=None))
+        self.assertEqual(report["findings_by_check"], {"point_interval_mismatch": 1}, report)
+        self.assertEqual(report["findings"][0]["entries"], [self.UNRELATED["id"]])
+
     def test_a_lone_value_in_the_parenthesis_is_not_read_as_two_bounds(self):
         report = self._report("(95\\% CI, 0.03601)")
         self.assertIn("bare_point_estimate", report["findings_by_check"])

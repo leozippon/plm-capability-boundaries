@@ -657,6 +657,24 @@ def _claim_words(entry: dict) -> set[str]:
     return {word for word in _words(entry["claim"]) if word and word not in STOPWORDS}
 
 
+def identified_by(candidates: list[dict], scope_words: set[str]) -> list[dict]:
+    """The candidates this sentence identifies, not merely shares a number with.
+
+    In a table of thousands of quantities some row rounds to almost any number
+    the manuscript writes, so a value match on its own is no evidence that the
+    sentence is quoting that row --- and "only one row shares this number" is
+    evidence of coincidence rather than of identity once the table is large. A
+    sentence identifies a row by naming it, through a checkpoint or a date in
+    its id, or by repeating a word of the row's own claim. A hard refusal has to
+    be about a row identified that way, which is the rule the rest of the
+    checker already follows where it declines to refuse anything against a weak
+    attribution.
+    """
+
+    named = [entry for entry in candidates if _attribution(entry) & scope_words]
+    return named or [entry for entry in candidates if _claim_words(entry) & scope_words]
+
+
 def attributable(token: str, candidates: list[dict],
                  scope_words: set[str]) -> tuple[list[dict], bool]:
     """Narrow a value match to the entries the sentence is actually quoting.
@@ -818,6 +836,30 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                         return {"file": file.relative_to(manuscript.resolve()).as_posix(), "line": line}
                 raise ValueError(f"cannot place {scope[offset:offset + 20]!r} in {name}")
 
+            def record_untraced(offset: int, token: str, kind: str = kind, name: str = name,
+                                scope: str = scope) -> None:
+                """A number the table cannot be read as supporting, where it sits.
+
+                Two paths reach this: a value no row carries, and a value whose
+                only matching rows the sentence does not identify. They are the
+                same conclusion -- the quantity is not in the table -- so they
+                are recorded the same way rather than one of them being reported
+                as a disagreement with a row nobody quoted.
+                """
+
+                if token in accepted:
+                    return
+                position = texts[name].find(scope.strip()[:60])
+                if name != "main.tex":
+                    half = "supplement"
+                elif sections[name] and position >= sections[name]:
+                    half = "main_declarative"
+                else:
+                    half = "main_claim_bearing"
+                untraced.append({"source": name, **where(offset, len(token)),
+                                 "scope_kind": kind, "token": token,
+                                 "half": half, "context": scope.strip()[:220]})
+
             intervals = [interval_extent(match) for match in INTERVAL.finditer(scope)]
             scope_words = _words(scope)
             for interval in INTERVAL.finditer(scope):
@@ -884,9 +926,10 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                                 index.candidates(negated(token)), paired)
                             if narrowed:
                                 reflected_extents.append(interval_extent(paired))
+                        identified = identified_by(matches, scope_words) if matches else []
                         if narrowed:
                             matches = narrowed
-                        elif matches:
+                        elif identified:
                             traced += 1
                             findings.append({
                                 "check": "point_interval_mismatch", "source": name,
@@ -894,11 +937,27 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                                 "scope_kind": kind, "token": token,
                                 "interval": paired.group(0),
                                 "interval_qualifiers": interval_qualifiers(paired),
+                                "entries": sorted({entry["id"] for entry in identified})[:6],
                                 "detail": "the ordered pair of quoted bounds matches no interval "
                                           "for this point at the bounds' stated precision, in "
                                           "either orientation",
                                 "context": scope.strip()[:220],
                             })
+                            continue
+                        elif matches:
+                            # The value matches only rows this sentence does not
+                            # identify, so there is no quantity here to disagree
+                            # with. A mismatch would be a refusal against a row
+                            # nobody quoted, and the honest description is that
+                            # the quantity is missing from the table. It is
+                            # recorded as missing here rather than left to fall
+                            # through, because below, a number equal to any of
+                            # the table's thirty-odd thousand interval bounds
+                            # counts as traced -- which for a point quoted with
+                            # its own bounds is one more coincidence, and would
+                            # retire the number silently instead of reporting
+                            # it.
+                            record_untraced(match.start(), token)
                             continue
                 candidates, strong = attributable(token, matches, scope_words)
                 if not candidates:
@@ -919,17 +978,7 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                                                  "scope_kind": kind, "token": token,
                                                  "context": scope.strip()[:180]})
                         continue
-                    if token not in accepted:
-                        position = texts[name].find(scope.strip()[:60])
-                        if name != "main.tex":
-                            half = "supplement"
-                        elif sections[name] and position >= sections[name]:
-                            half = "main_declarative"
-                        else:
-                            half = "main_claim_bearing"
-                        untraced.append({"source": name, **where(match.start(), len(token)),
-                                         "scope_kind": kind, "token": token,
-                                         "half": half, "context": scope.strip()[:220]})
+                    record_untraced(match.start(), token)
                     continue
                 traced += 1
                 if not strong and len({entry["family"] for entry in candidates}) > 1:
