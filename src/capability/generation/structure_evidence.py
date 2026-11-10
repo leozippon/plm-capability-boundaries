@@ -23,6 +23,11 @@ SCHEMA_VERSION = "generation_structure_evidence_v2"
 AA_ORDER = "ARNDCQEGHILKMFPSTWYV"
 PREDICTOR_ID = "biohub/ESMFold2-hf"
 PREDICTOR_KIND = "esmfold2"
+#: The project's predicted-confidence criterion, in CA-pLDDT points on the 0-100
+#: scale this module writes. It decides the confidence event below and is the
+#: scale any downstream rule calibrated against "the declared criterion" reads,
+#: so it is named here rather than repeated as a literal at each use.
+PREDICTED_CONFIDENCE_PLDDT = 70.0
 # Single-sequence, no MSA. The runner keeps the staged checkpoint's own sampling
 # settings (biohub/ESMFold2-hf: num_loops=3, inference_num_steps=14,
 # num_diffusion_samples=32) unless a flag overrides them.
@@ -217,12 +222,12 @@ def summarize_esmfold2(output: Any, *, sequence: str) -> dict[str, Any]:
     if not 0 <= ptm_value <= 1:
         raise ValueError("ESMFold2 pTM outside [0, 1]")
     mean_ca = float(ca_100.mean())
-    fraction = float(np.mean(ca_100 >= 70.0))
+    fraction = float(np.mean(ca_100 >= PREDICTED_CONFIDENCE_PLDDT))
     return {
         "mean_ca_plddt": mean_ca,
         "fraction_ca_plddt_ge70": fraction,
         "ca_plddt": ca_100.tolist(),
-        "predicted_confidence_event": mean_ca >= 70.0 and fraction >= 0.8,
+        "predicted_confidence_event": mean_ca >= PREDICTED_CONFIDENCE_PLDDT and fraction >= 0.8,
         "ptm": ptm_value,
         "mean_pae_angstrom": float(pae.mean()),
         "diffusion_sample_index": sample,
