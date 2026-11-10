@@ -3,23 +3,33 @@
 One frozen operating point per admitted checkpoint. There is no requested class,
 so target-profile hits are undefined. ProGen3-3B is already complete and is
 refused here rather than regenerated.
+
+A second, smaller table rides beside the first. :data:`OFF_PANEL` holds the
+free-length generation points of the objective-tuned arms declared in
+``src.capability.generation.objective_tuned_arms``, built from the rendering each
+of them already declares, so the EXP-R2-246 admission list stays exactly the
+seventeen arms it was frozen at while those arms reach the same loader, the same
+extractor and the same ledger. :data:`ADMITTED` is the campaign's door;
+:func:`generation_point` is the lane's resolver and is what every prompt,
+checkpoint and loader lookup goes through.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from . import conditioned_generation as cg
 from . import generation_evidence as ge
+from . import objective_tuned_arms as ot
 from ..core.arms import (
     BOS_DIRECTION_C_TO_N,
     BOS_DIRECTION_N_TO_C,
     EOS_BOUNDED_BOUNDARY,
+    INPUT_FORMAT_BOS_DIRECTION_SEQ,
     N_TO_C_MARKER,
-    arm_spec,
 )
 from ..core.io import sha256_file, write_json
 from ..models.joint_modes import rendering
@@ -96,6 +106,25 @@ def _prollama(name: str) -> UnconditionalArm:
     )
 
 
+def _protgpt3(name: str) -> UnconditionalArm:
+    """The ProtGPT3 family's point: ``<|bos|>`` then the n-to-c direction token.
+
+    Spelled once for every rung of the family rather than per checkpoint. The BOS
+    is in the prompt *string* on purpose: the published recipe reaches the same two
+    ids by constructing the tokenizer with ``add_bos_token=True`` and prompting
+    with the bare direction token, and doing both at once would encode a second
+    BOS the checkpoint was never trained behind.
+    ``objective_tuned_arms.prompt_contract`` is what checks the two ids rather than
+    the string.
+    """
+
+    return UnconditionalArm(
+        name=name,
+        prompt=f"<|bos|>{BOS_DIRECTION_N_TO_C}",
+        close_token="<|eos|>",
+    )
+
+
 _INSTRUCT = rendering("instructprotein")
 
 ADMITTED: dict[str, UnconditionalArm] = {
@@ -121,11 +150,7 @@ ADMITTED: dict[str, UnconditionalArm] = {
         close_token="<eos>",
         dtype="float32",
     ),
-    "protgpt3-1.3b": UnconditionalArm(
-        name="protgpt3-1.3b",
-        prompt=f"<|bos|>{BOS_DIRECTION_N_TO_C}",
-        close_token="<|eos|>",
-    ),
+    "protgpt3-1.3b": _protgpt3("protgpt3-1.3b"),
     "rita-xl": UnconditionalArm(
         name="rita-xl",
         prompt=EOS_BOUNDED_BOUNDARY,
@@ -198,9 +223,52 @@ if GENERATION_ORDER[-1] != "galactica-30b":
 if "progen3-3b" in ADMITTED:
     raise AssertionError("progen3-3b is complete and must not be admitted here")
 
+# ------------------------------------------- off-panel objective-tuned arms
+#
+# Built from each arm's declared rendering rather than from a second table of
+# prompts, so the only new fact an objective-tuned arm carries into this lane is
+# its ``ArmSpec``. An input format with no free-length point is an import-time
+# failure here, which is how ZymCTRL's ``ec_conditioned`` rendering stays out: its
+# EC digits are a conditioning span rather than a marker prefix, and
+# ``objective_tuned_arms`` declares that pair into the conditioned lane for
+# exactly that reason.
+
+_OFF_PANEL_POINT: dict[str, Callable[[str], UnconditionalArm]] = {
+    INPUT_FORMAT_BOS_DIRECTION_SEQ: _protgpt3,
+    ot.INPUT_FORMAT_N_TO_C_CONTROL: _progen2,
+}
+
+
+def _off_panel_points() -> dict[str, UnconditionalArm]:
+    points: dict[str, UnconditionalArm] = {}
+    for name in ot.OFF_PANEL_GENERATION_ARMS:
+        if name in ADMITTED:
+            raise AssertionError(
+                f"{name} is declared both in ADMITTED and beside it; one checkpoint "
+                "has one generation point"
+            )
+        fmt = ot.spec_for(name).input_format
+        build = _OFF_PANEL_POINT.get(fmt)
+        if build is None:
+            raise AssertionError(
+                f"{name}: input format {fmt!r} has no free-length generation point, "
+                f"so it cannot be sampled here; declared formats are "
+                f"{sorted(_OFF_PANEL_POINT)}"
+            )
+        points[name] = build(name)
+    return points
+
+
+OFF_PANEL: dict[str, UnconditionalArm] = _off_panel_points()
+
 
 def require_admitted(arm: str) -> UnconditionalArm:
-    """Refuse excluded checkpoints with the reason, then unknown names."""
+    """The EXP-R2-246 door: refuse excluded checkpoints with the reason, then unknown names.
+
+    This stays exactly the seventeen admitted arms. It is the campaign's admission
+    list and several other lanes read it as one, so an objective-tuned arm is not
+    reachable here; :func:`generation_point` is the resolver that sees both tables.
+    """
 
     if arm in REFUSED:
         raise ValueError(REFUSED[arm])
@@ -213,32 +281,84 @@ def require_admitted(arm: str) -> UnconditionalArm:
     return ADMITTED[arm]
 
 
+def generation_point(arm: str) -> UnconditionalArm:
+    """The free-length generation point of an admitted or an off-panel arm.
+
+    The refusals come first and are unchanged, so a checkpoint this lane declines
+    still declines with its reason rather than falling through to an unknown-name
+    error.
+    """
+
+    if arm in REFUSED:
+        raise ValueError(REFUSED[arm])
+    if arm in TEXT_ONLY:
+        raise ValueError(f"{arm} is text-only and has no unlabelled protein generation point")
+    if arm in ADMITTED:
+        return ADMITTED[arm]
+    if arm in OFF_PANEL:
+        return OFF_PANEL[arm]
+    raise KeyError(
+        f"unknown unconditional-generation arm {arm!r}; admitted: "
+        f"{list(ADMITTED_ARMS)}; off-panel: {sorted(OFF_PANEL)}"
+    )
+
+
 def prompt_for(arm: str) -> str:
-    return require_admitted(arm).prompt
+    return generation_point(arm).prompt
 
 
 def close_token_for(arm: str) -> str:
-    return require_admitted(arm).close_token
+    return generation_point(arm).close_token
 
 
 def arm_batch_size(arm: str) -> int:
-    return require_admitted(arm).batch_size
+    return generation_point(arm).batch_size
 
 
 def extract_residues(arm: str, continuation: str) -> str:
     """Strict leading AA20 run of one continuation, empty strings retained."""
 
-    spec = require_admitted(arm)
+    spec = generation_point(arm)
     text = continuation.split(spec.close_token, 1)[0]
     if spec.residue_escape:
         text = text.replace(spec.residue_escape, "")
     return cg.extract_protein(text, end_delimiter=spec.close_token)
 
 
+#: Arms whose loader resolves its own declared checkpoint from the arm name and
+#: cannot be pointed at another directory. ``load_galactica``,
+#: ``load_instructprotein`` and ``load_rung`` each take a name and read their own
+#: ``CHECKPOINTS``/``rung`` declaration, so a ``--checkpoint`` that names anything
+#: else is refused rather than quietly ignored.
+CHECKPOINT_NOT_OVERRIDABLE: frozenset[str] = frozenset(
+    {"instructprotein", "prollama-stage-1", "prollama"}
+    | {name for name in ADMITTED if name.startswith("galactica-")}
+)
+
+#: Arms whose weights load through :func:`~src.capability.core.arms.load_arm_spec`
+#: from a declared ``ArmSpec``, and which therefore honour a ``--checkpoint``
+#: override under the declared shape check. Every off-panel objective-tuned arm is
+#: one by construction, because :data:`OFF_PANEL` is built only from declared
+#: renderings. An arm in neither this set nor a named branch below reaches
+#: ``load_generator``'s final refusal rather than a default.
+_ARM_SPEC_GENERATORS: frozenset[str] = frozenset(
+    {
+        "protgpt2",
+        "progen2-small",
+        "progen2-base",
+        "progen2-medium",
+        "progen2-large",
+        "progen2-xlarge",
+        "protgpt3-1.3b",
+    }
+    | set(OFF_PANEL)
+)
+
+
 def checkpoint_for_arm(arm: str) -> Path:
     """Resolve the staged weights the way the existing doors already name them."""
 
-    require_admitted(arm)
+    generation_point(arm)
     if arm.startswith("galactica-"):
         from ..models.galactica_fitness import CHECKPOINTS
 
@@ -251,7 +371,7 @@ def checkpoint_for_arm(arm: str) -> Path:
         from ..models.joint_lineage import rung
 
         return rung(arm).checkpoint
-    return arm_spec(arm).path
+    return ot.spec_for(arm).path
 
 
 def stop_status(arm: str, raw: str, residues: str) -> str:
@@ -479,43 +599,56 @@ def generate(
     arm: str,
     *,
     n: int | None = None,
+    seed: int | None = None,
     generate_fn: GenerateFn | None = None,
     model: Any = None,
     tokenizer: Any = None,
     output_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Sample retained attempts. A fake ``generate_fn`` keeps tests off the GPU."""
+    """Sample retained attempts. A fake ``generate_fn`` keeps tests off the GPU.
 
-    spec = require_admitted(arm)
+    ``seed`` replaces the policy seed for one cell and nothing else about the
+    operating point. The objective-tuned campaign needs three independent streams
+    per arm and a base pool four times the tuned one, and under the policy's
+    ``seed_plus_batch_index`` rule that is the same 800-attempt cell repeated at
+    declared, non-overlapping seeds. The realised seed is written into the ledger
+    summary, because ``policy`` carries the default and a record that showed only
+    the default would not say which stream produced it.
+    """
+
+    spec = generation_point(arm)
     count = POLICY["attempts"] if n is None else int(n)
     if count < 1:
         raise ValueError("generation needs a positive attempt count")
+    draw_seed = POLICY["seed"] if seed is None else int(seed)
     prompt = spec.prompt
     if generate_fn is not None:
         raws = list(
             generate_fn(
                 prompt=prompt,
                 n=count,
-                seed=POLICY["seed"],
+                seed=draw_seed,
                 batch_size=spec.batch_size,
                 **_decode_kwargs(spec),
             )
         )
     elif spec.official_progen3:
-        raws = _sample_official_progen3(model, count, POLICY["seed"])
+        raws = _sample_official_progen3(model, count, draw_seed)
     else:
         if model is None or tokenizer is None:
             raise ValueError(f"{arm}: real generation needs a model and tokenizer, or a generate_fn")
-        raws = _sample_hf(spec, model, tokenizer, count, POLICY["seed"])
+        raws = _sample_hf(spec, model, tokenizer, count, draw_seed)
     if len(raws) != count:
         raise RuntimeError(f"{arm}: generator returned {len(raws)} continuations, not {count}")
     rows = [attempt_row(arm, raw, index) for index, raw in enumerate(raws)]
     if output_dir is not None:
-        write_attempt_ledger(Path(output_dir), rows, arm=arm)
+        write_attempt_ledger(Path(output_dir), rows, arm=arm, seed=draw_seed)
     return rows
 
 
-def write_attempt_ledger(output_dir: Path, rows: list[dict[str, Any]], *, arm: str) -> dict[str, Any]:
+def write_attempt_ledger(
+    output_dir: Path, rows: list[dict[str, Any]], *, arm: str, seed: int | None = None
+) -> dict[str, Any]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ledger = output_dir / LEDGER_NAME
@@ -526,6 +659,7 @@ def write_attempt_ledger(output_dir: Path, rows: list[dict[str, Any]], *, arm: s
         "stage": "generate",
         "attempts": len(rows),
         "policy": POLICY,
+        "seed": POLICY["seed"] if seed is None else int(seed),
         "prompt": prompt_for(arm),
         "close_token": close_token_for(arm),
         "batch_size": arm_batch_size(arm),
@@ -539,7 +673,7 @@ def write_attempt_ledger(output_dir: Path, rows: list[dict[str, Any]], *, arm: s
 def write_interface_record(output_dir: Path, arm: str, *, checkpoint: Path | None) -> dict[str, Any]:
     """Interface smoke receipt. Does not write the 800-attempt ledger."""
 
-    spec = require_admitted(arm)
+    spec = generation_point(arm)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ledger = output_dir / LEDGER_NAME
@@ -590,10 +724,30 @@ def read_attempts(path: Path) -> list[dict[str, Any]]:
 
 
 def load_generator(arm: str, *, device: str, checkpoint: Path | None = None) -> tuple[Any, Any]:
-    """Load weights for the real generate path. Tests inject a generate callable instead."""
+    """Load weights for the real generate path. Tests inject a generate callable instead.
 
-    spec = require_admitted(arm)
-    path = Path(checkpoint) if checkpoint is not None else checkpoint_for_arm(arm)
+    ``checkpoint`` is honoured or refused, never ignored. It used to be resolved
+    into ``path`` and then dropped by five of the eight branches: ``protgpt2`` and
+    the four ProGen2 rungs loaded through ``load_arm``, which takes a *name* and
+    reads the declared ``ArmSpec`` path, and the three name-only lineage loaders do
+    the same. ``write_interface_record`` meanwhile recorded the override, so a
+    fine-tuned checkpoint passed this way would have generated from base weights
+    and claimed otherwise -- the exact failure an objective-tuned pair is made of.
+    Every ``ArmSpec`` branch now loads the override through
+    :func:`~src.capability.core.arms.load_arm_spec`, which verifies the declared
+    depth and width against the live config of the directory it was actually given;
+    the loaders that cannot be redirected refuse by name.
+    """
+
+    spec = generation_point(arm)
+    declared = checkpoint_for_arm(arm)
+    path = Path(checkpoint) if checkpoint is not None else declared
+    if path.resolve() != declared.resolve() and arm in CHECKPOINT_NOT_OVERRIDABLE:
+        raise ValueError(
+            f"{arm}: its loader resolves {declared} from the arm name and cannot be "
+            f"pointed at {path}. Refusing rather than loading the declared weights "
+            "under the requested name"
+        )
     dtype = spec.dtype
     if spec.official_progen3:
         import torch
@@ -603,15 +757,12 @@ def load_generator(arm: str, *, device: str, checkpoint: Path | None = None) -> 
         pg = load_progen3(path, device=device, dtype=torch.bfloat16)
         pg.model.serving_provenance = {"progen3": pg}
         return pg.model, pg.tokenizer
-    if arm in {"protgpt2", "progen2-small", "progen2-base", "progen2-medium"}:
-        from ..core.arms import load_arm
-
-        handle = load_arm(arm, device=device, dtype=dtype)
-        return handle.model, handle.tokenizer
-    if arm in {"progen2-large", "progen2-xlarge", "protgpt3-1.3b"}:
+    if arm in _ARM_SPEC_GENERATORS:
         from ..core.arms import load_arm_spec
 
-        handle = load_arm_spec(arm_spec(arm), device=device, dtype=dtype)
+        handle = load_arm_spec(
+            replace(ot.spec_for(arm), path=path), device=device, dtype=dtype
+        )
         return handle.model, handle.tokenizer
     if arm == "proteinglm-7b-clm":
         from ..models import proteinglm as pglm
@@ -642,7 +793,7 @@ def load_generator(arm: str, *, device: str, checkpoint: Path | None = None) -> 
 
 
 def interface_payload(arm: str, *, checkpoint: Path | None = None) -> Mapping[str, Any]:
-    spec = require_admitted(arm)
+    spec = generation_point(arm)
     return {
         "arm": arm,
         "prompt": spec.prompt,
