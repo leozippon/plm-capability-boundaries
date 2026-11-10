@@ -415,6 +415,52 @@ def check_gemme_additivity(reference: dict) -> dict:
     }
 
 
+def replay_scope(checks: dict, selected: list[str], refit: list[str]) -> dict:
+    """What each guarantee covers, written so a narrow one cannot read as broad.
+
+    The gate establishes three different things of three different breadths, and
+    a reader who sees only ``passed: true`` beside 174 wild types will take the
+    broadest reading of all of them. An exact replay of one published parameter
+    file is not an exact replay of the published panel; a cohort-wide identity on
+    alignments and derived scores says nothing about fitted models; and a
+    bit-identical refit from scratch is a guarantee about the fitter rather than
+    about any stored model. Stating the split is the only way the record can be
+    read correctly.
+    """
+
+    replay = checks["potts_replay"]
+    return {
+        "cohort_wide": {
+            "references": len(selected),
+            "established": [
+                "every exported alignment is byte-identical to the published one",
+                "every row of the frozen variant table is rebuilt without drift",
+                "every profile delta is recomputed at exactly zero difference",
+                "every published GEMME aggregate is reproduced exactly",
+            ],
+        },
+        "published_potts_models_replayed": {
+            "models": replay["models_identical_to_published"],
+            "exact": replay["models_identical_to_published_exact"],
+            "breadth": "the published parameter files retained on this host, not the panel. "
+                       "Only two of the published run's 174 files were ever retrieved from the "
+                       "cluster, and at the measured relay ceiling retrieving more would cost "
+                       "more than the widened claim is worth. The replay establishes exactness "
+                       "on the models present and says nothing about the rest.",
+        },
+        "refits_from_scratch": {
+            "references": list(refit),
+            "established": "bit-identical parameter files through the generalised fit path, "
+                           "which is a guarantee about the fitter this campaign runs rather "
+                           "than about a stored model, and is the stronger guarantee of the two "
+                           "for anything produced from here on",
+        },
+        "not_claimed": "that all 174 published Potts models have been reproduced. The scores "
+                       "derived from them are reproduced cohort-wide; the models themselves are "
+                       "verified on the retained files and on the refits named above.",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -466,6 +512,7 @@ def main() -> None:
         "exact_tolerance": EXACT,
         "refit_tolerance": REFIT_TOLERANCE,
         "checks": checks,
+        "scope": replay_scope(checks, selected, list(arguments.refit)),
         "passed": all(entry["passed"] for entry in checks.values()),
     }
     R.save(out / "reproduction-gate.json", document)
