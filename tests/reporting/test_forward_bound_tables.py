@@ -77,11 +77,22 @@ def cells(block):
 # --- the rendered form ------------------------------------------------------------------------
 
 def test_each_table_has_the_rows_and_columns_its_header_names(retained):
-    for name, rows in ((tables.FORWARD_BOUND, 9), (tables.RESOLUTION_COUNTS, 9),
+    for name, rows in ((tables.FORWARD_BOUND, 9), (tables.RESOLUTION_COUNTS, 10),
                        (tables.BASELINE_STRUCTURE, 3)):
         lines = retained[name].split("\n")
         width = lines[0].count("|")
         assert len(lines) == 2 + rows and all(line.count("|") == width for line in lines)
+
+
+def test_the_last_count_row_is_the_sum_of_the_panel_rows_above_it(retained):
+    """A total is the number a reader is most likely to quote, so it is rendered, never typed."""
+    rows = cells(retained[tables.RESOLUTION_COUNTS])
+    panels, total = rows[:-1], rows[-1]
+    assert len(panels) == 9 and total[0].startswith("All 9 panels") and "297 columns per cell" in total[0]
+    for column in (1, 2, 3):
+        native = sum(int(row[column].split(" / ")[0]) for row in panels)
+        studentised = sum(int(row[column].split(" / ")[1]) for row in panels)
+        assert total[column] == f"{native} / {studentised}", column
 
 
 def test_a_native_bound_is_its_largest_estimate_plus_the_one_half_width(retained):

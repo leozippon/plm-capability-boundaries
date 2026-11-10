@@ -18,7 +18,8 @@ reading, and renders three blocks:
                                   baseline that lists no profile (S) and the one that lists
                                   composition and the bounded profile block (S2)
     resolution-counts             run note: per panel, how many of the 33 arms resolve positive,
-                                  negative and, in the reverse direction, positive under each band
+                                  negative and, in the reverse direction, positive under each band,
+                                  and a last row that sums the panels
 
 Each block lives between its own pair of markers in the document that carries it, and
 regenerating replaces exactly what lies between them. The prose around a block is written by
@@ -404,12 +405,16 @@ def _bound_row(panel: Panel) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
-def _count_row(panel: Panel) -> str:
-    forward, reverse = panel.forward.values(), panel.reverse.values()
-    cells = [panel.count_label,
-             f"{sum(c.native[0] > 0 for c in forward)} / {sum(c.studentised[0] > 0 for c in forward)}",
-             f"{sum(c.native[1] < 0 for c in forward)} / {sum(c.studentised[1] < 0 for c in forward)}",
-             f"{sum(c.native[0] > 0 for c in reverse)} / {sum(c.studentised[0] > 0 for c in reverse)}"]
+def _counts(panel: Panel) -> tuple[int, ...]:
+    """Forward positive, forward negative and reverse positive, each native then studentised."""
+    forward, reverse = list(panel.forward.values()), list(panel.reverse.values())
+    return (sum(c.native[0] > 0 for c in forward), sum(c.studentised[0] > 0 for c in forward),
+            sum(c.native[1] < 0 for c in forward), sum(c.studentised[1] < 0 for c in forward),
+            sum(c.native[0] > 0 for c in reverse), sum(c.studentised[0] > 0 for c in reverse))
+
+
+def _count_row(label: str, counts: tuple[int, ...]) -> str:
+    cells = [label, f"{counts[0]} / {counts[1]}", f"{counts[2]} / {counts[3]}", f"{counts[4]} / {counts[5]}"]
     return "| " + " | ".join(cells) + " |"
 
 
@@ -418,7 +423,11 @@ def render_bound_table(panels: dict[str, Panel]) -> str:
 
 
 def render_count_table(panels: dict[str, Panel]) -> str:
-    return "\n".join(COUNT_HEADER + tuple(_count_row(panels[key]) for key in COUNT_ORDER))
+    """One row per panel, then one row that sums them, so no total has to be typed beside the table."""
+    rows = [_count_row(panels[key].count_label, _counts(panels[key])) for key in COUNT_ORDER]
+    total = tuple(sum(column) for column in zip(*(_counts(panels[key]) for key in COUNT_ORDER)))
+    label = f"All {len(COUNT_ORDER)} panels, summed ({len(COUNT_ORDER) * ARMS} columns per cell)"
+    return "\n".join(COUNT_HEADER + tuple(rows) + (_count_row(label, total),))
 
 
 def _grid_family(document, prefix: str, readout: str, design: str, blocks: str, campaign: Panel):
