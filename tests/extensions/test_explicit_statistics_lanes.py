@@ -6,6 +6,7 @@ refusal on a partial wave is the behaviour that matters most while that wave run
 """
 import dataclasses
 import json
+import pathlib
 from pathlib import Path
 
 import numpy as np
@@ -558,7 +559,12 @@ def test_the_fraction_is_withheld_where_the_control_has_no_positive_performance(
     for rung in declared.rungs:
         for arm in declared.arms:
             joint = rng.normal(-0.2, 0.02, size=len(groups))
-            cells[rung, arm] = {'U_C': joint - 0.02, 'M': joint - 0.4, 'U_C_M': joint}
+            # Each arm carries its own per-group deviation, so the paired contrasts vary
+            # across the resampling units. A fixture whose contrasts are exactly constant
+            # has no statistic to studentise and the shared band helper refuses it.
+            cells[rung, arm] = {'U_C': joint + rng.normal(-0.02, 0.004, size=len(groups)),
+                                'M': joint + rng.normal(-0.4, 0.01, size=len(groups)),
+                                'U_C_M': joint}
     record = lanes.panel('phenotype', 'activity_venus-ranking', 'likelihood', cells,
                          groups=groups, support_sha256='a' * 64)
     for entry in record['forward_bound']['columns']:
@@ -817,12 +823,91 @@ def test_a_status_that_disagrees_with_its_value_is_refused():
         lanes.complete_case('interaction', rows, {'couplings': table})
 
 
-def test_a_refused_row_whose_reference_is_not_enumerated_is_refused():
+def test_a_refused_row_no_one_enumerates_is_refused():
     rows = cohort_rows()
     statuses = {rows[0]['sample_id']: 'no_homolog_support'}
     table = score_table('couplings', rows, statuses=statuses)
-    with pytest.raises(ValueError, match='does not enumerate as refusals'):
+    with pytest.raises(ValueError, match='neither it nor the cohort export enumerates'):
         lanes.complete_case('interaction', rows, {'couplings': table})
+    # An absent export document narrows what may be accepted and never widens it.
+    with pytest.raises(ValueError, match='neither it nor the cohort export enumerates'):
+        lanes.complete_case('interaction', rows, {'couplings': table},
+                            refusals={'refused': {}})
+
+
+def test_the_export_is_the_authority_on_a_reference_it_refused_for_both_blocks():
+    # The export refuses a reference with too few homolog rows once, for both blocks.
+    # Neither block table re-enumerates it, and the loss is still a declared loss.
+    rows = cohort_rows()
+    statuses = {row['sample_id']: 'no_homolog_support'
+                for row in rows if row['wildtype_id'] == 'r1'}
+    table = score_table('couplings', rows, statuses=statuses)
+    refusals = {'schema': lanes.REFUSALS_SCHEMA, 'count': 1, 'read_from': 'export/refusals.json',
+                'refused': {'r1': {'reason': 'no retained alignment hit', 'rows': 0}}}
+    record = lanes.complete_case('interaction', rows, {'couplings': table}, refusals=refusals)
+    assert record['references_lost'] == ['r1']
+    loss = record['losses']['couplings']
+    assert loss['references']['r1']['declared_by'] == 'cohort export'
+    assert loss['declared_by'] == {'block table': 0, 'cohort export': 1}
+    assert record['refusals_read_from'] == 'export/refusals.json'
+
+
+def test_a_block_tables_own_refusal_is_still_its_own_to_declare():
+    rows = cohort_rows()
+    statuses = {row['sample_id']: 'refused_degenerate'
+                for row in rows if row['wildtype_id'] == 'r1'}
+    table = score_table('gemme', rows, statuses=statuses,
+                        refused={'r1': {'reason': 'degenerate run'}})
+    record = lanes.complete_case('stability', rows, {
+        'gemme': table, 'couplings': score_table('couplings', rows)}, refusals={'refused': {}})
+    assert record['losses']['gemme']['references']['r1']['declared_by'] == 'block table'
+
+
+def test_the_refusals_reader_refuses_a_document_that_disagrees_with_itself(tmp_path):
+    path = tmp_path / 'refusals.json'
+    path.write_text(json.dumps({'schema': lanes.REFUSALS_SCHEMA, 'count': 2,
+                                'refused': {'r1': {'reason': 'x'}}}))
+    with pytest.raises(ValueError, match='declares 2 refusals and enumerates 1'):
+        lanes.read_refusals(path)
+    path.write_text(json.dumps({'schema': 'something_else', 'count': 0, 'refused': {}}))
+    with pytest.raises(ValueError, match='is not'):
+        lanes.read_refusals(path)
+
+
+# --------------------------------------------------------------------------- #
+# What a fitted cell is bound to.
+# --------------------------------------------------------------------------- #
+
+def test_a_full_support_identity_excludes_the_added_block_vocabulary():
+    full = lanes.fit_identity('abundance', 'full')
+    complete = lanes.fit_identity('abundance', 'complete_case')
+    for key in ('row_status', 'added_blocks', 'block_source', 'added_block_rendering',
+                'cycle_contrast'):
+        assert key not in full, key
+        assert key in complete, key
+    # No full-support rung carries an added block, which is what makes that sound.
+    for rung in lanes.FULL_SUPPORT_RUNGS:
+        assert not set(lanes.RUNGS[rung]) & set(lanes.NEW_BLOCKS)
+
+
+def test_the_identity_carries_what_decides_a_number_and_no_prose():
+    identity = lanes.fit_identity('stability', 'complete_case')
+    assert identity['profile_blocks'] == ['prof2']
+    assert identity['strata_to_loss'] == {'ranking': -1., 'transfer_error': 1.,
+                                          'calibrated_error': 1.}
+    assert identity['arms'] == list(lanes.ARM_NAMES)
+    assert identity['row_status']['gemme']['no_homolog_support'] == lanes.REFUSED
+    rendered = json.dumps(identity)
+    for prose in (lanes.NUISANCE_RUNG_LIMITATION, lanes.GEMME_CYCLE_REASON,
+                  lanes.FIT_IDENTITY_RULE, lanes.EXPORT_REFUSAL_AUTHORITY):
+        assert prose not in rendered
+    for limitation in lanes.LIMITATIONS:
+        assert limitation not in rendered
+
+
+def test_an_unknown_support_has_no_identity():
+    with pytest.raises(ValueError, match='unknown support'):
+        lanes.fit_identity('abundance', 'archived')
 
 
 def test_a_table_that_does_not_cover_the_rows_is_refused():
@@ -948,3 +1033,203 @@ def test_panel_reads_a_cells_document_and_writes_the_family(tmp_path):
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match='is not one of'):
         lanes.main(['panel', '--lane', 'phenotype', '--cells', str(path)])
+
+
+# --------------------------------------------------------------------------- #
+# The reverse bound: the second half of a two-sided statement.
+# --------------------------------------------------------------------------- #
+
+def test_the_reverse_bound_is_two_sided_and_read_against_the_model_arm():
+    groups = [f'g{index:02d}' for index in range(24)]
+    cells = cell_matrix('interaction', 'cycle_squared_error', groups, forward=0.001,
+                        reverse=0.02, spread=0.004, seed=11,
+                        digest='c' * 64)
+    record = lanes.panel('interaction', 'cycle_squared_error', 'likelihood', cells,
+                         groups=groups, support_sha256='c' * 64)
+    bound = record['reverse_bound']
+    assert bound['direction'] == 'controls_given_model'
+    assert 'Overlap is a two-sided claim' in bound['reading']
+    for entry in bound['columns']:
+        # Both limits, and the denominator is the model arm's own performance.
+        assert entry['lower_limit'] < entry['upper_limit']
+        assert entry['fraction_of_model_performance'] == pytest.approx(
+            entry['upper_limit'] / entry['model_performance'])
+        assert entry['resolved_above_zero'] is (entry['lower_limit'] > 0)
+    summary = bound['per_control_set']['nuisance']
+    assert summary['arms'] == len(lanes.lane('interaction').arms)
+    assert summary['smallest_lower_limit'] <= summary['largest_upper_limit']
+
+
+def test_the_two_bounds_share_one_simultaneous_critical_value():
+    groups = [f'g{index:02d}' for index in range(20)]
+    cells = cell_matrix('stability', 'transfer_error', groups, forward=0.01, reverse=0.2,
+                        digest='d' * 64)
+    record = lanes.panel('stability', 'transfer_error', 'likelihood', cells,
+                         groups=groups, support_sha256='d' * 64)
+    critical = record['native']['joint_critical_max_absolute_deviation']
+    # Every column is point +- the one family-wise critical value, so a limit read off
+    # any column holds jointly with every other column's.
+    for point, (low, high) in zip(record['point'], record['native']['interval']):
+        assert high - point == pytest.approx(critical)
+        assert point - low == pytest.approx(critical)
+    assert 'simultaneous, not pointwise' in record['simultaneity']
+    assert record['native']['family_size'] == record['family']['size']
+
+
+def test_a_stratum_under_the_floor_withholds_both_bounds():
+    groups = [f'g{index:02d}' for index in range(4)]
+    cells = cell_matrix('phenotype', 'cellular_fitness_sge-ranking', groups, digest='e' * 64)
+    record = lanes.panel('phenotype', 'cellular_fitness_sge-ranking', 'likelihood', cells,
+                         groups=groups, support_sha256='e' * 64)
+    assert record['status'] == lanes.UNRESOLVED
+    for name in ('forward_bound', 'reverse_bound'):
+        assert record[name]['status'] == lanes.UNRESOLVED
+        assert record[name]['reason']
+
+
+def test_each_panel_states_what_its_controls_are():
+    groups = [f'g{index:02d}' for index in range(16)]
+    cells = cell_matrix('abundance', 'squared_error', groups, rungs=('nuisance',),
+                        digest='f' * 64)
+    record = lanes.panel('abundance', 'squared_error', 'likelihood', cells, groups=groups,
+                         support_sha256='f' * 64, role='sensitivity')
+    # A reader who misses this takes the result for a claim about model quality.
+    assert "target protein's own retained alignment" in record['control_provenance']
+    assert 'scored zero-shot' in record['control_provenance']
+    assert 'not a statement about model quality in general' in record['control_provenance']
+
+
+def test_the_scope_conditions_are_declared_limitations():
+    joined = ' '.join(lanes.LIMITATIONS)
+    assert 'as read out by sequence likelihood' in joined
+    assert 'not the\ninformation content of the parameters' in joined or \
+        'not the information content of the parameters' in joined
+    assert 'asymmetry in power' in joined
+    assert 'a power asymmetry would matter only if the forward interval were' in joined
+
+
+def test_a_reverse_fraction_above_one_is_flagged_not_hidden():
+    # Where the model readout alone achieves almost nothing, the ratio exceeds one and
+    # has stopped being a share of anything. It is flagged and the native limit stands.
+    groups = [f'g{index:02d}' for index in range(16)]
+    rng = np.random.default_rng(3)
+    cells = {}
+    for rung in lanes.lane('stability').rungs:
+        for arm in lanes.lane('stability').arms:
+            joint = rng.normal(0.50, 0.004, size=len(groups))
+            cells[rung, arm] = {
+                'U_C_M': joint.tolist(),
+                'U_C': (joint - rng.normal(0.05, 0.004, len(groups))).tolist(),
+                # The pure readout achieves almost no rank agreement of its own.
+                'M': rng.normal(0.01, 0.004, size=len(groups)).tolist(),
+                'support_sha256': '9' * 64}
+    record = lanes.panel('stability', 'ranking', 'likelihood', cells, groups=groups,
+                         support_sha256='9' * 64)
+    bound = record['reverse_bound']
+    flagged = [c for c in bound['columns'] if c['fraction_exceeds_denominator']]
+    assert flagged, 'this fixture leaves the model arm almost no rank agreement'
+    for entry in flagged:
+        assert entry['fraction_of_model_performance'] > 1
+        assert entry['upper_limit'] > entry['model_performance']
+    per_rung = sum(1 for c in flagged if c['control_set'] == 'nuisance')
+    assert bound['per_control_set']['nuisance']['arms_whose_fraction_exceeds_one'] == per_rung
+    assert per_rung == len(lanes.lane('stability').arms)
+    assert 'stops being a share' in bound['fraction_limitation']
+
+
+# --------------------------------------------------------------------------- #
+# Every number carries the rung it is an increment over.
+# --------------------------------------------------------------------------- #
+
+def test_a_bound_names_the_rung_and_its_columns_not_its_role():
+    groups = [f'g{index:02d}' for index in range(16)]
+    nuisance = lanes.control_blocks('stability', 'nuisance',
+                                    ('ident', 'geom', 'chem', 'G', 'comp', 'prof2'))
+    cells = cell_matrix('stability', 'ranking', groups, rungs=('nuisance',), digest='7' * 64)
+    record = lanes.panel('stability', 'ranking', 'likelihood', cells, groups=groups,
+                         support_sha256='7' * 64, role='sensitivity',
+                         control_columns={'nuisance': {arm: nuisance
+                                                       for arm in lanes.lane('stability').arms}})
+    # The rung, its columns and the fact that it is not the archived set travel together.
+    label = record['control_sets']['nuisance']
+    assert label['control_set'] == 'nuisance' and label['is_archived_control_set'] is False
+    assert label['carries_profile'] is False and label['carries_added_blocks'] == []
+    assert label['columns'] == {'/'.join(nuisance): list(lanes.lane('stability').arms)}
+    assert 'NOT the lane\'s archived control set' in label['reads_as']
+    assert record['reads_as'] == label['reads_as']
+    for name in ('forward_bound', 'reverse_bound'):
+        held = record[name]['per_control_set']['nuisance']
+        assert held['control_set'] == 'nuisance'
+        assert held['reads_as'] == label['reads_as']
+
+
+def test_the_archived_rung_says_that_it_is_the_archived_one():
+    qualified = ('ident', 'geom', 'chem', 'G', 'comp', 'prof2')
+    label = lanes.control_set_label('stability', lanes.ARCHIVED_RUNG,
+                                    {'gpt2': lanes.control_blocks('stability',
+                                                                  lanes.ARCHIVED_RUNG, qualified)})
+    assert label['is_archived_control_set'] is True and label['carries_profile'] is True
+    assert 'NOT the lane' not in label['reads_as']
+
+
+def test_an_arm_conditional_rung_names_the_columns_only_some_arms_carry():
+    frozen = ('ident', 'geom', 'comp', 'chem', 'prof', 'prof2', 'G')
+    plain = lanes.control_blocks('abundance', lanes.ARCHIVED_RUNG, frozen)
+    tokenised = lanes.control_blocks('abundance', lanes.ARCHIVED_RUNG, (*frozen, 'T'))
+    label = lanes.control_set_label('abundance', lanes.ARCHIVED_RUNG,
+                                    {'protgpt2': plain, 'gpt2': tokenised})
+    assert label['arm_conditional_columns']['added_by_some_arms'] == ['T']
+    assert 'for the arms whose archive qualified them' in label['reads_as']
+
+
+def test_a_panel_without_the_columns_says_so_rather_than_guessing():
+    groups = [f'g{index:02d}' for index in range(16)]
+    cells = cell_matrix('stability', 'ranking', groups, rungs=('nuisance',), digest='8' * 64)
+    record = lanes.panel('stability', 'ranking', 'likelihood', cells, groups=groups,
+                         support_sha256='8' * 64, role='sensitivity')
+    label = record['control_sets']['nuisance']
+    assert label['columns'] is None
+    assert 'were not supplied to this panel' in label['reads_as']
+    assert label['control_set'] == 'nuisance'
+
+
+def test_a_forward_fraction_above_one_is_flagged_like_the_reverse_one():
+    # The model's bound exceeding the rung's own performance is the same situation as the
+    # reverse case: still a true ratio, no longer a share. Both bounds flag it.
+    groups = [f'g{index:02d}' for index in range(16)]
+    rng = np.random.default_rng(17)
+    cells = {}
+    for arm in lanes.lane('stability').arms:
+        joint = rng.normal(0.50, 0.004, size=len(groups))
+        cells['nuisance', arm] = {
+            'U_C_M': joint.tolist(),
+            # The rung itself achieves almost no rank agreement of its own.
+            'U_C': rng.normal(0.01, 0.004, size=len(groups)).tolist(),
+            'M': rng.normal(0.02, 0.004, size=len(groups)).tolist(),
+            'support_sha256': '6' * 64}
+    record = lanes.panel('stability', 'ranking', 'likelihood', cells, groups=groups,
+                         support_sha256='6' * 64, role='sensitivity')
+    bound = record['forward_bound']
+    flagged = [c for c in bound['columns'] if c['fraction_exceeds_denominator']]
+    assert flagged, 'this fixture leaves the rung almost no rank agreement'
+    for entry in flagged:
+        assert entry['fraction_of_control_performance'] > 1
+        assert entry['upper_limit'] > entry['control_performance']
+    held = bound['per_control_set']['nuisance']
+    assert held['arms_whose_fraction_exceeds_one'] == len(flagged)
+    assert 'stops being a share' in bound['fraction_limitation']
+    # And the flag is present and false on a panel whose denominators are healthy.
+    healthy = cell_matrix('stability', 'ranking', groups, digest='5' * 64)
+    other = lanes.panel('stability', 'ranking', 'likelihood', healthy, groups=groups,
+                        support_sha256='5' * 64)
+    assert all(c['fraction_exceeds_denominator'] is False
+               for c in other['forward_bound']['columns'])
+
+
+def test_every_added_block_names_a_producer_that_exists():
+    # The producer is named in the refusal a reader gets when a wave has not landed, so a
+    # name that resolves to nothing sends them looking for a file that never existed.
+    root = pathlib.Path(lanes.__file__).resolve().parents[3]
+    for role, source in lanes.BLOCK_SOURCE.items():
+        producer = root / source['producer']
+        assert producer.is_file(), f'{role}: {source["producer"]} does not exist'

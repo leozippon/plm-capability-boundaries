@@ -171,6 +171,11 @@ RUNGS: dict[str, tuple[str, ...]] = {
 }
 #: The rung that reproduces each lane's archived primary control set exactly.
 ARCHIVED_RUNG = 'nuisance+profile'
+#: The rungs fitted on the full support: the nuisance-only sensitivity and the archived
+#: reproduction pilot. Neither carries an added block, which is what lets a full-support
+#: fit be bound to an identity that excludes the added-block vocabulary entirely
+#: (:func:`fit_identity`). :func:`_check_declarations` asserts it rather than trusting it.
+FULL_SUPPORT_RUNGS = ('nuisance', ARCHIVED_RUNG)
 
 #: Three arm names per rung, taken from the shared directions so a pairing cannot
 #: drift: the control arm, the pure model readout and their union.
@@ -211,19 +216,44 @@ FORWARD_BOUND_READING = (
 #: the declared kind, and a ``pending`` row means the wave has not landed. Any other
 #: status -- a failed or unconverged background, a partly scored wild type -- is
 #: neither, and the reader refuses rather than guessing which.
+#:
+#: ``no_homolog_support`` means the same thing on both rungs and is classified the same
+#: way on both: the reference has fewer than two retained homolog rows, so it carries
+#: no coupling model and no GEMME run, and neither block can ever value its rows. It is
+#: a refusal rather than a pending row precisely because no run can be made.
 AVAILABLE, REFUSED, PENDING = 'available', 'refused', 'pending'
 ROW_STATUS = {
     'couplings': {'fitted': AVAILABLE, 'no_homolog_support': REFUSED,
                   'not_fitted': PENDING},
     'gemme': {'scored': AVAILABLE, 'refused_degenerate': REFUSED,
-              'wildtype_pending': PENDING},
+              'no_homolog_support': REFUSED, 'wildtype_pending': PENDING},
 }
 #: The score column and the upstream table schema each block is read from.
 BLOCK_SOURCE = {
     'couplings': {'schema': 'r1_msa_baseline_scores_v1', 'column': 'potts_delta',
-                  'producer': 'scripts/capability/baselines/fit_explicit_statistics.py'},
+                  'producer': 'scripts/capability/baselines/r1_msa_baselines.py'},
     'gemme': {'schema': 'r1_gemme_scores', 'column': 'gemme_score',
               'producer': 'scripts/capability/baselines/score_r1_gemme.py'},
+}
+
+#: How an added block enters a double-mutant cycle estimand, declared.
+#:
+#: The score tables value *mutants*; a row of the interaction lane is a four-corner
+#: cycle. The added block of a cycle is therefore the cycle contrast of its scored
+#: corners, ``v(AB) - v(A) - v(B) + v(WT)`` with ``v(WT) = 0`` by construction, and a
+#: cycle enters the complete case only when all three of its scored corners do.
+#:
+#: This is declared rather than left to be inferred because the lane's
+#: non-identifiability finding rests on it: :data:`GEMME_CYCLE_REASON` holds only if the
+#: block enters as this contrast, and a published result must not depend on a reading a
+#: later reader has to reconstruct from the reason given for it.
+CYCLE_CONTRAST = {
+    'definition': 'v(AB) - v(A) - v(B) + v(WT), with v(WT) = 0 by construction',
+    'corners': ('double', 'low single', 'high single'),
+    'support_rule': ('a cycle enters the complete case only when every one of its three '
+                     'scored corners does, because the contrast is undefined otherwise'),
+    'why_declared': ('the non-identifiability of GEMME for this estimand is a consequence '
+                     'of this definition, so the definition is declared beside it'),
 }
 
 #: Why the GEMME block cannot inform a double-mutant cycle contrast.
@@ -234,6 +264,79 @@ GEMME_CYCLE_REASON = (
     "identically zero; the block carries no non-additive component for this estimand "
     "and is recorded as non-identifiable rather than estimated at zero with a tight "
     "interval around it")
+
+#: What the nuisance rung does and does not establish.
+#:
+#: ``G`` is a frozen block whose first stage reads the lane's standing columns, and those
+#: include the profile columns in all three lanes beyond the added phenotypes. So the
+#: nuisance rung drops the profile *columns* and still carries profile *information*
+#: through ``G``. Refitting ``G`` without them would stop the profile rung reproducing
+#: each lane's archive column for column, and would buy a decomposition this hierarchy
+#: does not claim, so ``G`` stays exactly as the archive defined it.
+#:
+#: **What this does not threaten.** The leaked columns are themselves explicit
+#: evolutionary statistics, so every rung's control set is exactly what the claim names
+#: it, and the forward bound -- the model adds at most this much beyond the explicit
+#: statistics -- is unaffected on every rung.
+#:
+#: **What it does threaten.** Attribution *among* rungs. How much the profile columns
+#: alone contribute is not cleanly separable from what ``G`` already carries, so the
+#: first step of the hierarchy reads as "plus the profile columns", never as "plus all
+#: profile information", and a per-rung decomposition is not available from it.
+NUISANCE_RUNG_LIMITATION = (
+    'the nuisance rung drops the profile columns and still carries profile information '
+    'through G, whose frozen first stage reads the lane\'s standing columns. This does not '
+    'weaken any forward bound: the leaked columns are themselves explicit evolutionary '
+    'statistics, so each control set is what the claim names it. What it costs is '
+    'attribution among rungs -- the profile columns\' own contribution is not separable '
+    'from what G already carries -- so the first step reads as "plus the profile columns" '
+    'and never as "plus all profile information"')
+
+#: The coupling fitter's own instrument bounds, declared separately and never pooled.
+#:
+#: The first is the fitter's single-host run-to-run spread on a per-variant score. The
+#: second applies to a fit that stopped at its iteration cap and is about four times the
+#: first. They are deliberately not averaged, because an average reports neither: a
+#: comparison is read against whichever bound applies to the fits it rests on.
+#:
+#: **No comparison may resolve a difference below the applicable bound.** Both finished
+#: cohorts carry zero non-converged backgrounds, so for the abundance and pairwise
+#: cohorts the operative bound is the run-to-run one.
+#:
+#: This is documentation of the added block's measurement precision. It cannot change a
+#: fitted number and is therefore outside :func:`fit_identity`, which is the whole point
+#: of that function: recording an instrument bound must not cost a refit.
+COUPLING_INSTRUMENT_BOUNDS = {
+    'run_to_run_per_variant_score': 1.071e-2,
+    'iteration_cap_fit': 4.303e-2,
+    'pooling': 'declared separately and never averaged; an average reports neither',
+    'rule': 'no comparison may resolve a difference below the applicable bound',
+    'operative_for_finished_cohorts': 'run_to_run_per_variant_score, because the abundance '
+                                      'and pairwise cohorts carry zero non-converged '
+                                      'backgrounds',
+}
+
+#: What the two sides of every contrast actually are. Recorded in each panel because a
+#: reader who misses it will take the result for a claim about model quality in general.
+CONTROL_PROVENANCE = (
+    'the control set is fitted per family on the target protein\'s own retained alignment: '
+    'the profile columns, the coupling scalar and the GEMME scalar are all family-specific '
+    'statistics of that protein\'s homologs, selected and tuned inside the training folds of '
+    'this very cohort. The arm is a general model scored zero-shot, with one scalar '
+    'likelihood difference per variant and no access to the target family. So a resolved '
+    'reverse increment says that family-specific evolutionary statistics predict these '
+    'endpoints better than a general model\'s sequence likelihood read out zero-shot; it is '
+    'not a statement about model quality in general, about the models\' parameters, or about '
+    'what a model fine-tuned on this family could do')
+
+#: Why a per-column limit here is a statement about every arm at once.
+SIMULTANEITY = (
+    'one critical value is taken as the 95% quantile of the family-wise maximum absolute '
+    'centered bootstrap deviation over every column of the family, and each column carries '
+    'point +- that value. Each per-column interval is therefore simultaneous, not pointwise: '
+    'a bound read off the largest per-arm upper limit holds for every arm of the family at '
+    'once, including the strongest. Both directions of a stratum share the one critical '
+    'value, so the forward and reverse limits are jointly valid')
 
 #: Stable schema labels. A label is an identity, not a version counter: a reader
 #: accepts the names it knows and refuses any other rather than stripping a suffix.
@@ -248,6 +351,23 @@ ROWS_FILE = Path('inputs/variant_table.json')
 ROWS_SCHEMA = 'r1_msa_variant_table_v1'
 SUPPORT_FILE = Path('inputs/support.json')
 UPSTREAM_SUPPORT_SCHEMA = 'r1_msa_support_v1'
+REFUSALS_FILE = Path('inputs/refusals.json')
+REFUSALS_SCHEMA = 'explicit_statistics_refusals_v1'
+
+#: Who is the authority on a reference the export never scored.
+#:
+#: A block table enumerates the references *it* refused. A reference with too few
+#: retained homolog rows was refused once, by the export, for both blocks at once, and
+#: the export's own refusals document is where that is recorded. A loss of that kind is
+#: therefore read from the export rather than re-enumerated in each block table: one
+#: statement of one fact, where two could drift apart and only one of them be read.
+#: :func:`complete_case` accepts a lost reference that either the block table or the
+#: export enumerates, and refuses one that neither does.
+EXPORT_REFUSAL_AUTHORITY = (
+    'a reference with fewer than two retained homolog rows was refused by the cohort '
+    'export for both blocks at once, so that loss is read from the export\'s own refusals '
+    'document rather than re-enumerated per block table; a block table remains the '
+    'authority on the refusals only it can see, such as a degenerate GEMME run')
 
 #: The retained-alignment-row band every GEMME degeneracy observed so far has fallen
 #: in: all seven degenerate R1 wild types had at most 14 retained rows and none at 15
@@ -598,8 +718,8 @@ def fit_plan(lane_name: str, qualified: Sequence[str], *, channel: str = 'likeli
     declared = lane(lane_name)
     plan = []
     for support, rungs, role in (('complete_case', declared.rungs, 'primary'),
-                                 ('full', ('nuisance',), 'sensitivity'),
-                                 ('full', (ARCHIVED_RUNG,), 'pilot')):
+                                 ('full', FULL_SUPPORT_RUNGS[:1], 'sensitivity'),
+                                 ('full', FULL_SUPPORT_RUNGS[1:], 'pilot')):
         for rung in rungs:
             designs = arm_designs(lane_name, rung, qualified, channel=channel,
                                   tokenisation=tokenisation)
@@ -609,6 +729,64 @@ def fit_plan(lane_name: str, qualified: Sequence[str], *, channel: str = 'likeli
                          'reuses_archived_fit': False,
                          'designs': {name: list(columns) for name, columns in designs.items()}})
     return plan
+
+
+#: What a fitted cell is bound to, and why that is narrower than this module's bytes.
+FIT_IDENTITY_RULE = (
+    'a cell is bound to the declared things that can change its own numbers, not to this '
+    'module\'s bytes. Recording a limitation, a reason or an instrument bound cannot move '
+    'any computed value, and a digest that cannot tell that apart makes writing one cost a '
+    'refit -- which prices honesty backwards. The identity is also conditioned on the '
+    'support: no full-support rung carries an added block, so the added-block vocabulary, '
+    'rendering and admission rules are outside a full-support cell\'s identity and inside a '
+    'complete-case cell\'s. Everything that decides which rows are admitted, which columns '
+    'a rung carries, how an added block is rendered or which arms form a family is in it '
+    'and does invalidate')
+
+
+def fit_identity(lane_name: str, support: str) -> dict[str, Any]:
+    """Every declared thing that can change one cell's numbers on one support.
+
+    Names, letters, signs and numbers only: no prose, no reason and no limitation, for
+    the reason :data:`FIT_IDENTITY_RULE` gives. The caller digests this and binds the
+    cell to it.
+
+    The residual this does not catch is named rather than hidden: a change to the *code*
+    of this module's fitting-relevant helpers -- :func:`role_blocks`,
+    :func:`control_blocks`, :func:`arm_designs`, :func:`prepare_scalar`,
+    :func:`complete_case` -- is not a change to any field here, so a caller that wants
+    that covered binds the module's bytes beside this and accepts the prose tax on them.
+    """
+
+    if support not in ('full', 'complete_case'):
+        raise ValueError(f'unknown support {support!r}; a cell is fitted on the full support '
+                         'or on the complete case')
+    declared = lane(lane_name)
+    identity: dict[str, Any] = {
+        'lane': lane_name, 'support': support,
+        'arms': list(ARM_NAMES),
+        'channel_blocks': {name: CHANNELS[name]['block'] for name in declared.channels},
+        'hierarchy': {name: list(roles) for name, roles in RUNGS.items()},
+        'archived_rung': ARCHIVED_RUNG,
+        'full_support_rungs': list(FULL_SUPPORT_RUNGS),
+        'profile_blocks': list(declared.profile_blocks),
+        'tokenisation_block': declared.tokenisation_block,
+        'non_identifiable_roles': sorted(declared.non_identifiable),
+        'strata_to_loss': {name: value.to_loss for name, value in declared.strata.items()},
+        'panel_arms': list(declared.arms),
+        'rows_schema': ROWS_SCHEMA,
+    }
+    if support == 'complete_case':
+        identity['added_blocks'] = dict(NEW_BLOCKS)
+        identity['row_status'] = {role: dict(vocabulary)
+                                  for role, vocabulary in ROW_STATUS.items()}
+        identity['block_source'] = {role: {'schema': source['schema'], 'column': source['column']}
+                                    for role, source in BLOCK_SOURCE.items()}
+        identity['added_block_rendering'] = 'one column each, reranked within assay'
+        identity['cycle_contrast'] = CYCLE_CONTRAST['definition']
+        identity['refusal_authority'] = 'block table or cohort export'
+        identity['refusals_schema'] = REFUSALS_SCHEMA
+    return identity
 
 
 def prepare_scalar(values, assays) -> np.ndarray:
@@ -639,6 +817,27 @@ def read_rows(path) -> list[dict[str, Any]]:
     if not isinstance(rows, list) or not rows:
         raise ValueError(f'{path} holds no sample rows')
     return rows
+
+
+def read_refusals(path) -> dict[str, Any]:
+    """The cohort export's own record of the references it refused to score.
+
+    The export refuses a reference with too few retained homolog rows once, for both
+    blocks at once, and this document is the single statement of that fact.
+    """
+
+    document = json.loads(Path(path).read_text())
+    if document.get('schema') != REFUSALS_SCHEMA:
+        raise ValueError(f'{path}: schema {document.get("schema")!r} is not '
+                         f'{REFUSALS_SCHEMA!r}')
+    refused = document.get('refused')
+    if not isinstance(refused, dict):
+        raise ValueError(f'{path} enumerates no refusals; an export that refused nothing '
+                         'still declares an empty map rather than omitting one')
+    if document.get('count') != len(refused):
+        raise ValueError(f'{path} declares {document.get("count")!r} refusals and enumerates '
+                         f'{len(refused)}')
+    return dict(document, read_from=str(path))
 
 
 def gemme_risk_band(support, *, band: tuple[int, int] = GEMME_RISK_BAND) -> dict[str, Any]:
@@ -756,12 +955,20 @@ def _classify(rows: Sequence[Mapping[str, Any]], role: str, path: str) -> dict[s
 
 
 def complete_case(lane_name: str, rows: Sequence[Mapping[str, Any]], tables: Mapping[str, Any], *,
+                  refusals: Mapping[str, Any] | None = None,
                   groups: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The rows every control set of one stratum is fitted on, and what was lost.
 
     ``tables`` maps an added-block role to the document :func:`read_scores` returned.
     A role this lane declares non-identifiable must not be supplied: it does not
     restrict the support, because the lane's hierarchy never carries it.
+
+    ``refusals`` is the cohort export's own refusals document, read by
+    :func:`read_refusals`. A lost reference is accepted as a declared loss when either
+    the block table or the export enumerates it, for the reason
+    :data:`EXPORT_REFUSAL_AUTHORITY` gives. Passing nothing leaves the block table as the
+    only authority, so an export-refused reference the table does not re-enumerate is
+    still refused: an absent document narrows what may be accepted and never widens it.
 
     Every loss is enumerated by reference, by count and by the upstream reason, and the
     groups a loss empties are named, because a lane that drops under the resampling
@@ -795,18 +1002,30 @@ def complete_case(lane_name: str, rows: Sequence[Mapping[str, Any]], tables: Map
             raise ValueError(f'{role}: {source} does not cover the cohort rows: '
                              f'{len(unseen)} missing, {len(extra)} extra sample_id values')
         refused = document.get('refused') or {}
+        exported = (refusals or {}).get('refused') or {}
         lost_rows = [identifier for identifier in identifiers
                      if classes[role][identifier] == REFUSED]
-        orphan = sorted({reference_of[identifier] for identifier in lost_rows} - set(refused))
+        lost_here = {reference_of[identifier] for identifier in lost_rows}
+        orphan = sorted(lost_here - set(refused) - set(exported))
         if orphan:
             raise ValueError(
-                f'{role}: {source} refuses rows of {len(orphan)} references it does not enumerate '
-                f'as refusals, first {orphan[0]!r}. A loss is declared per reference, which is '
-                'what keeps a multi-corner cycle from losing one corner on its own')
+                f'{role}: {source} refuses rows of {len(orphan)} references that neither it nor '
+                f'the cohort export enumerates as refusals, first {orphan[0]!r}. A loss is '
+                'declared per reference, which is what keeps a multi-corner cycle from losing '
+                'one corner on its own')
+        enumerated = {}
+        for name in sorted(lost_here):
+            if name in refused:
+                enumerated[name] = dict(refused[name], declared_by='block table')
+            else:
+                enumerated[name] = dict(exported[name], declared_by='cohort export')
         losses[role] = {
-            'read_from': source,
-            'references': {name: dict(detail) for name, detail in sorted(refused.items())},
-            'reference_count': len(refused), 'rows': len(lost_rows)}
+            'read_from': source, 'references': enumerated,
+            'reference_count': len(enumerated), 'rows': len(lost_rows),
+            'declared_by': {'block table': sum(1 for detail in enumerated.values()
+                                               if detail['declared_by'] == 'block table'),
+                            'cohort export': sum(1 for detail in enumerated.values()
+                                                 if detail['declared_by'] == 'cohort export')}}
     kept, lost = [], []
     for identifier in identifiers:
         available = all(classes[role][identifier] == AVAILABLE for role in required)
@@ -823,6 +1042,8 @@ def complete_case(lane_name: str, rows: Sequence[Mapping[str, Any]], tables: Map
         'rows_offered': len(identifiers), 'rows_retained': len(kept), 'rows_lost': len(lost),
         'references_offered': len(set(reference_of.values())),
         'references_lost': lost_references,
+        'refusal_authority': EXPORT_REFUSAL_AUTHORITY,
+        'refusals_read_from': None if refusals is None else refusals.get('read_from'),
         'losses': losses,
         'sample_ids': kept,
         'support_sha256': identity_digest(kept),
@@ -910,7 +1131,7 @@ def _matrix(lane_name: str, stratum_name: str, cells: Mapping[tuple[str, str], M
         raise ValueError(f'{lane_name}/{stratum_name}: the family is {len(expected)} cells of '
                          f'(control set, arm); {len(absent)} are absent and {len(unknown)} are '
                          f'undeclared (first absent {absent[:1]}, first undeclared {unknown[:1]})')
-    columns, labels, control = [], [], {}
+    columns, labels, control, model = [], [], {}, {}
     for rung, arm in expected:
         cell = cells[rung, arm]
         designs = {name: cell[name] for name in ARM_NAMES if name in cell}
@@ -931,15 +1152,62 @@ def _matrix(lane_name: str, stratum_name: str, cells: Mapping[tuple[str, str], M
                 raise ValueError(f'{lane_name}/{stratum_name}/{rung}/{arm}/{name}: a cell carries '
                                  f'one finite value for each of the {len(groups)} groups')
             errors[name] = sign * values
-        # The control arm's own performance, in the stratum's native direction and on
-        # these same groups: the denominator the forward bound is read against.
+        # Each reduced arm's own performance, in the stratum's native direction and on
+        # these same groups: the denominators the two bounds are read against. The
+        # forward bound divides by the control arm's, the reverse by the model arm's.
         control[rung, arm] = float(np.mean(np.asarray(designs[CONTROL_ARM], dtype=float)))
+        model[rung, arm] = float(np.mean(np.asarray(designs[MODEL_ARM], dtype=float)))
         columns.append(bidirectional.directional_reductions(errors, bidirectional.PRIMARY_DESIGNS))
         labels.extend((rung, arm, direction) for direction in bidirectional.DIRECTIONS)
-    return np.concatenate(columns, axis=1), labels, control
+    return np.concatenate(columns, axis=1), labels, control, model
 
 
-def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) -> dict[str, Any]:
+def control_set_label(lane_name: str, rung: str,
+                      columns: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
+    """What one rung actually is, in a form that cannot be read as a different rung.
+
+    Every number this module reports is an increment over *one* rung, and the rungs
+    differ by exactly the blocks whose value is in question. A label that names the
+    rung's role in the run -- "sensitivity", "primary" -- leaves the reader to find the
+    rung in another field, and a reader who does not will attribute a nuisance-rung
+    increment to the archived control set. So the rung's name and its literal control
+    columns travel with the number.
+    """
+
+    lane(lane_name)  # refuses an undeclared lane before anything is labelled with it
+    if rung not in RUNGS:
+        raise ValueError(f'unknown rung {rung!r}; the hierarchy is {list(RUNGS)}')
+    record: dict[str, Any] = {
+        'control_set': rung, 'roles': list(RUNGS[rung]),
+        'is_archived_control_set': rung == ARCHIVED_RUNG,
+        'carries_profile': 'profile' in RUNGS[rung],
+        'carries_added_blocks': sorted(set(RUNGS[rung]) & set(NEW_BLOCKS)),
+    }
+    if columns is None:
+        record['columns'] = None
+        record['reads_as'] = (f'an increment over the {rung!r} rung of the {lane_name} lane; its '
+                              'literal control columns were not supplied to this panel and are '
+                              "recorded per arm in each cell's own designs")
+        return record
+    distinct: dict[tuple[str, ...], list[str]] = {}
+    for arm, names in sorted(columns.items()):
+        distinct.setdefault(tuple(names), []).append(arm)
+    record['columns'] = {'/'.join(names): arms for names, arms in distinct.items()}
+    shown = ', '.join(sorted(distinct, key=len)[0])
+    if len(distinct) > 1:
+        extra = sorted({name for names in distinct for name in names} - set(min(distinct, key=len)))
+        record['arm_conditional_columns'] = {'added_by_some_arms': extra,
+                                             'columns_per_arm_set': record['columns']}
+        shown += f' (and {", ".join(extra)} for the arms whose archive qualified them)'
+    note = '' if rung == ARCHIVED_RUNG else (
+        f'. This is NOT the lane\'s archived control set, which is the {ARCHIVED_RUNG!r} rung')
+    record['reads_as'] = (f'an increment over the {rung!r} rung of the {lane_name} lane, whose '
+                          f'control columns are {shown}{note}')
+    return record
+
+
+def forward_bound(lane_name: str, stratum_name: str, labels, interval, control,
+                  columns: Mapping[str, Mapping[str, Sequence[str]]] | None = None) -> dict[str, Any]:
     """The forward increment's simultaneous upper limit, in native units and as a fraction.
 
     This is the quantity the manuscript's overlap claim rests on, so it is reported as
@@ -966,7 +1234,7 @@ def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) 
              'statistics leave on these groups' if reading.to_loss > 0 else
              'adding the model adds at most this fraction of the rank agreement the explicit '
              'statistics already achieve on these groups')
-    columns, summary = [], {}
+    entries, summary = [], {}
     for position, (rung, arm, direction) in enumerate(labels):
         if direction != 'model_given_controls':
             continue
@@ -978,14 +1246,21 @@ def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) 
         else:
             withheld = (f'the control arm\'s own performance on these groups is {denominator:g}, '
                         'which is not a positive performance to take a fraction of')
-        columns.append({'control_set': rung, 'arm': arm, 'upper_limit': limit,
+        # A ratio above one is still a true ratio but has stopped being a share of
+        # anything: it says the bound on the increment exceeds the performance it is
+        # divided by. Flagged rather than withheld, so the native limit stays primary.
+        exceeds = fraction is not None and fraction > 1
+        entries.append({'control_set': rung, 'arm': arm, 'upper_limit': limit,
                         'units': reading.units, 'control_performance': denominator,
                         'fraction_of_control_performance': fraction,
-                        'fraction_withheld_because': withheld})
+                        'fraction_withheld_because': withheld,
+                        'fraction_exceeds_denominator': exceeds})
         held = summary.setdefault(rung, {'largest_upper_limit': limit,
                                          'largest_fraction_of_control_performance': fraction,
-                                         'arms': 0, 'arms_without_a_fraction': 0})
+                                         'arms': 0, 'arms_without_a_fraction': 0,
+                                         'arms_whose_fraction_exceeds_one': 0})
         held['arms'] += 1
+        held['arms_whose_fraction_exceeds_one'] += int(exceeds)
         held['largest_upper_limit'] = max(held['largest_upper_limit'], limit)
         if fraction is None:
             held['arms_without_a_fraction'] += 1
@@ -994,6 +1269,8 @@ def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) 
         else:
             held['largest_fraction_of_control_performance'] = max(
                 held['largest_fraction_of_control_performance'], fraction)
+    for rung, held in summary.items():
+        held.update(control_set_label(lane_name, rung, (columns or {}).get(rung)))
     return {'direction': 'model_given_controls', 'reading': FORWARD_BOUND_READING,
             'denominator': ('the control arm\'s own group-equal mean in the stratum\'s native '
                             'direction, on the identical complete-case support'),
@@ -1001,14 +1278,117 @@ def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) 
             'limitation': ('an upper limit is not an equivalence statement and no margin is '
                            'declared; for an error stratum the denominator is the error the '
                            'controls leave, not their reduction against a null arm'),
-            'columns': columns, 'per_control_set': summary}
+            'fraction_limitation': ('the fraction is interpretable only while this rung\'s own '
+                                    'performance is a meaningful denominator. Where the rung '
+                                    'itself achieves almost nothing the ratio exceeds one and '
+                                    'stops being a share; such columns are flagged and read in '
+                                    'native units instead'),
+            'columns': entries, 'per_control_set': summary}
+
+
+#: What the reverse direction's simultaneous upper limit is, and when it matters.
+REVERSE_BOUND_READING = (
+    'the reverse increment is what separates shared information from model inferiority, '
+    'so it needs both of its limits. Its simultaneous *lower* limit above zero resolves '
+    'that the explicit statistics carry predictive information the model readout does '
+    'not. Its simultaneous *upper* limit is the second half of a two-sided statement -- '
+    'the statistics add at most this much beyond the pure model readout, and at most '
+    'this fraction of what that readout already achieves. Overlap is a two-sided claim '
+    'and needs both bounds small; a reverse increment resolved above zero and large is '
+    'containment with resolved control superiority, not overlap')
+
+
+def reverse_bound(lane_name: str, stratum_name: str, labels, interval, model,
+                  columns: Mapping[str, Mapping[str, Sequence[str]]] | None = None) -> dict[str, Any]:
+    """The reverse increment's simultaneous limits, in native units and as a fraction.
+
+    The mirror of :func:`forward_bound`, against the *model* arm's own performance
+    rather than the control set's, because the quantity being bounded is what the
+    statistics add to the pure model readout. Both limits are reported: overlap is a
+    two-sided statement and cannot be read off a lower limit alone.
+
+    The band is simultaneous over the whole declared family and both directions share
+    one critical value, so a limit here holds jointly with every other column's.
+    """
+
+    reading = stratum(lane_name, stratum_name)
+    native = np.asarray(interval, dtype=float)
+    if native.shape != (len(labels), 2):
+        raise ValueError('a reverse bound needs one interval per declared column')
+    sense = ('adding the explicit statistics removes at most this fraction of the error the '
+             'model readout leaves on these groups' if reading.to_loss > 0 else
+             'adding the explicit statistics adds at most this fraction of the rank agreement '
+             'the model readout already achieves on these groups')
+    entries, summary = [], {}
+    for position, (rung, arm, direction) in enumerate(labels):
+        if direction != 'controls_given_model':
+            continue
+        low, high = float(native[position, 0]), float(native[position, 1])
+        denominator = model[rung, arm]
+        fraction, withheld = None, None
+        if denominator > 0:
+            fraction = high / denominator
+        else:
+            withheld = (f'the model arm\'s own performance on these groups is {denominator:g}, '
+                        'which is not a positive performance to take a fraction of')
+        # A ratio above one is still a true ratio but has stopped being a share of
+        # anything: it says the increment exceeds the performance it is divided by,
+        # which happens when the model readout alone achieves almost nothing. Flagged
+        # rather than withheld, so the native limit stays the primary statement.
+        exceeds = fraction is not None and fraction > 1
+        entries.append({'control_set': rung, 'arm': arm, 'lower_limit': low, 'upper_limit': high,
+                        'units': reading.units, 'model_performance': denominator,
+                        'fraction_of_model_performance': fraction,
+                        'fraction_withheld_because': withheld,
+                        'fraction_exceeds_denominator': exceeds,
+                        'resolved_above_zero': low > 0})
+        held = summary.setdefault(rung, {'largest_upper_limit': high,
+                                         'largest_fraction_of_model_performance': fraction,
+                                         'smallest_lower_limit': low, 'arms': 0,
+                                         'arms_resolved_above_zero': 0,
+                                         'arms_without_a_fraction': 0,
+                                         'arms_whose_fraction_exceeds_one': 0})
+        held['arms'] += 1
+        held['arms_whose_fraction_exceeds_one'] += int(exceeds)
+        held['largest_upper_limit'] = max(held['largest_upper_limit'], high)
+        held['smallest_lower_limit'] = min(held['smallest_lower_limit'], low)
+        held['arms_resolved_above_zero'] += int(low > 0)
+        if fraction is None:
+            held['arms_without_a_fraction'] += 1
+        elif held['largest_fraction_of_model_performance'] is None:
+            held['largest_fraction_of_model_performance'] = fraction
+        else:
+            held['largest_fraction_of_model_performance'] = max(
+                held['largest_fraction_of_model_performance'], fraction)
+    for rung, held in summary.items():
+        held.update(control_set_label(lane_name, rung, (columns or {}).get(rung)))
+    return {'direction': 'controls_given_model', 'reading': REVERSE_BOUND_READING,
+            'denominator': ('the model arm\'s own group-equal mean in the stratum\'s native '
+                            'direction, on the identical complete-case support'),
+            'fraction_reading': sense,
+            'two_sided': ('both limits are reported because overlap needs both small; a lower '
+                          'limit above zero on its own resolves control superiority'),
+            'columns_note': 'every entry names the rung it is an increment over',
+            'fraction_limitation': ('the fraction is interpretable only while the model arm\'s own '
+                                    'performance is a meaningful denominator. Where that arm alone '
+                                    'achieves almost nothing -- a near-zero rank agreement, say -- '
+                                    'the ratio exceeds one and stops being a share; such columns '
+                                    'are flagged and read in native units instead'),
+            'columns': entries, 'per_control_set': summary}
 
 
 def panel(lane_name: str, stratum_name: str, channel: str,
           cells: Mapping[tuple[str, str], Mapping[str, Any]], *, groups: Sequence[Any],
-          support_sha256: str, role: str = 'primary', draws: int = bidirectional.DRAWS,
+          support_sha256: str, role: str = 'primary',
+          control_columns: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+          draws: int = bidirectional.DRAWS,
           seed: int = bidirectional.SEED) -> dict[str, Any]:
     """The declared family of one lane, stratum and channel, with both directions.
+
+    ``control_columns`` maps each rung to its literal control columns per arm, so that
+    every number this returns carries the rung it is an increment over. Supplying it is
+    how a reader is kept from attributing a nuisance-rung increment to the archived
+    control set; without it the labels say so rather than guessing.
 
     Every column is a paired per-group reduction of the same joint arm, positive when
     the joint arm lowers the loss. The primary band is the shared native maximum
@@ -1023,8 +1403,8 @@ def panel(lane_name: str, stratum_name: str, channel: str,
     groups = [value.item() if isinstance(value, np.generic) else value for value in groups]
     if len(set(map(str, groups))) != len(groups):
         raise ValueError(f'{lane_name}/{stratum_name}: the resampling units repeat a label')
-    matrix, labels, control = _matrix(lane_name, stratum_name, cells, rungs, groups=groups,
-                                      support_sha256=support_sha256)
+    matrix, labels, control, model = _matrix(lane_name, stratum_name, cells, rungs,
+                                             groups=groups, support_sha256=support_sha256)
     if matrix.shape != (len(groups), family['size']):
         raise ValueError(f'{lane_name}/{stratum_name}: the realised family is '
                          f'{matrix.shape[1]} columns over {matrix.shape[0]} groups and the '
@@ -1037,11 +1417,19 @@ def panel(lane_name: str, stratum_name: str, channel: str,
         'stratum_fragile': stratum(lane_name, stratum_name).fragile,
         'support': 'complete_case' if role == 'primary' else 'full',
         'support_sha256': support_sha256, 'family': family,
+        'control_sets': {rung: control_set_label(lane_name, rung,
+                                                 (control_columns or {}).get(rung))
+                         for rung in rungs},
+        'reads_as': '; '.join(
+            control_set_label(lane_name, rung, (control_columns or {}).get(rung))['reads_as']
+            for rung in rungs),
         'columns': [{'control_set': rung, 'arm': arm, 'direction': direction}
                     for rung, arm, direction in labels],
         'contrasts': {direction: f'loss({reduced}) - loss({joint})'
                       for direction, (reduced, joint) in bidirectional.PRIMARY_DESIGNS.items()},
         'point': matrix.mean(axis=0).tolist(),
+        'control_provenance': CONTROL_PROVENANCE,
+        'simultaneity': SIMULTANEITY,
         'state_rule': {SUPPORTED: 'the simultaneous interval lies strictly above zero',
                        BOUNDED_NEGATIVE: 'the simultaneous interval lies strictly below zero',
                        UNRESOLVED: ('the interval contains zero, however narrow, or the stratum '
@@ -1055,6 +1443,8 @@ def panel(lane_name: str, stratum_name: str, channel: str,
         record.update(status=UNRESOLVED, native=None, standardized_maxT_sensitivity=None,
                       states=[UNRESOLVED] * len(labels),
                       forward_bound={'status': UNRESOLVED, 'reading': FORWARD_BOUND_READING,
+                                     'reason': floor['degenerate_reason']},
+                      reverse_bound={'status': UNRESOLVED, 'reading': REVERSE_BOUND_READING,
                                      'reason': floor['degenerate_reason']},
                       reason=floor['degenerate_reason'])
     else:
@@ -1070,7 +1460,9 @@ def panel(lane_name: str, stratum_name: str, channel: str,
             standardized_maxT_sensitivity=_sensitivity(matrix, draws=draws, seed=seed),
             states=[VERDICT_STATE[value] for value in verdicts],
             forward_bound=forward_bound(lane_name, stratum_name, labels, native['interval'],
-                                        control))
+                                        control, control_columns),
+            reverse_bound=reverse_bound(lane_name, stratum_name, labels, native['interval'],
+                                        model, control_columns))
     unidentifiable = []
     for rung in declared.unidentifiable_rungs:
         blocked = sorted(set(RUNGS[rung]) & set(declared.non_identifiable))
@@ -1156,6 +1548,13 @@ def contract(lane_name: str) -> dict[str, Any]:
         'variant_effect_bridge': dict(VARIANT_EFFECT_BRIDGE,
                                       roles={role: list(keys) for role, keys
                                              in VARIANT_EFFECT_ROLES.items()}),
+        'cycle_contrast': dict(CYCLE_CONTRAST),
+        'coupling_instrument_bounds': dict(COUPLING_INSTRUMENT_BOUNDS),
+        'nuisance_rung_limitation': NUISANCE_RUNG_LIMITATION,
+        'fit_identity_rule': FIT_IDENTITY_RULE,
+        'fit_identity': {support: fit_identity(lane_name, support)
+                         for support in ('full', 'complete_case')},
+        'refusal_authority': EXPORT_REFUSAL_AUTHORITY,
         'archived_control_set': ARCHIVED_RUNG,
         'archived_control_set_note': ('this rung is the lane\'s archived primary control set, '
                                       'column for column'),
@@ -1220,6 +1619,26 @@ LIMITATIONS = [
     'differ, and a verdict that differs between two of them is a difference between estimands.',
     'A control set that carries more blocks is not thereby a stronger control: only a set that '
     'actually improves held-out prediction may be called stronger.',
+    'The model enters as one scalar sequence likelihood difference per variant, so what is '
+    'bounded is the evolutionary memory *as read out by sequence likelihood*, not the '
+    'information content of the parameters. A probe on internal representations asks a '
+    'different question and nothing here answers it; the representation channel, where a lane '
+    'declares one, is reported separately and never merged into the likelihood channel.',
+    'The two directions are not symmetric in predictors added. The reverse adds a whole '
+    'family-fitted control set to one scalar; the forward adds one scalar to that control set. '
+    'A resolved reverse beside an unresolved forward is therefore partly an asymmetry in power '
+    'rather than in information. That does not rescue the forward side: the forward result is '
+    'not a wide interval but a bound, at a few per cent of the control set\'s own performance '
+    'on identical support, and a power asymmetry would matter only if the forward interval were '
+    'merely too wide to resolve. It does constrain the reverse side, where the resolved sign '
+    'should not be read as a measure of how much more information the statistics hold.',
+    CONTROL_PROVENANCE[0].upper() + CONTROL_PROVENANCE[1:] + '.',
+    f'The coupling block carries its own instrument precision: a single-host run-to-run spread '
+    f'of {COUPLING_INSTRUMENT_BOUNDS["run_to_run_per_variant_score"]:g} on a per-variant score, '
+    f'and {COUPLING_INSTRUMENT_BOUNDS["iteration_cap_fit"]:g} for a fit that stopped at its '
+    'iteration cap. The two are reported separately rather than averaged, and no comparison '
+    'resolves a difference below whichever bound applies to the fits it rests on.',
+    'The nuisance rung is not profile-free: ' + NUISANCE_RUNG_LIMITATION + '.',
 ]
 
 
@@ -1250,6 +1669,14 @@ def _check_declarations() -> None:
     if letters & set(NEW_BLOCKS.values()):
         raise RuntimeError('an added block key collides with a variant-effect ladder letter, so '
                            'one vocabulary could not cover both')
+    if set(FULL_SUPPORT_RUNGS) - set(RUNGS):
+        raise RuntimeError('a full-support rung must be a rung of the hierarchy')
+    for rung in FULL_SUPPORT_RUNGS:
+        if set(RUNGS[rung]) & set(NEW_BLOCKS):
+            raise RuntimeError(
+                f'the full-support rung {rung!r} carries an added block, so a full-support '
+                'cell could no longer be bound to an identity that excludes the added-block '
+                'vocabulary; fit_identity would be unsound')
     if SHARED_RUNGS != tuple(name for name, roles in RUNGS.items() if 'profile' in roles):
         raise RuntimeError('the rungs read across lanes are the ones that carry profile')
     bridge = VARIANT_EFFECT_BRIDGE

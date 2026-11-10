@@ -26,10 +26,20 @@ different support and is *not* reusable inside the complete-case family, however
 exactly its columns match. It is a reproduction gate, not saved compute.
 
 **The adapter boundary.** Each lane keeps its own fitter, its own panel assembly and
-its own archive. An adapter supplies the lane's rows, blocks, target, groups and a
-call into that fitter; everything above is shared. Only the added-phenotype lane has
-an adapter here. A lane without one is refused with the list of what it must supply,
-because a plausible-looking stub that fits the wrong rows is worse than an absence.
+its own archive. An adapter supplies the lane's rows, blocks, target, groups, a call
+into that fitter and the published values its pilot reproduces; everything above is
+shared and lives here. The adapters themselves live in
+:mod:`explicit_statistics_lane_adapters` beside this script. A lane without one is
+refused with the list of what it must supply, because a plausible-looking stub that
+fits the wrong rows is worse than an absence.
+
+**The qualified control set is read per arm.** Two lanes offered a tokenisation
+nuisance to each arm separately, so an arm's control set is a property of that arm's
+own archive and ``qualified(stratum, arm)`` is asked once per cell. The published
+values a pilot reproduces are likewise per arm, and the aggregation that turns a
+lane's own records into per-group values is the adapter's, not this script's: a
+comparison made one step short of the published aggregation passes trivially
+wherever a group holds a single measured background.
 
 Modes::
 
@@ -57,11 +67,11 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.capability.baselines.cohorts import SAMPLE_SEPARATOR  # noqa: E402
+from scripts.capability.extensions.explicit_statistics_lane_adapters import (  # noqa: E402
+    ADAPTERS)
 from src.capability.core.io import sha256_file  # noqa: E402
 from src.capability.extensions import bidirectional  # noqa: E402
 from src.capability.extensions import explicit_statistics_lanes as lanes  # noqa: E402
-from src.capability.extensions import phenotype_breadth as breadth  # noqa: E402
 
 #: Stable schema labels of what this script writes.
 CELL_SCHEMA = 'explicit_statistics_lane_cell'
@@ -69,9 +79,51 @@ PLAN_SCHEMA = 'explicit_statistics_lane_plan'
 PILOT_SCHEMA = 'explicit_statistics_lane_pilot'
 
 #: Largest admissible disagreement between a refitted archived arm and the published
-#: per-background value. The refit is the same arithmetic on the same rows in the same
-#: order, so anything above this is a different fit, not a rounding difference.
+#: per-group value, at the published aggregation. The refit is the same arithmetic on
+#: the same rows in the same order, so anything above this is a different fit, not a
+#: rounding difference.
 PILOT_TOLERANCE = 1e-9
+
+#: What the reproduction gate measures, named so it cannot be mistaken for inference.
+REPRODUCTION_CRITERION = (
+    'the maximum absolute difference between a refitted archived arm and the published '
+    'per-group value at the published aggregation, against a stated tolerance, together '
+    'with the number of arms that met it. It is not an interval and no band is formed on '
+    'this path: a reproduction that succeeds is a matrix of near-exact zeros, which has no '
+    'spread, and a band over it would assert the narrowest possible statement for the least '
+    'informative possible input rather than measure anything')
+
+#: Prefix of an input a cell records but is not bound to.
+#:
+#: A cached cell is refused when the inputs that can change its numbers have moved, and
+#: reused when they have not. Those are not the same set as "everything worth recording":
+#: a declaration's prose, its limitations and an instrument bound are worth recording
+#: beside a fit and cannot alter it, so binding a cell to them makes writing one cost a
+#: refit. An adapter marks such an input with this prefix; it is written into the cell
+#: and left out of the digest. Nothing that decides a number may carry it.
+RECORDED_PREFIX = 'note:'
+
+
+def binding_inputs(inputs: dict) -> dict:
+    """The inputs a fit is bound to: everything not marked as recorded-only."""
+
+    return {key: value for key, value in inputs.items()
+            if not key.startswith(RECORDED_PREFIX)}
+
+
+def cell_identity(lane_name: str, support: str, inputs: dict) -> str:
+    """The digest one cell is bound to: its binding inputs and its declared contract.
+
+    The declared half is conditioned on the support, because no full-support rung carries
+    an added block and so no full-support cell can be moved by the added-block
+    vocabulary, its rendering or its admission rules. The declaration asserts that
+    property at import rather than this script assuming it.
+    """
+
+    return digest_text(json.dumps(
+        {'inputs': binding_inputs(inputs),
+         'declared': lanes.fit_identity(lane_name, support)},
+        sort_keys=True))
 
 
 def write(path: Path, value) -> None:
@@ -158,249 +210,6 @@ def runnable_supports(wave: dict) -> dict[str, dict]:
     }
 
 
-# --------------------------------------------------------------------------- #
-# The added-phenotype adapter.
-# --------------------------------------------------------------------------- #
-
-class PhenotypeAdapter:
-    """The added-phenotype lane: four cohort/endpoint strata on disjoint rows.
-
-    The admitted rows are read back from the qualification run's own row files and the
-    wild-type sequences from its profile catalogue, each verified against the digest
-    the row carries, so the support is the admitted one and is never re-derived into a
-    different one. The group assignment, the qualified control set and the published
-    per-background values are read from the frozen runs and never re-qualified.
-    """
-
-    lane = 'phenotype'
-
-    #: Stratum name -> the cohort and endpoint it is, and the metric that reads it.
-    STRATA = {
-        'activity_venus-ranking': ('activity_venus', 'ranking'),
-        'binding_skempi-ranking': ('binding_skempi', 'ranking'),
-        'binding_skempi-quantitative': ('binding_skempi', 'quantitative'),
-        'cellular_fitness_sge-ranking': ('cellular_fitness_sge', 'ranking'),
-    }
-
-    def __init__(self, args):
-        self.qualification = Path(args.qualification)
-        self.published = Path(args.published)
-        self.profiles_path = Path(args.profiles)
-        self.score_directories = [Path(path) for path in args.scores]
-        self._state: dict = {}
-        self._scores: dict | None = None
-
-    # ------------------------------------------------------------------ inputs
-
-    def inputs(self) -> dict[str, str]:
-        record = {str(path.relative_to(ROOT)): sha256_file(path)
-                  for path in sorted(self.qualification.glob('rows/*.jsonl'))}
-        for path in (self.qualification / 'profile-catalogue.json', self.profiles_path):
-            record[str(path.relative_to(ROOT))] = sha256_file(path)
-        for path in sorted(self.qualification.glob('groups/*.json')):
-            record[str(path.relative_to(ROOT))] = sha256_file(path)
-        for path in sorted(self.published.glob('controls/*.json')):
-            record[str(path.relative_to(ROOT))] = sha256_file(path)
-        record['code:phenotype_breadth'] = sha256_file(Path(breadth.__file__))
-        record['code:explicit_statistics_lanes'] = sha256_file(Path(lanes.__file__))
-        record['code:runner'] = sha256_file(Path(__file__))
-        return record
-
-    def scores(self) -> dict[str, dict[str, float]]:
-        if self._scores is None:
-            self._scores = breadth.read_arm_scores(self.score_directories)
-        return self._scores
-
-    def arms(self) -> list[str]:
-        return sorted(self.scores())
-
-    def strata(self) -> list[str]:
-        return list(self.STRATA)
-
-    def qualified(self, stratum: str) -> tuple[str, ...]:
-        cohort, endpoint = self.STRATA[stratum]
-        path = self.published / 'controls' / f'{cohort}-{endpoint}.json'
-        record = json.loads(path.read_text(encoding='utf-8'))
-        if record.get('cohort') != cohort or record.get('endpoint') != endpoint:
-            raise SystemExit(f'{path} does not record {cohort}/{endpoint}')
-        return tuple(record['qualified'])
-
-    def _rows(self, cohort: str) -> list[breadth.PhenotypeRow]:
-        """The admitted rows of one cohort, rebuilt and digest-verified."""
-
-        catalogue = json.loads(
-            (self.qualification / 'profile-catalogue.json').read_text(encoding='utf-8'))
-        sequences = {entry['WT_name']: entry['sequence'] for entry in catalogue}
-        rows = []
-        path = self.qualification / 'rows' / f'{cohort}.jsonl'
-        for line in path.read_text(encoding='utf-8').splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            name = f"{record['cohort']}:{record['wildtype_sha256'][:16]}"
-            wildtype = sequences.get(name)
-            if wildtype is None:
-                raise SystemExit(f"{record['row_id']}: {name} is not in the profile catalogue, so "
-                                 'its wild-type sequence cannot be recovered')
-            if breadth.sha_text(wildtype) != record['wildtype_sha256']:
-                raise SystemExit(f"{record['row_id']}: the catalogue sequence is not the one the "
-                                 'admitted row was measured on')
-            index = int(record['position']) - 1
-            if wildtype[index] != record['wt_aa']:
-                raise SystemExit(f"{record['row_id']}: the wild type carries "
-                                 f'{wildtype[index]} at {record["position"]}')
-            mutant = wildtype[:index] + record['mt_aa'] + wildtype[index + 1:]
-            if breadth.sha_text(mutant) != record['mutant_sha256']:
-                raise SystemExit(f"{record['row_id']}: the rebuilt mutant is not the measured one")
-            rows.append(breadth.PhenotypeRow(
-                cohort=record['cohort'], row_id=record['row_id'], background=record['background'],
-                unit=record['unit'], wildtype=wildtype, mutant_sequence=mutant,
-                position=int(record['position']), wt_aa=record['wt_aa'], mt_aa=record['mt_aa'],
-                label=float(record['label']), direction=int(record['direction']),
-                label_unit=record.get('label_unit'), source_sha256=record['source_sha256']))
-        if not rows:
-            raise SystemExit(f'{path} holds no admitted row')
-        return rows
-
-    def sample_key(self, row: breadth.PhenotypeRow) -> str:
-        """The export's own ``sample_id`` for one admitted row.
-
-        The cohort export names a row by its background and its mutation string, and it
-        carries one row per distinct pair, so several admitted rows of one pair read the
-        same added-block value. That is a join, not a duplication: the block is a
-        property of the (background, mutation) pair.
-        """
-
-        return f'{row.background}{SAMPLE_SEPARATOR}{row.wt_aa}{row.position}{row.mt_aa}'
-
-    # ------------------------------------------------------------------- state
-
-    def state(self, stratum: str, *, support: str, added: dict) -> dict:
-        """Everything one stratum's fits read, restricted to the declared support.
-
-        ``added`` is what :func:`added_values` returns: the retained value of each added
-        block, and the sample identities the cohort export covers at all. An admitted
-        row outside the retained set has left the complete case and is dropped here; an
-        admitted row the export does not cover at all is a gap in the export and is
-        refused, because silently dropping it would shrink the support unrecorded.
-        """
-
-        key = (stratum, support, added.get('digest', ''))
-        if key in self._state:
-            return self._state[key]
-        cohort, endpoint = self.STRATA[stratum]
-        rows = self._rows(cohort)
-        groups = json.loads((self.qualification / 'groups' / f'{cohort}.json'
-                             ).read_text(encoding='utf-8'))['assignment']
-        missing = sorted({row.unit for row in rows} - set(groups))
-        if missing:
-            raise SystemExit(f'{cohort}: {len(missing)} units carry no admitted group')
-        values: dict[str, dict[str, float]] = {}
-        if support == 'complete_case':
-            if not added:
-                raise SystemExit('the complete case needs the added-block values')
-            values = added['values']
-            uncovered = [row.row_id for row in rows
-                         if self.sample_key(row) not in added['covered']]
-            if uncovered:
-                raise SystemExit(
-                    f'{cohort}: {len(uncovered)} admitted rows are not covered by the cohort '
-                    f'export at all, first {uncovered[0]!r}; the export must cover the rows this '
-                    'lane is fitted on before any of them can be dropped as a loss')
-            rows = [row for row in rows
-                    if all(self.sample_key(row) in values[role] for role in values)]
-            if not rows:
-                raise SystemExit(f'{cohort}: the complete case retains no row')
-        profiles, _ = self._profiles()
-        blocks, census = breadth.prune_constant_columns(breadth.control_blocks(rows, profiles))
-        backgrounds = np.asarray([row.background for row in rows])
-        group_vector = np.asarray([groups[row.unit] for row in rows])
-        labels = np.asarray([row.oriented_label() for row in rows], dtype=np.float64)
-        target = breadth.rerank(labels, backgrounds) if endpoint == 'ranking' else labels
-        for role, retained in values.items():
-            column = np.asarray([retained[self.sample_key(row)] for row in rows], dtype=float)
-            blocks[lanes.NEW_BLOCKS[role]] = lanes.prepare_scalar(column, backgrounds)
-        state = {'rows': rows, 'blocks': blocks, 'census': census, 'target': target,
-                 'backgrounds': backgrounds, 'groups': group_vector,
-                 'group_order': sorted(set(group_vector.tolist())),
-                 'metric': 'spearman' if endpoint == 'ranking' else 'error',
-                 'model_column': 'M_rank' if endpoint == 'ranking' else 'M_nats',
-                 'endpoint': endpoint, 'cohort': cohort,
-                 'support_sha256': lanes.identity_digest([row.row_id for row in rows])}
-        self._state[key] = state
-        return state
-
-    def _profiles(self):
-        from src.capability.stability.stability_gate import load_profiles
-        plan = json.loads((self.qualification / 'profile-plan.json').read_text(encoding='utf-8'))
-        wildtypes = {row['name']: row['wildtype'] for row in plan['backgrounds']}
-        return load_profiles(self.profiles_path, wildtypes)
-
-    # --------------------------------------------------------------------- fit
-
-    def fit(self, state: dict, arm: str, designs: dict[str, tuple[str, ...]]) -> dict:
-        """One cell: per-group values of the three arms, seeds averaged within background.
-
-        The three arms see the identical rows, the identical seeded partitions and the
-        identical label budget; only their columns differ. The aggregation is the lane's
-        own: seeds within a background, backgrounds within their group, groups equal.
-        """
-
-        model = breadth.model_block(state['rows'], self.scores()[arm], state['backgrounds'])
-        blocks = {**state['blocks'], 'M': model[state['model_column']]}
-        per_background: dict[str, dict[str, list[float]]] = {}
-        alphas: dict[str, dict[str, list[float]]] = {}
-        for seed in breadth.SPLIT_SEEDS:
-            signature = breadth.outer_signature(state['groups'], seed)
-            predictions, folds = {}, {}
-            for name, columns in designs.items():
-                matrix = breadth.design(blocks, list(columns))
-                predictions[name], records = breadth.fold_predictions(
-                    matrix, state['target'], state['backgrounds'], state['groups'], signature)
-                folds[name] = [record['alpha'] for record in records]
-            alphas[str(seed)] = folds
-            for row in breadth.background_metrics(predictions, state['target'],
-                                                  state['backgrounds'], state['groups'],
-                                                  metric=state['metric']):
-                for name, value in row['scores'].items():
-                    if value is None:
-                        raise SystemExit(f"{arm}: undefined {state['metric']} in background "
-                                         f"{row['background']}")
-                    per_background.setdefault(name, {}).setdefault(
-                        row['background'], []).append(float(value))
-        values = {}
-        for name, by_background in per_background.items():
-            rows = [{'group': str(state['groups'][state['backgrounds'] == background][0]),
-                     'value': float(np.mean(seeds))}
-                    for background, seeds in sorted(by_background.items())]
-            values[name] = breadth.aggregate(rows, 'value', state['group_order']).tolist()
-        return {'values': values, 'alphas': alphas,
-                'dimensions': {name: int(breadth.design(blocks, list(columns)).shape[1])
-                               for name, columns in designs.items()}}
-
-    # ------------------------------------------------------------------- pilot
-
-    def archived(self, stratum: str) -> dict:
-        """The published per-background control and joint values of one stratum."""
-
-        cohort, endpoint = self.STRATA[stratum]
-        path = self.published / 'panels' / f'{cohort}-{endpoint}.json'
-        panel = json.loads(path.read_text(encoding='utf-8'))
-        if panel.get('cohort') != cohort or panel.get('endpoint') != endpoint:
-            raise SystemExit(f'{path} does not record {cohort}/{endpoint}')
-        cells: dict[tuple[str, int, str], dict[str, float]] = {}
-        for row in panel['per_background']:
-            cells[row['arm'], int(row['seed']), row['background']] = {
-                lanes.CONTROL_ARM: float(row['control']),
-                lanes.JOINT_ARM: float(row['control_plus_model'])}
-        return {'path': str(path.relative_to(ROOT)), 'sha256': sha256_file(path),
-                'arms': list(panel['arms']), 'cells': cells,
-                'alphas': panel['fits'], 'qualified': list(panel['qualified_controls'])}
-
-
-ADAPTERS = {PhenotypeAdapter.lane: PhenotypeAdapter}
-
-
 def adapter(args):
     """This lane's adapter, or an explicit refusal naming what one must supply."""
 
@@ -482,10 +291,17 @@ def fit_cell(lane_name, instance, state, *, stratum, channel, support, rung, arm
     return record
 
 
-def cached_cells(out: Path, stratum: str, channel: str, support: str, rungs, arms) -> dict:
-    """Every cell of one family that is on disk, keyed as the panel reads them."""
+def cached_cells(out: Path, stratum: str, channel: str, support: str, rungs, arms) -> tuple:
+    """Every cell of one family that is on disk, and the columns each rung was fitted on.
 
-    cells = {}
+    The columns travel with the cells because the panel labels every number it reports
+    with the rung it is an increment over, and a rung is only identified by its columns.
+    They are read from the cells themselves rather than re-derived, so the label names
+    what was actually fitted.
+    """
+
+    cells: dict = {}
+    columns: dict = {}
     for rung in rungs:
         for arm in arms:
             path = cell_path(out, stratum, channel, support, rung, arm)
@@ -493,12 +309,31 @@ def cached_cells(out: Path, stratum: str, channel: str, support: str, rungs, arm
                 continue
             record = json.loads(path.read_text(encoding='utf-8'))
             cells[rung, arm] = {**record['values'], 'support_sha256': record['support_sha256']}
-    return cells
+            columns.setdefault(rung, {})[arm] = list(record['designs'][lanes.CONTROL_ARM])
+    return cells, columns
 
 
 # --------------------------------------------------------------------------- #
 # Modes.
 # --------------------------------------------------------------------------- #
+
+def export_refusals(args):
+    """The cohort export's own refusals document, or an explicit refusal to proceed.
+
+    The export is the authority on the references it refused to score, so the document
+    is required rather than optional: without it a reference refused for both blocks at
+    once would have to be accepted on a block table's word alone, and a lane that lost a
+    reference nobody enumerates would be refused for the wrong reason.
+    """
+
+    path = args.export / lanes.REFUSALS_FILE
+    if not path.is_file():
+        raise SystemExit(
+            f'{path} is absent. The cohort export enumerates the references it refused to '
+            'score, and the complete case reads its losses from there rather than taking a '
+            "block table's word for a refusal it did not make")
+    return lanes.read_refusals(path)
+
 
 def plan(args, instance, wave) -> dict:
     """The contract, the fit plan, the wave status and, where possible, the support."""
@@ -523,10 +358,24 @@ def plan(args, instance, wave) -> dict:
                  'families': {channel: lanes.declared_family(args.lane, channel)
                               for channel in declared.channels},
                  'fragile': lanes.stratum(args.lane, stratum).fragile}
+        # An arm whose own archive qualified a further nuisance carries it, so the
+        # realised control set is stated per arm beside the plan rather than left to
+        # be inferred from the fit plan's arm-invariant columns.
+        per_arm = {arm: list(instance.qualified(stratum, arm)) for arm in instance.arms()}
+        differing = {arm: columns for arm, columns in per_arm.items()
+                     if columns != list(qualified)}
+        entry['control_set_per_arm'] = per_arm
+        if differing:
+            entry['arm_conditional_control_set'] = {
+                'arms': sorted(differing), 'count': len(differing),
+                'note': ('these arms qualified a further nuisance in their own archive and carry '
+                         'it in their control set; the forward increment of such an arm is "the '
+                         'model beyond this arm\'s own controls"')}
         record['strata'][stratum] = entry
     if wave['complete']:
         rows = lanes.read_rows(args.export / lanes.ROWS_FILE)
-        record['complete_case'] = lanes.complete_case(args.lane, rows, wave['tables'])
+        record['complete_case'] = lanes.complete_case(args.lane, rows, wave['tables'],
+                                                      refusals=export_refusals(args))
     else:
         record['complete_case'] = {
             'status': 'pending', 'pending_blocks': wave['pending'],
@@ -544,62 +393,86 @@ def pilot(args, instance) -> dict:
     new feature exists: identical rows, identical columns, identical folds. It is not
     reused inside the complete-case family, because that family drops rows the archive
     kept.
+
+    The comparison is made against the per-group values the lane's adapter reads back
+    *at the published aggregation*, never one step short of it. The difference
+    matters: on a cohort whose every group holds one measured background, comparing
+    per-background values against group-aggregated ones agrees by construction and
+    the gate would pass without having tested anything. Each stratum's record
+    therefore states whether its support exercises the aggregation chain or only the
+    fit and the per-group statistic.
+
+    **The criterion is a maximum absolute difference against a stated tolerance, and
+    nothing else** (:data:`REPRODUCTION_CRITERION`). It is not an interval and no band
+    is formed anywhere on this path. A successful reproduction is a matrix of
+    near-exact zeros, which carries no spread at all, so a band over it would not be a
+    narrow measurement of anything -- it would be the narrowest possible statement
+    asserted for the least informative possible input. The band machinery is reached
+    only from :func:`panels`, over per-group arm performances that do vary.
     """
 
     declared = lanes.lane(args.lane)
     inputs = instance.inputs()
-    inputs_sha256 = digest_text(json.dumps(inputs, sort_keys=True))
     strata = args.stratum or instance.strata()
     report = {'schema': PILOT_SCHEMA, 'lane': args.lane, 'status': 'passed',
               'created_utc': datetime.now(timezone.utc).isoformat(),
-              'tolerance': PILOT_TOLERANCE, 'inputs_sha256': inputs, 'strata': {}}
+              'tolerance': PILOT_TOLERANCE, 'criterion': REPRODUCTION_CRITERION,
+              'inputs_sha256': inputs, 'strata': {}}
     for stratum in strata:
         archived = instance.archived(stratum)
-        qualified = instance.qualified(stratum)
-        if archived['qualified'] != list(qualified):
-            raise SystemExit(f'{stratum}: the published panel was fitted over '
-                             f'{archived["qualified"]}, not {list(qualified)}')
         state = instance.state(stratum, support='full', added={})
         arms = [arm for arm in (args.arm or declared.arms) if arm in archived['arms']]
         if not arms:
             raise SystemExit(f'{stratum}: the published panel covers none of the named arms')
         reproduced, worst = {}, 0.
         for arm in arms:
+            qualified = instance.qualified(stratum, arm)
+            published_columns = list(archived['qualified'][arm])
+            if published_columns != list(qualified):
+                raise SystemExit(f'{stratum}/{arm}: the published panel was fitted over '
+                                 f'{published_columns}, not {list(qualified)}')
             cell = fit_cell(args.lane, instance, state, stratum=stratum, channel='likelihood',
                             support='full', rung=lanes.ARCHIVED_RUNG, arm=arm,
-                            qualified=qualified, inputs_sha256=inputs_sha256, out=args.out,
-                            refit=args.refit)
-            # The published record is per background; the refit is aggregated to groups, so
-            # the comparison is made on the published cells' own aggregation.
-            published = {}
-            for (named, seed, background), values in archived['cells'].items():
-                if named != arm:
-                    continue
-                for name, value in values.items():
-                    published.setdefault(name, {}).setdefault(background, []).append(value)
+                            qualified=qualified,
+                            inputs_sha256=cell_identity(args.lane, 'full', inputs),
+                            out=args.out, refit=args.refit)
             differences = {}
             for name in (lanes.CONTROL_ARM, lanes.JOINT_ARM):
-                rows = [{'group': str(state['groups'][state['backgrounds'] == background][0]),
-                         'value': float(np.mean(seeds))}
-                        for background, seeds in sorted(published[name].items())]
-                expected = breadth.aggregate(rows, 'value', state['group_order'])
-                difference = float(np.max(np.abs(np.asarray(cell['values'][name]) - expected)))
+                expected = np.asarray(archived['values'][arm][name], dtype=float)
+                values = np.asarray(cell['values'][name], dtype=float)
+                if values.shape != expected.shape or not np.isfinite(expected).all():
+                    raise SystemExit(
+                        f'{stratum}/{arm}/{name}: the published reading is {expected.shape} and '
+                        f'the refit is {values.shape} over {len(state["group_order"])} groups')
+                difference = float(np.max(np.abs(values - expected)))
                 differences[name] = difference
                 worst = max(worst, difference)
-            matched = all(
-                cell['alphas'][str(seed)][lanes.CONTROL_ARM]
-                == archived['alphas'][arm][str(seed)]['alphas_control']
-                and cell['alphas'][str(seed)][lanes.JOINT_ARM]
-                == archived['alphas'][arm][str(seed)]['alphas_augmented']
-                for seed in breadth.SPLIT_SEEDS)
+            penalties = archived['penalties'][arm]
+            if sorted(penalties) != sorted(cell['alphas']):
+                raise SystemExit(f'{stratum}/{arm}: the published penalties cover split seeds '
+                                 f'{sorted(penalties)} and the refit {sorted(cell["alphas"])}')
+            matched = all(list(cell['alphas'][seed][name]) == list(penalties[seed][name])
+                          for seed in penalties
+                          for name in (lanes.CONTROL_ARM, lanes.JOINT_ARM))
             reproduced[arm] = {'per_group_max_absolute_difference': differences,
-                               'penalties_reproduced': matched, 'alphas': cell['alphas']}
+                               'penalties_reproduced': matched, 'alphas': cell['alphas'],
+                               'control_set': published_columns}
             if not matched or max(differences.values()) > PILOT_TOLERANCE:
                 report['status'] = 'failed'
+        within = [arm for arm, entry in reproduced.items()
+                  if entry['penalties_reproduced']
+                  and max(entry['per_group_max_absolute_difference'].values()) <= PILOT_TOLERANCE]
         report['strata'][stratum] = {
             'published': archived['path'], 'published_sha256': archived['sha256'],
-            'arms': arms, 'groups': len(state['group_order']),
+            'criterion': REPRODUCTION_CRITERION, 'tolerance': PILOT_TOLERANCE,
+            'arms_within_tolerance': len(within),
+            'arms_outside_tolerance': sorted(set(reproduced) - set(within)),
+            'arms': arms, 'arms_published': len(archived['arms']),
+            'arms_pending': sorted(set(archived['arms']) - set(arms)),
+            'groups': len(state['group_order']),
             'support_sha256': state['support_sha256'],
+            'aggregation': archived['aggregation'],
+            'support_shape': archived.get('support_shape'),
             'worst_per_group_difference': worst, 'arms_reproduced': reproduced}
     if report['status'] != 'passed':
         report['reason'] = ('a refitted archived arm did not reproduce the published per-group '
@@ -613,14 +486,14 @@ def fit(args, instance, wave) -> dict:
 
     declared = lanes.lane(args.lane)
     inputs = instance.inputs()
-    inputs_sha256 = digest_text(json.dumps(inputs, sort_keys=True))
     supports = runnable_supports(wave)
     report = {'lane': args.lane, 'created_utc': datetime.now(timezone.utc).isoformat(),
               'inputs_sha256': inputs, 'supports': supports, 'fitted': [], 'skipped': []}
     added: dict = {}
     if wave['complete']:
         rows = lanes.read_rows(args.export / lanes.ROWS_FILE)
-        support_record = lanes.complete_case(args.lane, rows, wave['tables'])
+        support_record = lanes.complete_case(args.lane, rows, wave['tables'],
+                                             refusals=export_refusals(args))
         added = added_values(wave, support_record)
         write(args.out / 'support.json', support_record)
     for stratum in (args.stratum or instance.strata()):
@@ -643,7 +516,8 @@ def fit(args, instance, wave) -> dict:
             for arm in (args.arm or declared.arms):
                 cell = fit_cell(args.lane, instance, state, stratum=stratum,
                                 channel=entry['channel'], support=support, rung=entry['rung'],
-                                arm=arm, qualified=qualified, inputs_sha256=inputs_sha256,
+                                arm=arm, qualified=instance.qualified(stratum, arm),
+                                inputs_sha256=cell_identity(args.lane, support, inputs),
                                 out=args.out, refit=args.refit)
                 report['fitted'].append({'stratum': stratum, 'support': support,
                                          'rung': entry['rung'], 'arm': arm,
@@ -656,18 +530,66 @@ def fit(args, instance, wave) -> dict:
     return report
 
 
+def require_pilot(args, instance, stratum: str, arms) -> dict:
+    """The recorded pilot of one stratum, or a refusal naming what must be run.
+
+    The gate is a precondition of the panel rather than an option beside it. The
+    archived control set is the only thing in this hierarchy that has a published
+    counterpart, so a family written without a passing reproduction of it on every arm
+    it covers rests on a fitting path nothing has ever checked. Reusing an archived
+    *fit* is separately forbidden -- the complete case sits on other rows -- which is
+    exactly why the reproduction is the whole of the archive's value here.
+    """
+
+    path = args.out / 'pilot.json'
+    if not path.is_file():
+        raise SystemExit(f'{args.lane}/{stratum}: no pilot at {path}. The archived control set is '
+                         'refitted on the full support and required to reproduce the published '
+                         'per-group values before any family is written; run the pilot mode first')
+    record = json.loads(path.read_text(encoding='utf-8'))
+    if record.get('schema') != PILOT_SCHEMA or record.get('lane') != args.lane:
+        raise SystemExit(f'{path} is not a {PILOT_SCHEMA} record of {args.lane}')
+    if record.get('tolerance') != PILOT_TOLERANCE:
+        raise SystemExit(f'{path} was run at tolerance {record.get("tolerance")!r}, not the '
+                         f'declared {PILOT_TOLERANCE:g}; the gate tolerance is never loosened')
+    recorded = record.get('inputs_sha256')
+    if not isinstance(recorded, dict) or \
+            binding_inputs(recorded) != binding_inputs(instance.inputs()):
+        raise SystemExit(f'{path} was run against different inputs than this panel reads; rerun '
+                         'the pilot rather than writing a family it did not cover')
+    if record.get('status') != 'passed':
+        raise SystemExit(f'{path} records status {record.get("status")!r}: '
+                         f'{record.get("reason", "the reproduction did not pass")}')
+    entry = (record.get('strata') or {}).get(stratum)
+    if not entry:
+        raise SystemExit(f'{path} covers {sorted(record.get("strata") or {})} and not {stratum!r}; '
+                         'each stratum is its own support and its own reproduction')
+    missing = [arm for arm in arms if arm not in (entry.get('arms_reproduced') or {})]
+    if missing:
+        raise SystemExit(
+            f'{args.lane}/{stratum}: the pilot reproduced {len(entry["arms_reproduced"])} arms and '
+            f'this family covers {len(arms)}; {len(missing)} are unpiloted, first {missing[0]!r}. '
+            'An arm enters a family only once its own archived control set has been reproduced')
+    return {'path': str(path.relative_to(args.out)),
+            'worst_per_group_difference': entry['worst_per_group_difference'],
+            'tolerance': PILOT_TOLERANCE, 'arms': len(entry['arms_reproduced']),
+            'aggregation': entry['aggregation'], 'support_shape': entry.get('support_shape')}
+
+
 def panels(args, instance, wave) -> dict:
     """Assemble whichever declared families are complete on disk, and name the rest."""
 
     declared = lanes.lane(args.lane)
     written, pending = {}, []
     for stratum in (args.stratum or instance.strata()):
+        gate = require_pilot(args, instance, stratum, declared.arms)
         for channel in declared.channels:
             for support, role in (('complete_case', 'primary'), ('full', 'sensitivity')):
                 if args.support and support not in args.support:
                     continue
                 rungs = declared.rungs if role == 'primary' else ('nuisance',)
-                cells = cached_cells(args.out, stratum, channel, support, rungs, declared.arms)
+                cells, columns = cached_cells(args.out, stratum, channel, support, rungs,
+                                              declared.arms)
                 expected = len(rungs) * len(declared.arms)
                 if len(cells) != expected:
                     pending.append({'stratum': stratum, 'channel': channel, 'support': support,
@@ -682,8 +604,10 @@ def panels(args, instance, wave) -> dict:
                 groups = json.loads(cell_path(args.out, stratum, channel, support, rungs[0],
                                               declared.arms[0]).read_text())['groups']
                 record = lanes.panel(args.lane, stratum, channel, cells, groups=groups,
-                                     support_sha256=digests.pop(), role=role)
+                                     support_sha256=digests.pop(), role=role,
+                                     control_columns=columns)
                 record['wave'] = wave['status']
+                record['pilot'] = gate
                 path = args.out / 'panels' / f'{stratum}-{channel}-{support}.json'
                 write(path, record)
                 written[str(path.relative_to(args.out))] = {
@@ -708,7 +632,10 @@ def parse_args(argv=None):
     parser.add_argument('--published', type=Path, help='the published panel run the pilot reads')
     parser.add_argument('--profiles', type=Path, help='the profile feature store')
     parser.add_argument('--scores', action='append', default=[],
-                        help='a completed model-score directory; repeatable')
+                        help='a completed model-score or extraction directory; repeatable')
+    parser.add_argument('--cache', type=Path,
+                        help="a lane's prepared per-fold nuisance and target cache, where its "
+                             'own fitter builds one')
     parser.add_argument('--stratum', action='append', default=[])
     parser.add_argument('--arm', action='append', default=[])
     parser.add_argument('--support', action='append', default=[],
@@ -716,7 +643,8 @@ def parse_args(argv=None):
     parser.add_argument('--refit', action='store_true',
                         help='replace a cached cell instead of refusing a changed input')
     args = parser.parse_args(argv)
-    for name in ('out', 'export', 'couplings', 'gemme', 'qualification', 'published', 'profiles'):
+    for name in ('out', 'export', 'couplings', 'gemme', 'qualification', 'published',
+                 'profiles', 'cache'):
         setattr(args, name, resolve(getattr(args, name)))
     args.scores = [resolve(path) for path in args.scores]
     return args
