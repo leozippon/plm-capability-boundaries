@@ -164,6 +164,55 @@ class TheCheckerRefusesTheDefectsHandTranscriptionProduced(unittest.TestCase):
             self.assertNotIn('times', rendered)
         self.assertEqual(CHECKER.strip_markup(r"$10^{-3}$").strip(), '$ 0.001 $')
 
+    #: A sentence that quotes a supported estimate and, beside it, an
+    #: audited-to-zero maximum the table does not carry. The tiny number is
+    #: therefore untraced, which is the path the live manuscript takes and the
+    #: one that has to place the token before it can report it.
+    @staticmethod
+    def _audit_body(exponent: int) -> str:
+        return ("ProGen3-3B exceeds the profile by $+0.057$ [$+0.036$, $+0.079$], and the column "
+                f"contrast was audited to numerical zero, a maximum absolute effect of "
+                f"$7.445\\times10^{{{exponent}}}$. "
+                "Intervals throughout are 95\\% percentile intervals over the resampling unit "
+                "named with each quantity.")
+
+    @staticmethod
+    def _audit_token(exponent: int) -> str:
+        return CHECKER.strip_markup(f"$7.445\\times10^{{{exponent}}}$").strip().strip("$").strip()
+
+    def test_a_token_longer_than_twenty_characters_is_placed_rather_than_refused(self):
+        """The probe window may not be shorter than the token it has to find.
+
+        A scientific form is rewritten to a fixed-point token so it reads as one
+        number rather than re-tokenising as a mantissa and an exponent, and that
+        token grows with the exponent. A probe that started at a fixed twenty
+        characters gave an empty range for anything longer, so the search never
+        ran at all and the checker died on the number instead of reporting it.
+        """
+        for exponent, expected_length in ((-15, 20), (-16, 21)):
+            token = self._audit_token(exponent)
+            self.assertEqual(len(token), expected_length)
+            report = run(self.case, [entry()], {"support_a": "the fixture support"},
+                         self._audit_body(exponent))
+            self.assertEqual(report["status"], "refused")
+            self.assertIn(token, [item["token"] for item in report["untraced"]])
+
+    def test_every_exponent_at_or_beyond_sixteen_is_checkable(self):
+        """The whole class the old window excluded, not just the case that caught it.
+
+        At the manuscript's four significant figures a token runs to the exponent
+        plus five characters, so every exponent at or beyond 16 crossed the
+        twenty-character wall. The project's most precise numbers -- the ones
+        audited to numerical zero -- were exactly the ones the checker could not
+        check, and it could not check them *because they were small*.
+        """
+        for exponent in (-16, -18, -21):
+            token = self._audit_token(exponent)
+            self.assertGreater(len(token), 20)
+            report = run(self.case, [entry()], {"support_a": "the fixture support"},
+                         self._audit_body(exponent))
+            self.assertIn(token, [item["token"] for item in report["untraced"]])
+
     def test_declared_threshold_is_not_a_checkpoint_estimate(self):
         threshold = entry(id='position/alignment_gate', claim='declared minimum alignment fraction gate',
                           family='position', value=.5, kind='constant', interval_low=None, interval_high=None)

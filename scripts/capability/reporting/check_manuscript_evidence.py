@@ -713,8 +713,16 @@ def check(directory: Path = EVIDENCE_DIR, manuscript: Path = MANUSCRIPT) -> dict
                 joined to its interval row, so the character is found by the
                 few characters that follow it, searching on from where the
                 scope begins.
+
+                The probe starts at whichever is longer, twenty characters or
+                the token itself, and narrows from there. Twenty alone made the
+                range empty for any longer token, so the loop body never ran and
+                a number was refused as unplaceable *because of its own length*
+                -- which, since a scientific form is rewritten to a fixed-point
+                token, meant every value with an exponent at or beyond 16 was
+                excluded from checking for being too small to write briefly.
                 """
-                for length in range(20, token_length - 1, -1):
+                for length in range(max(20, token_length), token_length - 1, -1):
                     position = body.find(scope[offset:offset + length], max(hint, 0))
                     if position >= 0:
                         file, line = locate(text, segments[name], origin[position])
