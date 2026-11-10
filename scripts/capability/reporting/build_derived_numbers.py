@@ -4667,6 +4667,161 @@ def assign_representation_conditions(ledger: Ledger) -> None:
         quantity.conditioning = REPRESENTATION_CONDITIONS[quantity.family]
 
 
+#: The statistical ladder's own post-processed control-set strength, and the
+#: residue-conditional panel. Both are retained artifacts; every value below is
+#: copied from them with its interval, resampling unit and draw count attached,
+#: and nothing is refitted.
+LADDER_STRENGTH = "results/extensions/statistical_ladder_20261106/full/baseline-strength.json"
+RESIDUE_CONDITIONALS = "results/extensions/family_conditionals_20261107/analysis/summary.json"
+
+#: What each ladder metric measures and the unit it is measured in. Both are
+#: dimensionless: one is a difference of Spearman correlations, the other a
+#: reduction in the mean squared error of within-assay standardized ranks.
+LADDER_METRICS = {
+    "spearman": ("held-family Spearman correlation increment", "dimensionless Spearman"),
+    "rank_mse": ("held-family rank mean-squared-error reduction", "dimensionless"),
+}
+#: The blocks each contrast adds, by the artifact's own control-set symbols. A
+#: claim has to say in words what ``P+E - P`` says in symbols, because the words
+#: are what let a sentence quoting the increment be matched to the row that
+#: carries it.
+LADDER_ADDED = {
+    ("P", "P+E"): "Potts",
+    ("P", "P+G"): "GEMME",
+    ("P", "P+E+G"): "Potts and GEMME",
+    ("C0", "C0+E+G"): "Potts and GEMME",
+}
+#: The readout each contrast is taken over, by the same symbols.
+LADDER_BASELINE = {
+    "P": "the supervised Profile readout",
+    "C0": "the complete qualified control readout",
+}
+#: The ladder's verdict words in the ledger's four-outcome vocabulary. A word the
+#: artifact invents is refused rather than guessed at.
+LADDER_VERDICTS = {"positive": "supported", "unresolved": "unresolved",
+                   "negative": "not_detected"}
+#: The level of the residue-conditional panel's simultaneous interval. Its
+#: primary block records the method, the draws, the seed and the critical value
+#: but not the level; 95 is what the panel declares beside it, in its own
+#: ``auxiliary_pointwise_95`` block.
+CONDITIONAL_INTERVAL_KIND = "95% simultaneous standardized-maxT"
+#: The two residue-conditional contrasts the manuscript quotes, by the arm name
+#: the artifact records, and what each is against.
+CONDITIONAL_ARMS = (
+    ("progen2-large|minus_profile", "minus_profile", "the evolutionary Profile baseline"),
+    ("progen2-large|minus_markov", "minus_markov", "the order-3 Markov baseline"),
+)
+
+
+def family_statistical_ladder(ledger: Ledger) -> None:
+    """The ladder increments and residue conditionals the manuscript reports.
+
+    The mutation results and the completed-experiments supplement quote the
+    held-family increments of adding explicit evolutionary statistics to a
+    supervised readout --- ``P+E - P``, ``P+G - P``, ``P+E+G - P`` and
+    ``C0+E+G - C0``, on both declared metrics --- and the residue-conditional
+    contrasts of ProGen2-large against the Markov and Profile baselines. This
+    table carried no row for any of them: its ``potts_*`` families cover the
+    sampler, the gauge and coupling selection, and nothing covered the ladder.
+
+    The gap did more than leave numbers untraced. Finding no row for the
+    quantity, the checker attributed each number to whichever of eighteen
+    thousand unrelated rows happened to round to the same value and then
+    reported that the manuscript's bounds were not *that* row's bounds --- a
+    point trailing Profile by 0.317 against a local-context qualification
+    correlation at 0.3166, a Spearman increment against a pairwise row in
+    squared kcal per mole. Read from the label alone its output said the
+    manuscript disagreed systematically with the evidence. Read against the
+    artifacts, every quoted value and bound is the artifact's own, rounded to
+    four decimals. These rows exist to make a correct manuscript checkable.
+
+    The scope is the ten quantities the manuscript quotes. The
+    residue-conditional family declares sixty-six hypotheses and the other
+    sixty-four are left out, because a row this table does not need can only
+    dilute the attribution of a number the manuscript does quote.
+    """
+
+    _ladder_increments(ledger)
+    _residue_conditionals(ledger)
+
+
+def _ladder_increments(ledger: Ledger) -> None:
+    payload = ledger.artifacts.json(LADDER_STRENGTH)
+    bootstrap, panel = payload["bootstrap"], payload["support"]
+    digest = ledger.artifacts.sha256(LADDER_STRENGTH)
+    support = ledger.declare_support(
+        f"statistical_ladder_{panel['families']}_families",
+        f"{panel['families']} biological families over {panel['assays']} assays, "
+        f"{panel['rows']} rows and {panel['wildtypes']} wild types of the full ladder panel; "
+        "every control set fitted on the same held-out families",
+    )
+    interval_kind = f"{int(bootstrap['confidence'] * 100)}% simultaneous native-scale"
+    for metric in sorted(payload["metrics"]):
+        if metric not in LADDER_METRICS:
+            raise LedgerError(f"statistical ladder: unknown metric {metric!r}")
+        description, unit = LADDER_METRICS[metric]
+        for index, pair in enumerate(payload["metrics"][metric]["pairs"]):
+            key = (pair["baseline_control_set"], pair["control_set"])
+            if key not in LADDER_ADDED or key[0] not in LADDER_BASELINE:
+                raise LedgerError(f"statistical ladder: unknown contrast {pair['pair']!r}")
+            native = pair["native"]
+            if native["verdict"] not in LADDER_VERDICTS:
+                raise LedgerError(f"statistical ladder: unknown verdict {native['verdict']!r} "
+                                  f"on {pair['pair']!r}")
+            ledger.add(Quantity(
+                id=f"statistical_ladder/{metric}/{pair['pair'].replace(' ', '').lower()}",
+                claim=f"{description} from adding {LADDER_ADDED[key]} "
+                      f"to {LADDER_BASELINE[key[0]]}",
+                family="statistical_ladder", value=float(pair["point"]), unit=unit,
+                kind="estimate", support_id=support,
+                interval=(float(native["lower"]), float(native["upper"])),
+                interval_kind=interval_kind, resampling_unit=bootstrap["unit"],
+                resampling_draws=bootstrap["draws"], seed_set=(bootstrap["seed"],),
+                level="control", verdict=LADDER_VERDICTS[native["verdict"]],
+                weighting_convention="paired on the same held-out families, under the ladder's "
+                                     "own declared aggregation",
+                source_path=LADDER_STRENGTH, source_sha256=digest,
+                source_pointer=("metrics", metric, "pairs", f"[{index}]", "point"),
+            ))
+
+
+def _residue_conditionals(ledger: Ledger) -> None:
+    payload = ledger.artifacts.json(RESIDUE_CONDITIONALS)
+    primary = payload["partitions"]["evaluation"]["inference"]["primary"]
+    declared = payload["declared"]["evaluation"]
+    digest = ledger.artifacts.sha256(RESIDUE_CONDITIONALS)
+    support = ledger.declare_support(
+        f"family_conditionals_{declared['units']}_families",
+        f"{declared['units']} biological families over {declared['sites']} sites and "
+        f"{declared['contexts']} held-out contexts of the residue-conditional panel",
+    )
+    for arm, name, against in CONDITIONAL_ARMS:
+        found = [(index, block) for index, block in enumerate(primary["hypotheses"])
+                 if block.get("arm") == arm]
+        if len(found) != 1:
+            raise LedgerError(f"residue conditionals: {arm!r} appears {len(found)} times in the "
+                              "primary hypothesis family")
+        index, block = found[0]
+        if block.get("status") != "estimated":
+            raise LedgerError(f"residue conditionals: {arm!r} is {block.get('status')!r}")
+        low, high = block["simultaneous"]
+        ledger.add(Quantity(
+            id=f"family_conditionals/progen2-large/{name}",
+            claim=f"ProGen2-large residue conditional minus {against}, "
+                  "in nats per queried residue",
+            family="family_conditionals", value=float(block["point"]),
+            unit="nats per residue", kind="estimate", support_id=support,
+            interval=(float(low), float(high)), interval_kind=CONDITIONAL_INTERVAL_KIND,
+            resampling_unit="biological family", resampling_draws=primary["draws"],
+            seed_set=(primary["seed"],), level="likelihood",
+            weighting_convention="shared family multinomial bootstrap over the panel's own "
+                                 "families, at the declared critical value",
+            source_path=RESIDUE_CONDITIONALS, source_sha256=digest,
+            source_pointer=("partitions", "evaluation", "inference", "primary", "hypotheses",
+                            f"[{index}]", "point"),
+        ))
+
+
 def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     artifacts = Artifacts()
     ledger = Ledger(artifacts)
@@ -4714,6 +4869,7 @@ def build(out_dir: Path = EVIDENCE_DIR) -> dict[str, object]:
     family_leaf_subtrees(ledger)
     family_generator_totals(ledger)
     family_derived_shares(ledger)
+    family_statistical_ladder(ledger)
 
     from scripts.capability.reporting.current_manuscript_quantities import add_current_quantities
     from scripts.capability.reporting.followup_quantities import add_followup_quantities
