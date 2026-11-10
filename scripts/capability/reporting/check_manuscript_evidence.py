@@ -93,12 +93,35 @@ TYPESET_MINUS = r"(?:\\textminus\b\s*(?:\{\})?|\$-\$|\\\(-\\\)|\u2212)\s*(?=\d)"
 #: ``kcal\,mol`` keeps the spelling the unit table looks for.
 NUMERIC_SPACING = r"(?<=[\d$,}])(?:(?:\\[;:,!]|\\ |~|\\q?quad)\s*)+(?=[\[(\$\-+\d])"
 
-#: How the manuscript may name each unit. A quantity whose unit is not
-#: dimensionless has to be quoted where one of these appears.
-UNIT_RENDERINGS = {
+#: How the manuscript may name each unit whose absence changes what a number
+#: means. :func:`unit_named` consults this mapping and nothing else, and refuses
+#: a unit it finds no spelling for -- so a unit that must be named and is
+#: missing from here is refused however exactly the prose names it, for every
+#: number that carries it, silently and forever. Its keys must therefore be
+#: exactly :data:`PHYSICAL_UNITS`, which
+#: :func:`assert_unit_vocabularies_agree` requires at import instead of leaving
+#: it to be discovered by a number nobody could verify.
+PHYSICAL_UNIT_RENDERINGS = {
     "kcal/mol": (r"kcal/mol", r"kcal\,mol"),
     "kcal^2/mol^2": (r"kcal\$\^2\$/mol\$\^2\$", r"kcal\^2/mol\^2", r"squared kcal/mol"),
     "percent": (r"\\%", r"per cent", r"percent"),
+    # The prose qualifies the denominator -- "nats per queried residue", "nats
+    # per native residue" -- and the unit is the same one.
+    "nats per residue": (r"nats per (?:[a-z-]+ )?residue",),
+    "nats per token": (r"nats per (?:[a-z-]+ )?token",),
+    "log2 enrichment": (r"log2 enrichment", r"log\$_2\$ enrichment", r"\$\\log_2\$ enrichment"),
+    # The table's name for the scale; the prose writes it "normalized-fitness".
+    "scaled-fitness units": (r"(?:normali[sz]ed|scaled)[- ]fitness unit",),
+}
+
+#: Spellings of the counting units, kept and deliberately never consulted: a
+#: counting unit is carried by the sentence's own noun, so :data:`PHYSICAL_UNITS`
+#: excludes it and :func:`unit_named` returns before reading any of these. They
+#: are declared apart from the renderings above precisely so that the import
+#: check can tell a deliberate counting entry from a physical unit someone
+#: forgot to make nameable -- which is the drift that put four physical units
+#: here with no spelling at all.
+COUNT_UNIT_RENDERINGS = {
     "attempts": (r"attempt",),
     "sequences": (r"sequence",),
     "groups": (r"group",),
@@ -131,6 +154,9 @@ UNIT_RENDERINGS = {
     "wild-type clusters": (r"cluster",),
     "residues": (r"residue",),
 }
+
+UNIT_RENDERINGS = {**PHYSICAL_UNIT_RENDERINGS, **COUNT_UNIT_RENDERINGS}
+
 #: Units whose absence changes what a number means. A counting unit is carried
 #: by the sentence's own noun ("14 of 33 checkpoints"), so requiring it again
 #: would report grammar rather than evidence; a physical or scaled unit is not,
@@ -143,6 +169,57 @@ PHYSICAL_UNITS = frozenset({"kcal/mol", "kcal^2/mol^2", "percent", "nats per tok
 #: one of these.
 MEASURED_SCALES = frozenset({"kcal/mol", "kcal^2/mol^2", "log2 enrichment", "nats per token",
                              "nats per residue", "scaled-fitness units"})
+
+
+def assert_unit_vocabularies_agree(
+        physical: frozenset | None = None, physical_renderings: dict | None = None,
+        count_renderings: dict | None = None, measured: frozenset | None = None) -> None:
+    """Refuse at import if the unit vocabularies have drifted apart.
+
+    Three declarations describe one fact between them: which units a sentence
+    must name, how each is spelled, and which are measured scales. They are
+    written separately and nothing made them agree, so they drifted: four of the
+    seven physical units carried no spelling at all, which did not fail -- it
+    made :func:`unit_named` return False for every number in those units, so the
+    checker refused each of them whatever the prose said, and refused them
+    identically whether the prose was right or wrong. A check that is wrong
+    about a whole class of numbers and silent about it is worse than one that
+    cannot start, so the disagreement is raised here, at the only place a unit
+    is ever added.
+
+    Two of those four -- log2 enrichment and nats per token -- are the natural
+    units of cohorts this project actively measures, so the gap sat directly in
+    front of numbers not yet written.
+    """
+
+    physical = PHYSICAL_UNITS if physical is None else physical
+    physical_renderings = (PHYSICAL_UNIT_RENDERINGS if physical_renderings is None
+                           else physical_renderings)
+    count_renderings = COUNT_UNIT_RENDERINGS if count_renderings is None else count_renderings
+    measured = MEASURED_SCALES if measured is None else measured
+
+    problems = []
+    unspellable = sorted(set(physical) - set(physical_renderings))
+    if unspellable:
+        problems.append(f"{unspellable} must be named in the prose but have no spelling, so every "
+                        "number carrying one would be refused however it is written")
+    not_required = sorted(set(physical_renderings) - set(physical))
+    if not_required:
+        problems.append(f"{not_required} have spellings among the physical renderings but are not "
+                        "physical units, so those spellings are never read")
+    miscounted = sorted(set(count_renderings) & set(physical))
+    if miscounted:
+        problems.append(f"{miscounted} are declared as counting units and as physical units; a "
+                        "unit is one or the other")
+    unscaled = sorted(set(measured) - set(physical))
+    if unscaled:
+        problems.append(f"{unscaled} are measured scales that are not physical units, so a "
+                        "quantity may be quoted in one without naming it")
+    if problems:
+        raise ValueError("the unit vocabularies disagree -- " + "; ".join(problems))
+
+
+assert_unit_vocabularies_agree()
 
 DIMENSIONLESS = tuple(
     unit for unit in ("dimensionless", "dimensionless Spearman", "dimensionless ratio",

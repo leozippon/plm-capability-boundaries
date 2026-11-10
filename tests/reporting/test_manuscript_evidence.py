@@ -16,6 +16,7 @@ from pathlib import Path
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -866,6 +867,64 @@ class AGenericallyKeyedLeafTakesTheUnitItsFieldStates(unittest.TestCase):
         self.assertEqual(self._units("first_seed_interval",
                                      "point", "augmented_mse", "baseline_mse"),
                          {"kcal^2/mol^2"})
+
+
+class TheUnitVocabulariesCannotDrift(unittest.TestCase):
+    """Three declarations describe one fact, and nothing used to make them agree.
+
+    A physical unit with no spelling does not fail. It makes ``unit_named``
+    return False for every number carried in that unit, so the checker refuses
+    them all however exactly the prose names them, and refuses them identically
+    whether the prose is right or wrong. Four of the seven had drifted that way,
+    two of them the natural units of cohorts this project actively measures. A
+    check that is wrong about a whole class of numbers and silent about it is
+    worse than one that cannot start, so the disagreement is raised where a unit
+    is added -- and these pin that it is raised at import, not merely available
+    to be called.
+    """
+
+    def test_the_shipped_vocabularies_agree(self):
+        CHECKER.assert_unit_vocabularies_agree()
+        self.assertEqual(CHECKER.PHYSICAL_UNITS - set(CHECKER.UNIT_RENDERINGS), set())
+        for unit in CHECKER.PHYSICAL_UNITS:
+            self.assertTrue(CHECKER.UNIT_RENDERINGS[unit], unit)
+
+    def test_a_unit_in_one_set_and_absent_from_the_other_is_refused(self):
+        renderings = dict(CHECKER.PHYSICAL_UNIT_RENDERINGS)
+        renderings.pop("percent")
+        cases = (
+            ({"physical_renderings": renderings}, "percent"),
+            ({"physical_renderings": {**CHECKER.PHYSICAL_UNIT_RENDERINGS,
+                                      "furlongs": (r"furlong",)}}, "furlongs"),
+            ({"count_renderings": {**CHECKER.COUNT_UNIT_RENDERINGS,
+                                   "percent": (r"percent",)}}, "percent"),
+            ({"measured": frozenset({"furlongs"})}, "furlongs"),
+        )
+        for arguments, named in cases:
+            with self.subTest(sorted(arguments)):
+                with self.assertRaises(ValueError) as refusal:
+                    CHECKER.assert_unit_vocabularies_agree(**arguments)
+                self.assertIn(named, str(refusal.exception))
+
+    def test_a_module_whose_vocabularies_disagree_will_not_import(self):
+        source = Path(CHECKER.__file__).read_text()
+        broken = re.sub(r'\n *"percent": \([^\n]*\n', "\n", source, count=1)
+        self.assertNotEqual(broken, source, "the percent rendering is no longer written this way")
+        directory = Path(tempfile.mkdtemp(prefix="unit-vocabulary-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        # The checker resolves the repository root from its own location, so the
+        # copy is nested as deeply as the original. The root it then inserts is
+        # this scratch directory and goes unused: the real one is already on the
+        # path, and the refusal happens before anything is read from either.
+        nested = directory / "scripts" / "capability" / "reporting"
+        nested.mkdir(parents=True)
+        path = nested / "drifted_checker.py"
+        path.write_text(broken)
+        spec = importlib.util.spec_from_file_location("drifted_checker", path)
+        module = importlib.util.module_from_spec(spec)
+        with self.assertRaises(ValueError) as refusal:
+            spec.loader.exec_module(module)
+        self.assertIn("percent", str(refusal.exception))
 
 
 class TheLivePipelineRuns(unittest.TestCase):
