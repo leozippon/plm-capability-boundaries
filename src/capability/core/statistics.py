@@ -1,7 +1,8 @@
 """Interval estimation and group-disjoint resampling for transfer measurements.
 
 Three primitives, each answering a question this programme has got wrong at least
-once.
+once, and the vocabulary every lane reads an interval with
+(:data:`FINDING_STATES`).
 
 :func:`mean_interval`
     A Student-t interval over a **finite** sample. The finiteness check is not
@@ -104,6 +105,25 @@ MINIMUM_DRAWS_IN_TAIL = 10.0
 #: the 2026-07-28 run came to be decided by non-overlap of a four-unit interval
 #: against a four-hundred-unit one.
 MINIMUM_BOOTSTRAP_UNITS = 8
+
+
+#: The four states this programme keeps apart when it reads an interval, declared
+#: here because more than one lane reads them and two spellings of one vocabulary
+#: is how a "wide interval" starts being reported as a negative result.
+#:
+#: ``supported`` is a resolved effect of the declared sign. ``bounded_negative`` is
+#: a resolved absence *at a declared size*: either an interval wholly inside a
+#: pre-registered margin, where a lane declares one, or an interval that excludes
+#: zero on the other side. ``unresolved`` is an interval that spans the question,
+#: however narrow, and is never equivalence. ``non_identifiable`` is a contrast the
+#: data cannot inform at all, which is not a wide interval and never an estimate of
+#: zero. A lane that declares no margin cannot reach ``bounded_negative`` for
+#: smallness and reports the interval's own bound instead.
+SUPPORTED = "supported"
+BOUNDED_NEGATIVE = "bounded_negative"
+UNRESOLVED = "unresolved"
+NON_IDENTIFIABLE = "non_identifiable"
+FINDING_STATES: tuple[str, ...] = (SUPPORTED, BOUNDED_NEGATIVE, UNRESOLVED, NON_IDENTIFIABLE)
 
 
 def bootstrap_unit_floor(

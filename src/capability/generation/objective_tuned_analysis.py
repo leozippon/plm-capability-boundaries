@@ -79,6 +79,7 @@ from typing import Any, Callable
 import numpy as np
 
 from ..context.homology import STRATUM_EDGES, STRATUM_NAMES, assign_stratum
+from ..core import statistics as stats
 from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS
 from ..extensions import bidirectional as bd
 from ..forcing.backbone_cohort import distinct_shingle_fraction
@@ -243,12 +244,15 @@ def margin_for(base_mean: float) -> dict[str, float | str]:
 # --------------------------------------------------------- the finding states
 
 #: The four states this project keeps apart. A wide interval is never a negative
-#: result, and an unmeasurable contrast is never a wide interval.
-SUPPORTED = "supported"
-BOUNDED_NEGATIVE = "bounded_negative"
-UNRESOLVED = "unresolved"
-NON_IDENTIFIABLE = "non_identifiable"
-FINDING_STATES: tuple[str, ...] = (SUPPORTED, BOUNDED_NEGATIVE, UNRESOLVED, NON_IDENTIFIABLE)
+#: result, and an unmeasurable contrast is never a wide interval. The vocabulary is
+#: declared once in :mod:`..core.statistics`, beside the resampling floor that
+#: decides when a contrast is identifiable at all, and read here under this lane's
+#: own names so that two lanes cannot drift into two spellings of it.
+SUPPORTED = stats.SUPPORTED
+BOUNDED_NEGATIVE = stats.BOUNDED_NEGATIVE
+UNRESOLVED = stats.UNRESOLVED
+NON_IDENTIFIABLE = stats.NON_IDENTIFIABLE
+FINDING_STATES: tuple[str, ...] = stats.FINDING_STATES
 
 
 def margin_finding(interval: Sequence[float], margin: float) -> dict[str, Any]:

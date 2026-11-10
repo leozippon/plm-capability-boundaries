@@ -59,12 +59,32 @@ GEMME scores is identically zero. That lane's hierarchy stops at profile and cou
 and the role is recorded as ``non_identifiable`` with that reason, never estimated as a
 zero with a tight interval around it.
 
-**Four finding states, kept apart** (:data:`STATES`): ``supported`` is a simultaneous
-interval strictly above zero, ``bounded_negative`` one strictly below it,
-``unresolved`` an interval containing zero however narrow or a stratum under the
-bootstrap-unit floor, and ``non_identifiable`` a block that cannot inform the estimand
-at all. A wide interval is not a negative result, and no equivalence margin is declared
-anywhere.
+**Four finding states, kept apart** (:data:`STATES`, declared once in
+:mod:`..core.statistics`): ``supported`` is a simultaneous interval strictly above
+zero, ``bounded_negative`` one strictly below it, ``unresolved`` an interval containing
+zero however narrow or a stratum under the bootstrap-unit floor, and
+``non_identifiable`` a block that cannot inform the estimand at all. A wide interval is
+not a negative result, and no equivalence margin is declared anywhere.
+
+**The forward bound carries the overlap claim** (:func:`forward_bound`). Because no
+margin is declared, the forward direction can never report a state for smallness, and
+an unresolved forward increment is not the end of the statement: the simultaneous upper
+limit is reported as a first-class quantity, in native units and as a fraction of the
+control set's own performance on the identical support. *The model adds at most this
+much beyond the explicit statistics, and at most this fraction of what those statistics
+already achieve* is a bound on the increment, not a failure to reject, and it needs no
+threshold.
+
+**The variant-effect ladder is not re-run here** (:data:`VARIANT_EFFECT_BRIDGE`). Its
+profile family already supplies rungs two through five with an empty nuisance set and
+its ``C0`` family rungs two and five; adding the three rungs it lacks would enlarge its
+declared family, widen its bands and could move published verdicts. Cross-lane reading
+therefore happens at :data:`SHARED_RUNGS`, the rungs every lane has.
+
+**An archived fit is a pilot, not saved compute** (:data:`ARCHIVED_REUSE_RULE`). The
+profile rung reproduces each lane's archived control set column for column, but the
+complete case drops rows, so the archived fit is on a different support. It is refitted
+on the full support and required to reproduce the published values instead.
 """
 from __future__ import annotations
 
@@ -79,6 +99,7 @@ import numpy as np
 
 from . import bidirectional, overlap, responses
 from .progression import identity_digest
+from ..core import statistics
 from ..core.statistics import MINIMUM_BOOTSTRAP_UNITS, bootstrap_unit_floor
 from ..interactions.pairwise_epistasis import ROSTER
 
@@ -95,13 +116,50 @@ NEW_BLOCKS = {'couplings': COUPLINGS_BLOCK, 'gemme': GEMME_BLOCK}
 
 #: The variant-effect ladder's own role binding. It is recorded here as the witness of
 #: the collision this vocabulary removes -- ``G`` is GEMME there and the nonlinear
-#: additive nuisance in three lanes below -- and as the comparability reference. That
-#: lane's control sets stay frozen in :mod:`.statistical_ladder` and are not redeclared
-#: here: its profile family already is this hierarchy's profile rung upwards with an
-#: empty nuisance set, and its ``C0`` family already is the archived control set with
-#: both added blocks.
+#: additive nuisance in three lanes below -- and as the comparability reference.
 VARIANT_EFFECT_ROLES = {'nuisance': ('B', 'L'), 'profile': ('P',),
                         'couplings': ('E',), 'gemme': ('G',)}
+
+#: How the variant-effect ladder maps onto this hierarchy, and where it does not.
+#:
+#: That lane is **not** re-run at this hierarchy and its control sets stay frozen in
+#: :mod:`.statistical_ladder`. The reason is not only that the contract is frozen:
+#: adding rungs would enlarge its multiplicity family, widen its simultaneous bands
+#: and could move verdicts on findings that are already published, which is a
+#: manuscript change made through the back door.
+#:
+#: Its profile family supplies rungs two through five with an *empty* nuisance set --
+#: ``P``, ``P+E``, ``P+G``, ``P+E+G`` -- and its ``C0`` family supplies rungs two and
+#: five, ``C0`` and ``C0+E+G``. It therefore lacks the nuisance-only rung and the two
+#: intermediate ``C0`` rungs (``C0+E`` and ``C0+G``), and those three are not
+#: estimated for it anywhere.
+VARIANT_EFFECT_BRIDGE = {
+    'lane': 'variant_effect',
+    'declared_in': 'src/capability/extensions/statistical_ladder.py',
+    'rerun_at_this_hierarchy': False,
+    'rerun_refused_because': ('three added designs would enlarge that lane\'s declared '
+                              'multiplicity family, widen its simultaneous bands and could move '
+                              'already published verdicts; the published ladder stands as it is'),
+    'profile_family': {'nuisance_set': 'empty',
+                       'rungs': {'nuisance+profile': 'P',
+                                 'nuisance+profile+couplings': 'PE',
+                                 'nuisance+profile+gemme': 'PG',
+                                 'nuisance+profile+couplings+gemme': 'PEG'}},
+    'c0_family': {'nuisance_set': 'B + L',
+                  'rungs': {'nuisance+profile': 'BPL',
+                            'nuisance+profile+couplings+gemme': 'BPLEG'}},
+    'absent_rungs': {'nuisance': 'the C0 family has no B+L-only control set',
+                     'nuisance+profile+couplings': 'C0+E is not declared',
+                     'nuisance+profile+gemme': 'C0+G is not declared'},
+    'cross_lane_reading': ('cross-lane reading happens at the rungs every lane shares, which '
+                           'are rungs two through five of the profile family: profile; profile '
+                           'and couplings; profile and GEMME; profile, couplings and GEMME. A '
+                           'lane\'s nuisance-only rung and its nuisance-conditioned rungs are '
+                           'read within that lane only, because the nuisance sets differ'),
+}
+#: The rungs every lane shares, and the only ones read across lanes.
+SHARED_RUNGS = ('nuisance+profile', 'nuisance+profile+couplings',
+                'nuisance+profile+gemme', 'nuisance+profile+couplings+gemme')
 
 #: The one hierarchy, in order: rung name -> the roles that rung carries.
 RUNGS: dict[str, tuple[str, ...]] = {
@@ -126,16 +184,27 @@ ARM_NAMES = (CONTROL_ARM, MODEL_ARM, JOINT_ARM)
 CHANNELS = {'likelihood': {'block': 'M', 'role': 'primary'},
             'representation': {'block': 'R', 'role': 'secondary'}}
 
-#: Finding states, kept rigorously apart.
-SUPPORTED = 'supported'
-BOUNDED_NEGATIVE = 'bounded_negative'
-UNRESOLVED = 'unresolved'
-NON_IDENTIFIABLE = 'non_identifiable'
-STATES = (SUPPORTED, BOUNDED_NEGATIVE, UNRESOLVED, NON_IDENTIFIABLE)
+#: Finding states, kept rigorously apart. The vocabulary is declared once in
+#: :mod:`..core.statistics` and read here, never respelled.
+SUPPORTED = statistics.SUPPORTED
+BOUNDED_NEGATIVE = statistics.BOUNDED_NEGATIVE
+UNRESOLVED = statistics.UNRESOLVED
+NON_IDENTIFIABLE = statistics.NON_IDENTIFIABLE
+STATES = statistics.FINDING_STATES
 #: The shared verdict rule, relabelled onto the four states. ``bounded_negative`` is a
-#: resolved negative sign, not a smallness bound: no equivalence margin is declared.
+#: resolved negative *sign* here: these lanes declare no equivalence margin, so the
+#: forward direction can never report a state for smallness and reports
+#: :func:`forward_bound` instead.
 VERDICT_STATE = {'positive': SUPPORTED, 'negative': BOUNDED_NEGATIVE,
                  'unresolved': UNRESOLVED}
+#: What the forward direction's simultaneous upper limit is, and is not.
+FORWARD_BOUND_READING = (
+    'the forward direction never reports a state for smallness: it declares no '
+    'equivalence margin, so an interval containing zero is unresolved however narrow. '
+    'The quantitative claim is carried by the simultaneous upper limit instead -- the '
+    'model adds at most this much beyond the explicit statistics, and at most this '
+    'fraction of what those statistics already achieve on the identical support -- '
+    'which is a bound on the increment rather than a failure to reject')
 
 #: Upstream per-row status vocabularies of the two score tables, classified. An
 #: ``available`` row carries a finite value, a ``refused`` row is an enumerable loss of
@@ -177,6 +246,16 @@ CELLS_SCHEMAS = (CELLS_SCHEMA,)
 #: Default file names inside a cohort's export directory.
 ROWS_FILE = Path('inputs/variant_table.json')
 ROWS_SCHEMA = 'r1_msa_variant_table_v1'
+SUPPORT_FILE = Path('inputs/support.json')
+UPSTREAM_SUPPORT_SCHEMA = 'r1_msa_support_v1'
+
+#: The retained-alignment-row band every GEMME degeneracy observed so far has fallen
+#: in: all seven degenerate R1 wild types had at most 14 retained rows and none at 15
+#: or more, and two rows is the floor below which no alignment is retained at all. It
+#: is a risk band read off the exported support, never a prediction and never a count
+#: written into this module: :func:`gemme_risk_band` counts it from the cohort's own
+#: support document so the number cannot drift from the export.
+GEMME_RISK_BAND = (2, 14)
 
 
 @dataclass(frozen=True)
@@ -188,6 +267,9 @@ class Stratum:
     #: paired reduction is positive when the joint arm is better in either reading.
     to_loss: float
     support: str
+    #: Declared where this stratum's resampling units leave it no headroom over the
+    #: floor. A support loss then reports the stratum unresolved; the floor never moves.
+    fragile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +294,10 @@ class Lane:
     declared_family: dict[str, int]
     full_panel_family: dict[str, int]
     non_identifiable: dict[str, str] = field(default_factory=dict)
+    #: Readings of this lane that exist upstream and are deliberately not covered by
+    #: this hierarchy, each with the reason, so that an absence is declared rather than
+    #: left for a reader to notice.
+    not_covered: tuple[tuple[str, str], ...] = ()
     notes: tuple[str, ...] = ()
 
     @property
@@ -273,7 +359,11 @@ LANES: dict[str, Lane] = {
         notes=('the archived qualified control set carries the training-fold nonlinear '
                'additive response G and, for the arms whose archived matched baseline is '
                'S_T, that arm\'s own tokenisation block; both are nuisances and neither '
-               'reaches the model arm',)),
+               'reaches the model arm',
+               'the nuisance control is arm-conditional by design: each arm\'s nuisance set '
+               'has to absorb that arm\'s own tokenisation artefacts, so a control held common '
+               'across arms would credit segmentation to the model and would be the error. The '
+               'forward increment is therefore "the model beyond this arm\'s own controls"',)),
     'stability': Lane(
         name='stability',
         cohort='pairwise',
@@ -347,20 +437,28 @@ LANES: dict[str, Lane] = {
                 to_loss=1., support='binding cohort rows'),
             'cellular_fitness_sge-ranking': Stratum(
                 units='within-background Spearman rho', to_loss=-1.,
-                support='cellular fitness cohort rows'),
+                support='cellular fitness cohort rows',
+                fragile=(f'nine homology groups against the {MINIMUM_BOOTSTRAP_UNITS}-unit floor: '
+                         'one lost group leaves no headroom and two put the stratum under the '
+                         'floor. A coupling or GEMME refusal landing here is reported as an '
+                         'unresolved stratum; the floor is not lowered to keep it estimable')),
         },
         channels=('likelihood',),
         arms=PHENOTYPE_ARMS, panel_arms=PANEL_ARMS,
         declared_family={'likelihood': _family_size(5, 10)},
         full_panel_family={'likelihood': _family_size(5, 33)},
+        not_covered=(
+            ('binding_skempi-quantitative_calibrated',
+             'the within-family recalibrated binding reading sits on a restricted 97-group '
+             'support, so it is neither this stratum nor comparable with it on one support; it '
+             'is not covered by this hierarchy and would need its own declaration'),),
         notes=('the lane\'s cohorts measure different quantities on disjoint rows, so each '
                'cohort/endpoint cell is its own stratum with its own support and its own '
                'family; the cells are never pooled',
-               'the binding quantitative cell qualified no profile block, so the hierarchy '
-               'carries the profile block there by declaration rather than by qualification',
-               'the within-family recalibrated binding reading sits on a restricted '
-               '97-group support and is not one of these strata; it would need its own '
-               'declaration',
+               'the binding quantitative cell qualified no profile block, and the hierarchy '
+               'carries the profile block there by declaration: including it is the entire '
+               'purpose of the rung, and a forward qualification that dropped it is exactly '
+               'the weak control this work replaces',
                'the frozen fitter declares no representation block for this lane')),
 }
 
@@ -473,26 +571,42 @@ def arm_designs(lane_name: str, rung: str, qualified: Sequence[str], *,
     return {CONTROL_ARM: columns, MODEL_ARM: (block,), JOINT_ARM: (*columns, block)}
 
 
+#: Why an archived fit is a reproduction gate here and not saved compute.
+ARCHIVED_REUSE_RULE = (
+    'the profile rung reproduces the lane\'s archived primary control set column for column, '
+    'but the complete case drops the rows whose reference carries no coupling or GEMME value, so '
+    'the archived fit sits on a different row set and is not reusable inside the complete-case '
+    'family however exactly its columns match. The archived arms are instead refitted on the '
+    'full support and required to reproduce the published values: that is the only check '
+    'available on the whole fitting path before any added feature exists, and it is a pilot gate '
+    'rather than compute saved')
+
+
 def fit_plan(lane_name: str, qualified: Sequence[str], *, channel: str = 'likelihood',
              tokenisation: bool = False) -> list[dict[str, Any]]:
     """Every design the lane's fitter must produce, with the support it is fitted on.
 
-    The hierarchy is fitted on the complete-case rows, where every block of the
-    hierarchy is available. The nuisance rung needs neither added block, so it is also
-    fitted on the full support and reported beside the hierarchy as a labelled
-    sensitivity rather than inside its family.
+    Three supports, three roles. The hierarchy is fitted on the complete-case rows,
+    where every block of the hierarchy is available, and is the primary family. The
+    nuisance rung needs neither added block, so it is also fitted on the full support
+    and reported beside the hierarchy as a labelled sensitivity rather than inside its
+    family. The archived rung is refitted on the full support as the pilot, for the
+    reason :data:`ARCHIVED_REUSE_RULE` gives; it is not a family and is never read as
+    one.
     """
 
     declared = lane(lane_name)
     plan = []
-    for support in ('complete_case', 'full'):
-        rungs = declared.rungs if support == 'complete_case' else ('nuisance',)
+    for support, rungs, role in (('complete_case', declared.rungs, 'primary'),
+                                 ('full', ('nuisance',), 'sensitivity'),
+                                 ('full', (ARCHIVED_RUNG,), 'pilot')):
         for rung in rungs:
             designs = arm_designs(lane_name, rung, qualified, channel=channel,
                                   tokenisation=tokenisation)
-            plan.append({'support': support, 'rung': rung, 'channel': channel,
-                         'role': 'primary' if support == 'complete_case' else 'sensitivity',
-                         'reuses_archived_fit': support == 'complete_case' and rung == ARCHIVED_RUNG,
+            plan.append({'support': support, 'rung': rung, 'channel': channel, 'role': role,
+                         'reproduces_archived_control_set': rung == ARCHIVED_RUNG,
+                         'compared_against_the_archive': role == 'pilot',
+                         'reuses_archived_fit': False,
                          'designs': {name: list(columns) for name, columns in designs.items()}})
     return plan
 
@@ -525,6 +639,43 @@ def read_rows(path) -> list[dict[str, Any]]:
     if not isinstance(rows, list) or not rows:
         raise ValueError(f'{path} holds no sample rows')
     return rows
+
+
+def gemme_risk_band(support, *, band: tuple[int, int] = GEMME_RISK_BAND) -> dict[str, Any]:
+    """References shallow enough for the official GEMME run to come back degenerate.
+
+    ``support`` is the cohort's exported support document. The band is read off the
+    retained row counts, so it is a property of the export rather than a number kept
+    in this module; a reference inside it may still score normally, and one outside it
+    has never been observed to degenerate.
+    """
+
+    if support.get('schema') != UPSTREAM_SUPPORT_SCHEMA:
+        raise ValueError(f'support schema {support.get("schema")!r} is not '
+                         f'{UPSTREAM_SUPPORT_SCHEMA!r}')
+    low, high = band
+    references = support.get('wildtypes')
+    if not isinstance(references, dict) or not references:
+        raise ValueError('the support document lists no references')
+    inside = {}
+    for name, entry in sorted(references.items()):
+        rows = entry.get('rows')
+        if not isinstance(rows, int):
+            raise ValueError(f'{name}: the exported support records no retained row count')
+        if low <= rows <= high:
+            inside[name] = rows
+    return {'cohort': support.get('cohort'), 'band': [low, high], 'references': len(references),
+            'in_band': len(inside), 'rows_by_reference': inside,
+            'rule': (f'every GEMME degeneracy observed so far had at most {high} retained '
+                     f'alignment rows and none at {high + 1} or more; {low} rows is the floor '
+                     'below which no alignment is retained at all'),
+            'reading': ('a risk band, not a prediction: a reference inside it may score '
+                        'normally, and a degenerate run is recorded as a refusal when it '
+                        'happens rather than anticipated here'),
+            'alignment_reuse_note': ('a reference whose sequence is byte-identical to a fitted '
+                                     'R1 wild type takes R1\'s frozen alignment, which does not '
+                                     'exempt it: GEMME is still re-run for this cohort\'s own '
+                                     'mutation list and can still come back degenerate')}
 
 
 def read_scores(path, role: str) -> dict[str, Any]:
@@ -759,7 +910,7 @@ def _matrix(lane_name: str, stratum_name: str, cells: Mapping[tuple[str, str], M
         raise ValueError(f'{lane_name}/{stratum_name}: the family is {len(expected)} cells of '
                          f'(control set, arm); {len(absent)} are absent and {len(unknown)} are '
                          f'undeclared (first absent {absent[:1]}, first undeclared {unknown[:1]})')
-    columns, labels = [], []
+    columns, labels, control = [], [], {}
     for rung, arm in expected:
         cell = cells[rung, arm]
         designs = {name: cell[name] for name in ARM_NAMES if name in cell}
@@ -780,9 +931,77 @@ def _matrix(lane_name: str, stratum_name: str, cells: Mapping[tuple[str, str], M
                 raise ValueError(f'{lane_name}/{stratum_name}/{rung}/{arm}/{name}: a cell carries '
                                  f'one finite value for each of the {len(groups)} groups')
             errors[name] = sign * values
+        # The control arm's own performance, in the stratum's native direction and on
+        # these same groups: the denominator the forward bound is read against.
+        control[rung, arm] = float(np.mean(np.asarray(designs[CONTROL_ARM], dtype=float)))
         columns.append(bidirectional.directional_reductions(errors, bidirectional.PRIMARY_DESIGNS))
         labels.extend((rung, arm, direction) for direction in bidirectional.DIRECTIONS)
-    return np.concatenate(columns, axis=1), labels
+    return np.concatenate(columns, axis=1), labels, control
+
+
+def forward_bound(lane_name: str, stratum_name: str, labels, interval, control) -> dict[str, Any]:
+    """The forward increment's simultaneous upper limit, in native units and as a fraction.
+
+    This is the quantity the manuscript's overlap claim rests on, so it is reported as
+    a first-class result rather than left to be read off an interval. For every forward
+    column it gives the simultaneous upper limit in the stratum's own units and that
+    limit as a fraction of the control set's own performance on the identical support:
+    *the model adds at most this much beyond the explicit statistics, which is at most
+    this fraction of what those statistics already achieve*. The fraction is the
+    interpretable form because it needs no threshold and no unit.
+
+    The denominator is the control arm's own group-equal mean in the stratum's native
+    direction -- an error level where the stratum reads an error, a rank agreement where
+    it reads one. For an error stratum that is the error the statistics *leave*, not
+    their reduction against any null, because this module is handed no null arm; where
+    the denominator is not a positive performance the fraction is withheld with its
+    reason rather than rendered as a number.
+    """
+
+    reading = stratum(lane_name, stratum_name)
+    native = np.asarray(interval, dtype=float)
+    if native.shape != (len(labels), 2):
+        raise ValueError('a forward bound needs one interval per declared column')
+    sense = ('adding the model removes at most this fraction of the error the explicit '
+             'statistics leave on these groups' if reading.to_loss > 0 else
+             'adding the model adds at most this fraction of the rank agreement the explicit '
+             'statistics already achieve on these groups')
+    columns, summary = [], {}
+    for position, (rung, arm, direction) in enumerate(labels):
+        if direction != 'model_given_controls':
+            continue
+        limit = float(native[position, 1])
+        denominator = control[rung, arm]
+        fraction, withheld = None, None
+        if denominator > 0:
+            fraction = limit / denominator
+        else:
+            withheld = (f'the control arm\'s own performance on these groups is {denominator:g}, '
+                        'which is not a positive performance to take a fraction of')
+        columns.append({'control_set': rung, 'arm': arm, 'upper_limit': limit,
+                        'units': reading.units, 'control_performance': denominator,
+                        'fraction_of_control_performance': fraction,
+                        'fraction_withheld_because': withheld})
+        held = summary.setdefault(rung, {'largest_upper_limit': limit,
+                                         'largest_fraction_of_control_performance': fraction,
+                                         'arms': 0, 'arms_without_a_fraction': 0})
+        held['arms'] += 1
+        held['largest_upper_limit'] = max(held['largest_upper_limit'], limit)
+        if fraction is None:
+            held['arms_without_a_fraction'] += 1
+        elif held['largest_fraction_of_control_performance'] is None:
+            held['largest_fraction_of_control_performance'] = fraction
+        else:
+            held['largest_fraction_of_control_performance'] = max(
+                held['largest_fraction_of_control_performance'], fraction)
+    return {'direction': 'model_given_controls', 'reading': FORWARD_BOUND_READING,
+            'denominator': ('the control arm\'s own group-equal mean in the stratum\'s native '
+                            'direction, on the identical complete-case support'),
+            'fraction_reading': sense,
+            'limitation': ('an upper limit is not an equivalence statement and no margin is '
+                           'declared; for an error stratum the denominator is the error the '
+                           'controls leave, not their reduction against a null arm'),
+            'columns': columns, 'per_control_set': summary}
 
 
 def panel(lane_name: str, stratum_name: str, channel: str,
@@ -804,8 +1023,8 @@ def panel(lane_name: str, stratum_name: str, channel: str,
     groups = [value.item() if isinstance(value, np.generic) else value for value in groups]
     if len(set(map(str, groups))) != len(groups):
         raise ValueError(f'{lane_name}/{stratum_name}: the resampling units repeat a label')
-    matrix, labels = _matrix(lane_name, stratum_name, cells, rungs, groups=groups,
-                             support_sha256=support_sha256)
+    matrix, labels, control = _matrix(lane_name, stratum_name, cells, rungs, groups=groups,
+                                      support_sha256=support_sha256)
     if matrix.shape != (len(groups), family['size']):
         raise ValueError(f'{lane_name}/{stratum_name}: the realised family is '
                          f'{matrix.shape[1]} columns over {matrix.shape[0]} groups and the '
@@ -815,6 +1034,7 @@ def panel(lane_name: str, stratum_name: str, channel: str,
         'role': role, 'estimand': declared.estimand,
         'units': stratum(lane_name, stratum_name).units,
         'resampling_unit': declared.unit, 'groups': len(groups),
+        'stratum_fragile': stratum(lane_name, stratum_name).fragile,
         'support': 'complete_case' if role == 'primary' else 'full',
         'support_sha256': support_sha256, 'family': family,
         'columns': [{'control_set': rung, 'arm': arm, 'direction': direction}
@@ -834,6 +1054,8 @@ def panel(lane_name: str, stratum_name: str, channel: str,
     if floor['degenerate']:
         record.update(status=UNRESOLVED, native=None, standardized_maxT_sensitivity=None,
                       states=[UNRESOLVED] * len(labels),
+                      forward_bound={'status': UNRESOLVED, 'reading': FORWARD_BOUND_READING,
+                                     'reason': floor['degenerate_reason']},
                       reason=floor['degenerate_reason'])
     else:
         native = bidirectional.paired_bands(matrix, draws=draws, seed=seed)
@@ -846,7 +1068,9 @@ def panel(lane_name: str, stratum_name: str, channel: str,
                         interval=native['interval'],
                         conditional_on_fitted_predictions=True),
             standardized_maxT_sensitivity=_sensitivity(matrix, draws=draws, seed=seed),
-            states=[VERDICT_STATE[value] for value in verdicts])
+            states=[VERDICT_STATE[value] for value in verdicts],
+            forward_bound=forward_bound(lane_name, stratum_name, labels, native['interval'],
+                                        control))
     unidentifiable = []
     for rung in declared.unidentifiable_rungs:
         blocked = sorted(set(RUNGS[rung]) & set(declared.non_identifiable))
@@ -918,12 +1142,24 @@ def contract(lane_name: str) -> dict[str, Any]:
                                   'exactly as the R1 ladder enters the same two statistics'),
         'profile_blocks': list(declared.profile_blocks),
         'tokenisation_block': declared.tokenisation_block,
+        'arm_conditional_control': (
+            None if declared.tokenisation_block is None else
+            'the nuisance control is arm-conditional by design, as the lane\'s archive made it: '
+            f'an arm that qualified {declared.tokenisation_block!r} carries its own tokenisation '
+            'descriptors in its control set, because that nuisance has to absorb that arm\'s own '
+            'segmentation artefacts. A control held common across arms would credit segmentation '
+            'to the model, so the forward increment is read as "the model beyond this arm\'s own '
+            'controls" and the qualification is never redone here'),
         'hierarchy': {name: list(roles) for name, roles in RUNGS.items()},
         'identifiable_control_sets': list(declared.rungs),
+        'shared_control_sets': list(SHARED_RUNGS),
+        'variant_effect_bridge': dict(VARIANT_EFFECT_BRIDGE,
+                                      roles={role: list(keys) for role, keys
+                                             in VARIANT_EFFECT_ROLES.items()}),
         'archived_control_set': ARCHIVED_RUNG,
         'archived_control_set_note': ('this rung is the lane\'s archived primary control set, '
-                                      'column for column, so its archived control and joint fits '
-                                      'are reusable under the lane\'s own reproduction pilot'),
+                                      'column for column'),
+        'archived_reuse_rule': ARCHIVED_REUSE_RULE,
         'arms': {name: list(columns) for name, columns in
                  (('control', [CONTROL_ARM]), ('model', [MODEL_ARM]), ('joint', [JOINT_ARM]))},
         'directions': {direction: f'loss({reduced}) - loss({joint})'
@@ -934,8 +1170,18 @@ def contract(lane_name: str) -> dict[str, Any]:
                               'model inferiority'),
         'channels': {name: dict(CHANNELS[name]) for name in declared.channels},
         'strata': {name: {'units': value.units, 'to_loss': value.to_loss,
-                          'support': value.support}
+                          'support': value.support, 'fragile': value.fragile}
                    for name, value in declared.strata.items()},
+        'not_covered': {name: reason for name, reason in declared.not_covered},
+        'forward_bound': {'quantity': ('the forward increment\'s simultaneous upper limit, in '
+                                       'native units and as a fraction of the control set\'s own '
+                                       'performance on the identical support'),
+                          'reading': FORWARD_BOUND_READING,
+                          'never': 'the forward direction never reports a state for smallness'},
+        'gemme_risk_band': {'band': list(GEMME_RISK_BAND),
+                            'counted_from': str(SUPPORT_FILE),
+                            'rule': ('read off the cohort\'s exported retained row counts by '
+                                     'gemme_risk_band(); never a count kept in this module')},
         'families': {channel: declared_family(lane_name, channel) for channel in declared.channels},
         'sensitivity_families': {channel: declared_family(lane_name, channel, role='sensitivity')
                                  for channel in declared.channels},
@@ -1004,6 +1250,18 @@ def _check_declarations() -> None:
     if letters & set(NEW_BLOCKS.values()):
         raise RuntimeError('an added block key collides with a variant-effect ladder letter, so '
                            'one vocabulary could not cover both')
+    if SHARED_RUNGS != tuple(name for name, roles in RUNGS.items() if 'profile' in roles):
+        raise RuntimeError('the rungs read across lanes are the ones that carry profile')
+    bridge = VARIANT_EFFECT_BRIDGE
+    if set(bridge['profile_family']['rungs']) != set(SHARED_RUNGS):
+        raise RuntimeError('the variant-effect profile family must supply every shared rung')
+    if not set(bridge['c0_family']['rungs']) <= set(SHARED_RUNGS):
+        raise RuntimeError('the variant-effect C0 family cannot supply an unshared rung')
+    if set(bridge['absent_rungs']) | set(bridge['c0_family']['rungs']) != set(RUNGS):
+        raise RuntimeError('the variant-effect bridge must account for every rung of the '
+                           'hierarchy, as supplied or as absent')
+    if bridge['rerun_at_this_hierarchy'] is not False:
+        raise RuntimeError('the variant-effect ladder is not re-run at this hierarchy')
     for name, declared in LANES.items():
         if declared.name != name:
             raise RuntimeError(f'lane {name!r} is declared under another name')
@@ -1022,6 +1280,11 @@ def _check_declarations() -> None:
         for value in declared.strata.values():
             if value.to_loss not in (1., -1.):
                 raise RuntimeError(f'{name}: a stratum reads as a loss (+1) or a score (-1)')
+        for entry in declared.not_covered:
+            if len(entry) != 2 or not all(isinstance(part, str) and part for part in entry):
+                raise RuntimeError(f'{name}: an uncovered reading is a (name, reason) pair')
+            if entry[0] in declared.strata:
+                raise RuntimeError(f'{name}: {entry[0]!r} is declared both covered and not')
         if set(declared.channels) - set(CHANNELS):
             raise RuntimeError(f'{name}: an undeclared model channel')
         if declared.channels[0] != 'likelihood':

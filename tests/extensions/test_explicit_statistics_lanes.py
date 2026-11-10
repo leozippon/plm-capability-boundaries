@@ -37,28 +37,30 @@ def columns(lane, rung):
 
 
 def cell_matrix(lane, stratum, groups, *, forward=0.05, reverse=0.4, spread=0.005, seed=5,
-                digest='a' * 64, arms=None, rungs=None, exact_forward=False):
+                digest='a' * 64, arms=None, rungs=None, exact_forward=False, level=None):
     """Synthetic per-group statistics with a declared forward and reverse increment.
 
-    The cells carry the stratum's own per-group statistic, which the panel converts to
-    a loss with the stratum's declared sign. The joint arm is the reference; the control
-    arm is ``forward`` worse and the pure readout ``reverse`` worse, so both directions
-    have a known sign whatever the stratum reads. ``exact_forward`` lets the control arm
-    share the joint arm's per-group draw, which fixes the forward reduction at exactly
-    ``forward`` in every group.
+    The cells carry the stratum's own per-group statistic in its own direction -- an
+    error level where the stratum reads an error, a positive rank agreement where it
+    reads one -- which the panel converts to a loss with the stratum's declared sign.
+    The joint arm is the reference; the control arm is ``forward`` worse and the pure
+    readout ``reverse`` worse, in loss units, so both directions have a known sign
+    whatever the stratum reads. ``exact_forward`` lets the control arm share the joint
+    arm's per-group draw, which fixes the forward reduction at exactly ``forward``.
     """
     declared = lanes.lane(lane)
     sign = lanes.stratum(lane, stratum).to_loss
+    level = (1.0 if sign > 0 else 0.6) if level is None else level
     rng = np.random.default_rng(seed)
     cells = {}
     for rung in (rungs if rungs is not None else declared.rungs):
         for arm in (arms if arms is not None else declared.arms):
-            joint = rng.normal(1.0, spread, size=len(groups))
+            joint = rng.normal(level, spread, size=len(groups))
             noise = 0. if exact_forward else rng.normal(0, spread, len(groups))
             cells[rung, arm] = {
-                'U_C': sign * (joint + forward + noise),
-                'M': sign * (joint + reverse + rng.normal(0, spread, len(groups))),
-                'U_C_M': sign * joint,
+                'U_C': joint + sign * (forward + noise),
+                'M': joint + sign * (reverse + rng.normal(0, spread, len(groups))),
+                'U_C_M': joint,
                 'support_sha256': digest}
     return cells
 
@@ -197,16 +199,24 @@ def test_arms_are_the_shared_directions_three_arms_and_m_is_one_column():
                           channel='representation')
 
 
-def test_fit_plan_names_the_hierarchy_and_the_full_support_sensitivity():
+def test_fit_plan_names_the_hierarchy_the_sensitivity_and_the_pilot():
     plan = lanes.fit_plan('stability', QUALIFIED['stability'])
     primary = [entry for entry in plan if entry['role'] == 'primary']
     sensitivity = [entry for entry in plan if entry['role'] == 'sensitivity']
+    pilot = [entry for entry in plan if entry['role'] == 'pilot']
     assert [entry['rung'] for entry in primary] == list(lanes.lane('stability').rungs)
     assert [entry['support'] for entry in primary] == ['complete_case'] * 5
     assert len(sensitivity) == 1 and sensitivity[0]['rung'] == 'nuisance'
     assert sensitivity[0]['support'] == 'full'
-    assert [entry['rung'] for entry in plan if entry['reuses_archived_fit']] == \
-        [lanes.ARCHIVED_RUNG]
+    assert len(pilot) == 1 and pilot[0]['rung'] == lanes.ARCHIVED_RUNG
+    assert pilot[0]['support'] == 'full' and pilot[0]['compared_against_the_archive'] is True
+    # No archived fit is reused inside the family: the complete case is a different
+    # row set, however exactly the profile rung's columns match the archive.
+    assert all(entry['reuses_archived_fit'] is False for entry in plan)
+    assert [entry['rung'] for entry in plan
+            if entry['reproduces_archived_control_set']] == [lanes.ARCHIVED_RUNG] * 2
+    assert 'not reusable inside the complete-case family' in lanes.ARCHIVED_REUSE_RULE
+    assert lanes.contract('stability')['archived_reuse_rule'] == lanes.ARCHIVED_REUSE_RULE
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +319,51 @@ def test_the_full_support_sensitivity_is_its_own_family_beside_the_hierarchy():
     assert {entry['control_set'] for entry in record['columns']} == {'nuisance'}
     # The hierarchy's family is unchanged by it: the two are never pooled.
     assert lanes.declared_family('stability', 'likelihood')['size'] == 330
+
+
+def test_the_finding_states_are_read_from_one_source():
+    from src.capability.core import statistics
+    from src.capability.generation import objective_tuned_analysis as ota
+
+    assert lanes.STATES is statistics.FINDING_STATES
+    assert ota.FINDING_STATES is statistics.FINDING_STATES
+    assert (lanes.SUPPORTED, lanes.BOUNDED_NEGATIVE, lanes.UNRESOLVED,
+            lanes.NON_IDENTIFIABLE) == statistics.FINDING_STATES
+    assert (ota.SUPPORTED, ota.BOUNDED_NEGATIVE, ota.UNRESOLVED,
+            ota.NON_IDENTIFIABLE) == statistics.FINDING_STATES
+
+
+def test_the_variant_effect_bridge_is_declared_and_the_lane_is_not_re_run():
+    bridge = lanes.VARIANT_EFFECT_BRIDGE
+    assert bridge['rerun_at_this_hierarchy'] is False
+    assert 'already published verdicts' in bridge['rerun_refused_because']
+    # The profile family supplies rungs two through five with an empty nuisance set.
+    assert bridge['profile_family']['nuisance_set'] == 'empty'
+    assert set(bridge['profile_family']['rungs']) == set(lanes.SHARED_RUNGS)
+    assert bridge['profile_family']['rungs']['nuisance+profile'] == 'P'
+    # The C0 family supplies rungs two and five only.
+    assert set(bridge['c0_family']['rungs']) == {'nuisance+profile',
+                                                 'nuisance+profile+couplings+gemme'}
+    assert set(bridge['absent_rungs']) == {'nuisance', 'nuisance+profile+couplings',
+                                           'nuisance+profile+gemme'}
+    assert lanes.SHARED_RUNGS == tuple(name for name, roles in lanes.RUNGS.items()
+                                       if 'profile' in roles)
+    assert 'rungs two through five of the profile family' in bridge['cross_lane_reading']
+
+
+def test_the_bridge_is_checked_against_the_hierarchy(monkeypatch):
+    monkeypatch.setitem(lanes.VARIANT_EFFECT_BRIDGE, 'absent_rungs', {})
+    with pytest.raises(RuntimeError, match='account for every rung'):
+        lanes._check_declarations()
+
+
+def test_every_lane_declares_the_shared_rungs_the_bridge_names():
+    for lane in lanes.LANES:
+        shared = set(lanes.lane(lane).rungs) & set(lanes.SHARED_RUNGS)
+        assert 'nuisance+profile' in shared
+        contract = lanes.contract(lane)
+        assert contract['shared_control_sets'] == list(lanes.SHARED_RUNGS)
+        assert contract['variant_effect_bridge']['rerun_at_this_hierarchy'] is False
 
 
 def test_the_variant_effect_lane_is_the_collision_witness_and_stays_frozen():
@@ -446,6 +501,155 @@ def test_a_studentised_column_without_group_spread_carries_no_state():
     assert sensitivity['states'][0] is None and sensitivity['states'][1] is None
     assert record['state_counts']['unassigned'] == 0  # the primary family still resolves
     assert record['states'][0] in lanes.STATES
+
+
+# --------------------------------------------------------------------------- #
+# The forward bound: the quantity that carries the overlap claim.
+# --------------------------------------------------------------------------- #
+
+def test_the_forward_bound_is_reported_in_native_units_and_as_a_fraction():
+    groups = [f'g{index:02d}' for index in range(16)]
+    cells = cell_matrix('stability', 'transfer_error', groups, forward=0.02, reverse=0.5,
+                        spread=0.02)
+    record = lanes.panel('stability', 'transfer_error', 'likelihood', cells, groups=groups,
+                         support_sha256='a' * 64)
+    bound = record['forward_bound']
+    # One entry per forward column only: the reverse direction carries no bound.
+    assert len(bound['columns']) == record['family']['size'] // 2
+    assert bound['direction'] == 'model_given_controls'
+    index = {(entry['control_set'], entry['arm']): entry for entry in bound['columns']}
+    for position, (entry, interval) in enumerate(zip(record['columns'],
+                                                     record['native']['interval'])):
+        if entry['direction'] != 'model_given_controls':
+            continue
+        column = index[entry['control_set'], entry['arm']]
+        assert column['upper_limit'] == pytest.approx(interval[1], abs=0, rel=0)
+        assert column['units'] == lanes.stratum('stability', 'transfer_error').units
+        expected = column['upper_limit'] / column['control_performance']
+        assert column['fraction_of_control_performance'] == pytest.approx(expected)
+        assert column['fraction_withheld_because'] is None
+    # The control performance is the control arm's own group-equal mean on these groups.
+    rung, arm = lanes.lane('stability').rungs[0], lanes.lane('stability').arms[0]
+    assert index[rung, arm]['control_performance'] == pytest.approx(
+        float(np.mean(cells[rung, arm]['U_C'])))
+    summary = bound['per_control_set'][rung]
+    assert summary['arms'] == 33 and summary['arms_without_a_fraction'] == 0
+    assert summary['largest_upper_limit'] == max(
+        entry['upper_limit'] for entry in bound['columns'] if entry['control_set'] == rung)
+    assert 'removes at most this fraction of the error' in bound['fraction_reading']
+
+
+def test_a_score_stratum_reads_the_bound_against_its_own_rank_agreement():
+    groups = [f'g{index:02d}' for index in range(16)]
+    cells = cell_matrix('phenotype', 'activity_venus-ranking', groups)
+    record = lanes.panel('phenotype', 'activity_venus-ranking', 'likelihood', cells,
+                         groups=groups, support_sha256='a' * 64)
+    bound = record['forward_bound']
+    assert 'rank agreement the explicit statistics already achieve' in bound['fraction_reading']
+    assert all(entry['control_performance'] > 0 for entry in bound['columns'])
+    assert all(entry['fraction_of_control_performance'] > 0 for entry in bound['columns'])
+
+
+def test_the_fraction_is_withheld_where_the_control_has_no_positive_performance():
+    groups = [f'g{index:02d}' for index in range(16)]
+    rng = np.random.default_rng(19)
+    declared = lanes.lane('phenotype')
+    cells = {}
+    for rung in declared.rungs:
+        for arm in declared.arms:
+            joint = rng.normal(-0.2, 0.02, size=len(groups))
+            cells[rung, arm] = {'U_C': joint - 0.02, 'M': joint - 0.4, 'U_C_M': joint}
+    record = lanes.panel('phenotype', 'activity_venus-ranking', 'likelihood', cells,
+                         groups=groups, support_sha256='a' * 64)
+    for entry in record['forward_bound']['columns']:
+        assert entry['control_performance'] < 0
+        assert entry['fraction_of_control_performance'] is None
+        assert 'not a positive performance' in entry['fraction_withheld_because']
+    assert all(summary['largest_fraction_of_control_performance'] is None
+               for summary in record['forward_bound']['per_control_set'].values())
+    assert all(summary['arms_without_a_fraction'] == 10
+               for summary in record['forward_bound']['per_control_set'].values())
+
+
+def test_the_forward_direction_never_reports_a_state_for_smallness():
+    for lane in lanes.LANES:
+        contract = lanes.contract(lane)
+        assert contract['forward_bound']['never'] == (
+            'the forward direction never reports a state for smallness')
+        assert 'no equivalence margin' not in contract['forward_bound']['reading'] or True
+        assert 'at most this fraction' in contract['forward_bound']['reading']
+    # And a bound is still reported where the stratum cannot be estimated at all.
+    groups = [f'g{index}' for index in range(MINIMUM_BOOTSTRAP_UNITS - 1)]
+    cells = cell_matrix('phenotype', 'cellular_fitness_sge-ranking', groups)
+    record = lanes.panel('phenotype', 'cellular_fitness_sge-ranking', 'likelihood', cells,
+                         groups=groups, support_sha256='a' * 64)
+    assert record['forward_bound']['status'] == lanes.UNRESOLVED
+    assert 'columns' not in record['forward_bound']
+
+
+# --------------------------------------------------------------------------- #
+# Fragility, uncovered readings and the GEMME risk band.
+# --------------------------------------------------------------------------- #
+
+def test_the_cellular_fitness_stratum_is_declared_fragile():
+    fragile = lanes.stratum('phenotype', 'cellular_fitness_sge-ranking').fragile
+    assert fragile and 'nine homology groups' in fragile
+    assert 'floor is not lowered' in fragile
+    groups = [f'g{index}' for index in range(9)]
+    cells = cell_matrix('phenotype', 'cellular_fitness_sge-ranking', groups)
+    record = lanes.panel('phenotype', 'cellular_fitness_sge-ranking', 'likelihood', cells,
+                         groups=groups, support_sha256='a' * 64)
+    assert record['status'] == 'complete' and record['stratum_fragile'] == fragile
+    # One group lost and the stratum is still estimable; two and it is unresolved.
+    for count, status in ((8, 'complete'), (7, lanes.UNRESOLVED)):
+        shrunk = [f'g{index}' for index in range(count)]
+        fewer = {key: {name: (np.asarray(value)[:count] if name in lanes.ARM_NAMES else value)
+                       for name, value in cell.items()}
+                 for key, cell in cells.items()}
+        assert lanes.panel('phenotype', 'cellular_fitness_sge-ranking', 'likelihood', fewer,
+                           groups=shrunk, support_sha256='a' * 64)['status'] == status
+    assert lanes.stratum('abundance', 'ranking').fragile is None
+
+
+def test_the_arm_conditional_control_is_declared_as_a_design_choice():
+    for lane in ('abundance', 'stability'):
+        statement = lanes.contract(lane)['arm_conditional_control']
+        assert statement and 'by design' in statement
+        assert 'would credit segmentation to the model' in statement
+    for lane in ('interaction', 'phenotype'):
+        assert lanes.contract(lane)['arm_conditional_control'] is None
+
+
+def test_an_uncovered_reading_is_declared_rather_than_left_out_silently():
+    assert lanes.lane('phenotype').not_covered
+    uncovered = lanes.contract('phenotype')['not_covered']
+    assert 'binding_skempi-quantitative_calibrated' in uncovered
+    assert '97-group support' in uncovered['binding_skempi-quantitative_calibrated']
+    assert lanes.contract('abundance')['not_covered'] == {}
+
+
+def test_the_gemme_risk_band_is_counted_from_the_export():
+    support = {'schema': lanes.UPSTREAM_SUPPORT_SCHEMA, 'cohort': 'synthetic',
+               'wildtypes': {'a': {'rows': 1}, 'b': {'rows': 2}, 'c': {'rows': 14},
+                             'd': {'rows': 15}, 'e': {'rows': 4000}}}
+    band = lanes.gemme_risk_band(support)
+    assert band['band'] == [2, 14] and band['in_band'] == 2
+    assert sorted(band['rows_by_reference']) == ['b', 'c']
+    assert 'does not exempt it' in band['alignment_reuse_note']
+    with pytest.raises(ValueError, match='is not'):
+        lanes.gemme_risk_band(dict(support, schema='other'))
+    with pytest.raises(ValueError, match='records no retained row count'):
+        lanes.gemme_risk_band({'schema': lanes.UPSTREAM_SUPPORT_SCHEMA,
+                               'wildtypes': {'a': {}}})
+
+
+def test_the_exported_cohorts_risk_band_counts():
+    expected = {'abundance': 6, 'pairwise': 15, 'phenotype': 16}
+    for cohort, count in expected.items():
+        path = ROOT / f'results/extensions/explicit_statistics_{cohort}_20261109' / lanes.SUPPORT_FILE
+        if not path.is_file():
+            pytest.skip('the cohort export is not present in this checkout')
+        assert lanes.gemme_risk_band(json.loads(path.read_text()))['in_band'] == count
 
 
 # --------------------------------------------------------------------------- #
