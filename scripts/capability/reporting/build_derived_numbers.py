@@ -4705,6 +4705,37 @@ LADDER_VERDICTS = {"positive": "supported", "unresolved": "unresolved",
 #: but not the level; 95 is what the panel declares beside it, in its own
 #: ``auxiliary_pointwise_95`` block.
 CONDITIONAL_INTERVAL_KIND = "95% simultaneous standardized-maxT"
+#: Why the two residue-conditional rows carry a different band from the eight
+#: ladder rows, and which way its error points. The panel was declared on
+#: 2026-11-07 under a studentised maximum-deviation statistic and records no
+#: native band at all, so producing one would re-read a scored result under a
+#: statistic its method string does not name --- which the fifth pre-registration
+#: amendment forbids. The band is therefore copied verbatim and the difference is
+#: stated on the row instead of being flattened into a uniform label.
+#:
+#: The coverage figures are measured, and the cell that measures them was
+#: designed on this panel's own shape --- 64 groups by 66 columns --- so the
+#: number is size-matched rather than extrapolated from a remark about small
+#: families. They are quoted here rather than read from that artifact at build
+#: time on purpose: it lives under ``docs/``, which is kept out of the
+#: distributed tree by the same rule that excludes ``results/`` and
+#: ``manuscript/``, and a builder that imported it would stop working for anyone
+#: holding only the distribution. The path is named so the figure can be checked
+#: against the artifact's own ``SHA256SUMS``.
+CONDITIONAL_COVERAGE = (
+    "This is a different instrument from the native-scale band the eight statistical-ladder "
+    "rows carry; the ten rows are not one homogeneous family. Coverage at this panel's own "
+    "shape, 64 groups by 66 columns: studentised 0.9089 (Monte Carlo SE 0.0029) against native "
+    "0.9492 (0.0022) at a nominal 0.95, a gap of 0.0403 with paired SE 0.0032 -- "
+    "docs/audits/simultaneous-band-20261110/coverage/coverage-output.json, cell "
+    "main-n64-k66-ratio30. That is joint coverage of the true mean vector under the simulated "
+    "nulls, not this row's error rate, and it does not license restating a finding state as a "
+    "coverage probability. An under-covering band declares a nonzero increment too readily, and "
+    "for a residue conditional a declared increment is the reading that the model carries "
+    "information beyond the explicit statistics -- the reading against this project's claim -- "
+    "so this row is permissive in the direction that works against the claim it is quoted in "
+    "support of."
+)
 #: The two residue-conditional contrasts the manuscript quotes, by the arm name
 #: the artifact records, and what each is against.
 CONDITIONAL_ARMS = (
@@ -4739,6 +4770,14 @@ def family_statistical_ladder(ledger: Ledger) -> None:
     residue-conditional family declares sixty-six hypotheses and the other
     sixty-four are left out, because a row this table does not need can only
     dilute the attribution of a number the manuscript does quote.
+
+    The ten rows are not one family. The eight ladder increments carry the
+    native-scale band their declaration qualifies on; the two residue
+    conditionals carry the studentised maximum-deviation band theirs declares,
+    because re-reading a scored result under a statistic its method string does
+    not name is what the fifth pre-registration amendment forbids. Each row
+    therefore states its own instrument, and the two conditionals state what
+    their band's coverage shortfall does to them and in which direction.
     """
 
     _ladder_increments(ledger)
@@ -4778,8 +4817,11 @@ def _ladder_increments(ledger: Ledger) -> None:
                 interval_kind=interval_kind, resampling_unit=bootstrap["unit"],
                 resampling_draws=bootstrap["draws"], seed_set=(bootstrap["seed"],),
                 level="control", verdict=LADDER_VERDICTS[native["verdict"]],
-                weighting_convention="paired on the same held-out families, under the ladder's "
-                                     "own declared aggregation",
+                # The artifact's own aggregation and declaration, verbatim, so the
+                # row states the instrument that produced its band rather than
+                # leaving a reader to assume it is the one the next row used.
+                weighting_convention=f"{payload['aggregation']}. "
+                                     f"{payload['declaration']['statement']}",
                 source_path=LADDER_STRENGTH, source_sha256=digest,
                 source_pointer=("metrics", metric, "pairs", f"[{index}]", "point"),
             ))
@@ -4814,8 +4856,9 @@ def _residue_conditionals(ledger: Ledger) -> None:
             interval=(float(low), float(high)), interval_kind=CONDITIONAL_INTERVAL_KIND,
             resampling_unit="biological family", resampling_draws=primary["draws"],
             seed_set=(primary["seed"],), level="likelihood",
-            weighting_convention="shared family multinomial bootstrap over the panel's own "
-                                 "families, at the declared critical value",
+            weighting_convention=f"{primary['method']}, at the declared critical value "
+                                 f"{primary['critical_value']:.4f} over {primary['groups']} "
+                                 f"families. {CONDITIONAL_COVERAGE}",
             source_path=RESIDUE_CONDITIONALS, source_sha256=digest,
             source_pointer=("partitions", "evaluation", "inference", "primary", "hypotheses",
                             f"[{index}]", "point"),
