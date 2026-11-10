@@ -1,0 +1,140 @@
+{
+ "schema": "explicit_statistics_cohorts_v1",
+ "purpose": "Wild-type cohorts for which the explicit evolutionary statistics (plmc Potts, official GEMME) are produced. One descriptor per cohort; the R1 mutation-effect ladder is one instance of the same descriptor rather than a hard-wired default.",
+ "protocol": {
+  "max_sequences": 5000,
+  "max_sequences_rule": "R1's own depth cap, applied by R1's own rule: best HSP per subject, at least 80% query coverage, ordered by descending bit score, cut at the cap. The cap is a descriptor field so that every cohort states the depth it was built at; it is never read from a retained profile store.",
+  "profile_store_role": "cross-check only. The alignment is rebuilt from the raw hit table, so a store built at a different cap changes nothing in the produced features; it is compared against the rebuild only where neither cap binds.",
+  "search_depth_limitation": "A cohort inherits the retrieval depth of the DIAMOND search that produced its hit table. R1 searched at --max-target-seqs 5000, the later cohorts at 10000. For a wild type whose coverage-passing subject count exceeds 5000 the two are not the same candidate pool, and that difference cannot be removed without re-running the search. It is declared per cohort and counted per wild type.",
+  "refusal_rule": "A wild type with fewer than two retained homolog rows carries no Potts model and no GEMME run. It is enumerated as a refusal with its reason in the export and in the contract, never imputed and never silently dropped."
+ },
+ "cohorts": {
+  "r1": {
+   "title": "R1 mutation-effect ladder: the frozen 25,728-sample ProteinGym-derived table",
+   "reader": "r1_frozen_samples",
+   "out": "results/extensions/statistical_ladder_20261106",
+   "log_dir": "logs/operations/statistical-ladder-20261106",
+   "fit_subdir": "potts-v2",
+   "max_sequences": 5000,
+   "search_max_target_seqs": 5000,
+   "wildtype_prefix": "q",
+   "variant_source_label": "samples",
+   "sample_id": "frozen_cohort_sha",
+   "inputs": {
+    "samples": "results/extensions/information_progression_20261006/full/samples.json",
+    "corpus_hits": "results/R5/retrieval_bound_20260807/corpus_hits.tsv",
+    "wildtypes_fasta": "results/R5/retrieval_bound_20260807/wildtypes.faa",
+    "wildtypes": "results/R5/retrieval_bound_20260807/wildtypes.json",
+    "profiles_npz": "results/R5/retrieval_bound_20260807/profiles.npz",
+    "profiles": "results/R5/retrieval_bound_20260807/profiles.json",
+    "lookup": "results/R5/retrieval_bound_20260807/lookup.json",
+    "cohort": "results/R5/context_mutation_rescue_20260923/cohort.json",
+    "admission": "results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/local_context_measurement.json"
+   },
+   "hits": "results/R5/retrieval_bound_20260807/corpus_hits.tsv",
+   "profile_store": {
+    "reader": "retrieval_bound",
+    "frequencies": "results/R5/retrieval_bound_20260807/profiles.npz",
+    "records": "results/R5/retrieval_bound_20260807/profiles.json",
+    "max_sequences": 5000
+   },
+   "profile_delta": "retained_cohort_profile_scores",
+   "expect": {
+    "samples": 25728,
+    "single_substitution": 20568,
+    "multiple_substitution": 5160,
+    "assays": 201,
+    "wildtypes": 174,
+    "refusals": 0
+   }
+  },
+  "abundance": {
+   "title": "Domainome abundance cohort: 428 domains over 427 distinct reference sequences",
+   "reader": "domainome_abundance",
+   "out": "results/extensions/explicit_statistics_abundance_20261109",
+   "log_dir": "logs/operations/explicit-statistics-cohorts-20261109",
+   "fit_subdir": "potts",
+   "max_sequences": 5000,
+   "search_max_target_seqs": 10000,
+   "variant_source_label": "cohort",
+   "inputs": {
+    "cohort": "results/R1/external_confirmation_20260924/cohort.json",
+    "hits": "results/shared/nested_gate_profiles_20260924/search/hits.tsv",
+    "search_manifest": "results/shared/nested_gate_profiles_20260924/search/search_manifest.json",
+    "query_fasta": "results/shared/nested_gate_profiles_20260924/search/query.faa",
+    "profile_features": "results/R1/external_confirmation_20260924/profile_features.npz"
+   },
+   "hits": "results/shared/nested_gate_profiles_20260924/search/hits.tsv",
+   "profile_store": {
+    "reader": "profile_features",
+    "frequencies": "results/R1/external_confirmation_20260924/profile_features.npz",
+    "max_sequences": 20000
+   },
+   "expect": {"references": 427, "assays": 428, "samples": 109568, "refusals": 2}
+  },
+  "pairwise": {
+   "title": "Stability singles and double-mutant interactions: the union of both cohorts' reference sequences",
+   "reader": "pairwise_union",
+   "out": "results/extensions/explicit_statistics_pairwise_20261109",
+   "log_dir": "logs/operations/explicit-statistics-cohorts-20261109",
+   "fit_subdir": "potts",
+   "max_sequences": 5000,
+   "search_max_target_seqs": 10000,
+   "variant_source_label": "stability_cohort",
+   "inputs": {
+    "stability_cohort": "results/R4/gate_stability_20260924/cohort/cohort.json",
+    "interaction_plan": "archive/logs/R3/pairwise_epistasis_20260924/extraction_plan.json",
+    "hits": "archive/logs/R3/pairwise_homologs_20260924/search/hits.tsv",
+    "search_manifest": "archive/logs/R3/pairwise_homologs_20260924/search/search_manifest.json",
+    "query_fasta": "archive/logs/R3/pairwise_homologs_20260924/search/query.faa",
+    "stability_profile_features": "results/R4/gate_stability_20260924/cohort/profile_features.npz",
+    "interaction_profile_features": "archive/logs/R3/pairwise_epistasis_20260924/profile_features.npz"
+   },
+   "hits": "archive/logs/R3/pairwise_homologs_20260924/search/hits.tsv",
+   "profile_store": {
+    "reader": "profile_features",
+    "frequencies": "results/R4/gate_stability_20260924/cohort/profile_features.npz",
+    "also": "archive/logs/R3/pairwise_epistasis_20260924/profile_features.npz",
+    "max_sequences": 20000
+   },
+   "reuse": {
+    "cohort": "r1",
+    "wildtypes_fasta": "results/R5/retrieval_bound_20260807/wildtypes.faa",
+    "export": "results/extensions/statistical_ladder_20261106",
+    "scores": "results/extensions/statistical_ladder_20261106/potts-explicit-complete/scores.json"
+   },
+   "expect": {"references": 109, "reusable": 47, "refusals": 9}
+  },
+  "phenotype": {
+   "title": "Added phenotype breadth: activity, binding, cellular fitness and the matched ProteinGym references",
+   "reader": "phenotype_breadth",
+   "out": "results/extensions/explicit_statistics_phenotype_20261109",
+   "log_dir": "logs/operations/explicit-statistics-cohorts-20261109",
+   "fit_subdir": "potts",
+   "max_sequences": 5000,
+   "search_max_target_seqs": 10000,
+   "variant_source_label": "rows",
+   "inputs": {
+    "catalogue": "results/extensions/phenotype_breadth_20261008/qual-3/profile-catalogue.json",
+    "rows": "results/extensions/phenotype_breadth_20261008/qual-3/rows",
+    "hits": "results/extensions/phenotype_breadth_20261008/profiles/search/hits.tsv",
+    "search_manifest": "results/extensions/phenotype_breadth_20261008/profiles/search/search_manifest.json",
+    "query_fasta": "results/extensions/phenotype_breadth_20261008/profiles/search/query.faa",
+    "profile_features": "results/extensions/phenotype_breadth_20261008/profiles/profile_features.npz"
+   },
+   "hits": "results/extensions/phenotype_breadth_20261008/profiles/search/hits.tsv",
+   "profile_store": {
+    "reader": "profile_features",
+    "frequencies": "results/extensions/phenotype_breadth_20261008/profiles/profile_features.npz",
+    "max_sequences": 20000
+   },
+   "reuse": {
+    "cohort": "r1",
+    "wildtypes_fasta": "results/R5/retrieval_bound_20260807/wildtypes.faa",
+    "export": "results/extensions/statistical_ladder_20261106",
+    "scores": "results/extensions/statistical_ladder_20261106/potts-explicit-complete/scores.json"
+   },
+   "expect": {"references": 312, "reusable": 13, "refusals": 6}
+  }
+ }
+}

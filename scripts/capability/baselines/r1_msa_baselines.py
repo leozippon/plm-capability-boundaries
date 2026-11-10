@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Export and fit the R1 homologous-support statistical ladder.
+"""Export and fit a cohort's homologous-support statistical ladder.
+
+One procedure, one code path, one cohort per run. ``--cohort`` names a descriptor
+in ``configs/explicit_statistics_cohorts.json``, which states the wild-type
+references, the variant rows, the retained hit table, the depth cap, the optional
+retained profile store to cross-check against and the references whose fits may
+be reused. ``r1`` is the first such descriptor and remains the default, so the
+frozen mutation-effect ladder is one instance of this procedure rather than its
+hard-wired centre.
 
 Three stages, in order, each refusing to overwrite the previous one's evidence:
 
 ``export``
-    Validate the frozen 25,728-sample R1 table against the measured cohort and
-    the frozen identifier lineage, rebuild every wild type's homologous support,
-    prove it is the support the retained profile store was built from, and write
-    the query-first alignment, the original weights, the variant table (with the
-    recomputed LOOKUP delta) and the support statistics under ``inputs/``.
+    Resolve the cohort, rebuild every reference's homologous support at the
+    declared depth cap, cross-check it against a retained profile store wherever
+    one describes an alignment of the same depth, and write the query-first
+    alignment, the weights, the variant table and the support statistics under
+    ``inputs/``, together with the cohort's ``contract.json`` and the enumerated
+    refusals. For ``r1`` it additionally validates the frozen 25,728-sample table
+    against the measured cohort and the frozen identifier lineage and recomputes
+    the LOOKUP delta of every sample.
 
 ``fit``
     Fit one plmc Potts model per wild type on the exported alignment, select the
@@ -27,6 +38,11 @@ Three stages, in order, each refusing to overwrite the previous one's evidence:
     which backgrounds are fitted, not converged, refused by the convergence gate,
     failed or still pending. A background is scoreable when a delivered model
     exists and complete only when every fit behind it converged.
+
+A reference with fewer than two retained homolog rows carries no model. It is
+enumerated as a refusal with its reason in ``inputs/refusals.json`` and in the
+contract, and its samples stay in the variant table with no Potts value, so a
+later lane can see that the feature is absent rather than zero.
 
 No stage reads a phenotype, a measured score or a model output. Resources are
 checked and logged before any work starts.
@@ -51,35 +67,65 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
+from src.capability.baselines import cohorts as C  # noqa: E402
 from src.capability.baselines import msa_baselines as B  # noqa: E402
 from src.capability.context.homology import ALIGNMENT_FIELDS, parse_hits  # noqa: E402
 from src.capability.context.profiles import AA20, PSEUDOCOUNT_ALPHA  # noqa: E402
 
-SAMPLES = Path("results/extensions/information_progression_20261006/full/samples.json")
-SUPPORT = Path("results/R5/retrieval_bound_20260807")
-COHORT = Path("results/R5/context_mutation_rescue_20260923/cohort.json")
-ADMISSION = Path(
-    "results/R5/local_context_20260923/20260923233257_e429ce7f31e4/lcgp_admission/"
-    "local_context_measurement.json")
 PLMC = Path("data/pairwise_assets/plmc/debbiemarkslab-plmc-18c9e55/bin/plmc")
-DEFAULT_OUT = Path("results/extensions/statistical_ladder_20261106")
-DEFAULT_LOG = Path("logs/operations/statistical-ladder-20261106")
-
-#: The frozen R1 table's shape. A stage that produced a different table would be
-#: measuring a different cohort under the same identifiers, so it stops.
-EXPECTED_SAMPLES = 25728
-EXPECTED_ASSAYS = 201
-EXPECTED_SINGLE_SUBSTITUTION = 20568
-EXPECTED_MULTIPLE_SUBSTITUTION = 5160
+CONFIG = Path("configs/explicit_statistics_cohorts.json")
+DEFAULT_COHORT = "r1"
 
 #: Code whose change would invalidate an existing export or checkpoint.
 CODE = {
     "msa_baselines": Path("src/capability/baselines/msa_baselines.py"),
+    "cohorts": Path("src/capability/baselines/cohorts.py"),
     "entrypoint": Path("scripts/capability/baselines/r1_msa_baselines.py"),
     "pairwise_stability": Path("src/capability/stability/pairwise_stability.py"),
     "sequence_alignment": Path("src/capability/core/sequence_alignment.py"),
     "profiles": Path("src/capability/context/profiles.py"),
 }
+
+#: Wall-clock model of one background's Potts fits, fitted to the 1,579 retained
+#: per-attempt records of the completed R1 run (174 wild types, 4 plmc threads
+#: each) by least squares in the log of the per-background total. It replaces the
+#: single ``rows * length**2`` constant this stage used to extrapolate with,
+#: which underpredicted the measured R1 total by a factor of 3.7 because the cost
+#: grows faster than linearly in neither factor alone.
+COST_MODEL = {
+    "cv_selected": {"constant": 4.989e-05, "length": 2.3996, "rows": 0.7706,
+                    "r_squared_log": 0.9883, "within_two_fold": 0.972, "backgrounds": 144},
+    "fixed_low_depth": {"constant": 3.024e-04, "length": 2.2244, "rows": 0.0,
+                        "r_squared_log": 0.9754, "within_two_fold": 0.967, "backgrounds": 30},
+    "basis": "seconds = constant * length**length_exponent * rows**rows_exponent, per background "
+             "and inclusive of the lambda sweep, at 4 plmc threads; fitted to the retained R1 "
+             "attempt records, which reproduce their own 390.9 measured wall-hours as 396.8",
+    "threads": 4,
+}
+#: Peak resident memory of one plmc fit, stated here because concurrency is
+#: bounded by it rather than by core count. No coefficient is quoted: the
+#: quantity is exactly what :func:`fit_memory_bytes` computes from the wild
+#: type's length, and a rounded constant beside it would be a second, weaker
+#: source for the same number.
+MEMORY_MODEL = (
+    "fit_memory_bytes(length): 25 double-precision parameter vectors of "
+    "length*20 + length*(length-1)/2 * 400 entries, plus the marginals. It grows with the "
+    "square of the length and is independent of the alignment's depth")
+
+#: The official GEMME multi-mutant semantics, and what they cost the interaction
+#: lane. Verified twice: ``pred.R``'s own ``normPred[i] = sum(predTMP * trace[myPos])``
+#: sums one term per mutated site with no cross-term, and the 11 R1 double mutants
+#: whose two single substitutions were scored in the same runs reproduce the
+#: double's score as the sum of the singles to at most 4.1e-14 per run.
+GEMME_ADDITIVITY = (
+    "The official GEMME -m score of a multi-mutant is the sum of its single-site scores, so a "
+    "double-mutant cycle contrast -- s(AB) - s(A) - s(B) + s(WT), with s(WT) = 0 by construction "
+    "-- is identically zero and GEMME can contribute nothing non-additive to the interaction "
+    "lane. It remains a per-site evolutionary-background statistic and is reported as one. Potts "
+    "couplings are not additive: a multi-mutant's energy difference is taken on the complete "
+    "sequence and carries every pair coupling among the changed sites, so E does contribute a "
+    "non-additive term where G cannot."
+)
 
 #: Resource floors. plmc's L-BFGS keeps a history of parameter vectors, so one fit's
 #: memory is a multiple of the parameter vector at the alignment's length, not of a
@@ -121,6 +167,19 @@ def save(path: Path, value: Any) -> None:
 
 def load(path: Path) -> Any:
     return json.loads(Path(path).read_text())
+
+
+def record_path(path: Path) -> str:
+    """How a derived file is named in a manifest: relative to the repository.
+
+    Every reader resolves such a path against the repository root, so a path
+    inside it is recorded relative and one outside it -- an export written to a
+    scratch directory -- is recorded absolute rather than crashing on a
+    relative_to that cannot hold.
+    """
+
+    path = Path(path).resolve()
+    return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
 
 
 def available_memory() -> int:
@@ -211,177 +270,376 @@ def code_record() -> dict:
     return {label: digest(ROOT / path) for label, path in CODE.items()}
 
 
-def input_record() -> dict:
-    paths = {
-        "samples": SAMPLES,
-        "corpus_hits": SUPPORT / "corpus_hits.tsv",
-        "wildtypes_fasta": SUPPORT / "wildtypes.faa",
-        "wildtypes": SUPPORT / "wildtypes.json",
-        "profiles_npz": SUPPORT / "profiles.npz",
-        "profiles": SUPPORT / "profiles.json",
-        "lookup": SUPPORT / "lookup.json",
-        "cohort": COHORT,
-        "admission": ADMISSION,
-        "plmc": PLMC,
-    }
-    return {label: {"path": str(path), "sha256": digest(ROOT / path)}
-            for label, path in paths.items()}
+def input_record(cohort: C.Cohort) -> dict:
+    """Every byte the export depends on, by digest, as the cohort declares them."""
+
+    record = C.input_record(cohort, extra={"plmc": str(PLMC)})
+    for name, reuse in sorted(cohort.reuse.items()):
+        record["reused_scores"] = {
+            "path": reuse["scores"],
+            "sha256": digest(ROOT / reuse["scores"]),
+            "note": f"the {reuse['cohort']} score table whose backgrounds name the "
+                    f"{len(cohort.reuse)} reusable fits",
+        }
+        break
+    return record
 
 
 # --------------------------------------------------------------------- export
 
 
-def wildtype_sequences() -> dict[str, str]:
-    sequences: dict[str, str] = {}
-    for name, sequence in B.read_fasta(ROOT / SUPPORT / "wildtypes.faa"):
-        if name in sequences:
-            raise ValueError(f"duplicate wild-type record {name}")
-        sequences[name] = sequence
-    return sequences
+def load_cohort(args: argparse.Namespace) -> C.Cohort:
+    """Resolve the named cohort, with R1's frozen identifier function when asked for."""
+
+    config = ROOT / args.config if not Path(args.config).is_absolute() else Path(args.config)
+    descriptor = C.load_config(config)["cohorts"].get(args.cohort)
+    if descriptor is None:
+        raise SystemExit(f"unknown cohort {args.cohort!r}; {config} declares "
+                         f"{sorted(C.load_config(config)['cohorts'])}")
+    identifier = None
+    if descriptor.get("sample_id") == "frozen_cohort_sha":
+        from scripts.capability.reporting.export_prediction_details import sample_id as frozen
+        admission = load(ROOT / descriptor["inputs"]["admission"])
+        cohort_sha = admission["cohort_sha256"]
+        identifier = lambda assay, mutation: frozen(cohort_sha, assay, mutation)  # noqa: E731
+    return C.load_cohort(args.cohort, config_path=config, root=ROOT, sample_id_of=identifier)
 
 
-def cohort_by_assay() -> dict:
-    cohort = load(ROOT / COHORT)
-    assays = {row["assay"]: row for row in cohort["assays"]}
-    if len(assays) != len(cohort["assays"]):
-        raise ValueError("duplicate cohort assays")
-    return cohort | {"assays": assays}
+def profile_rung(cohort: C.Cohort, log: Log) -> dict[str, float]:
+    """R1's LOOKUP delta per sample, recomputed and checked against the measured cohort.
+
+    This is the ladder's first rung and it exists only where the cohort declares
+    a retained profile score to check against: recomputing it is what ties the
+    exported table to the published profile channel, and a cohort with no such
+    retained score gets no silently invented one.
+    """
+
+    if cohort.profile_delta is None:
+        return {}
+    if cohort.profile_delta != "retained_cohort_profile_scores":
+        raise ValueError(f"{cohort.name}: unknown profile rung {cohort.profile_delta!r}")
+    catalogue = load(ROOT / cohort.inputs["wildtypes"])
+    lookup = load(ROOT / cohort.inputs["lookup"])
+    measured = {row["assay"]: row for row in load(ROOT / cohort.inputs["cohort"])["assays"]}
+    stored = np.load(ROOT / cohort.inputs["profiles_npz"], allow_pickle=False)
+    background = np.array([catalogue["corpus"]["background"][residue] for residue in AA20],
+                          dtype=np.float64)
+    if not np.isclose(float(lookup["settings"]["alpha"]), PSEUDOCOUNT_ALPHA):
+        raise ValueError("the retained lookup alpha is not the declared profile pseudocount")
+    deltas: dict[str, float] = {}
+    for name, rows in cohort.by_reference.items():
+        variants = [tuple(tuple(token) for token in row["substitutions"]) for row in rows]
+        values = B.profile_deltas(np.asarray(stored[name], dtype=np.float64), background, variants)
+        for row, value in zip(rows, values):
+            retained = measured[row["assay"]]["profile_scores"][row["variant_index"]]
+            if abs(value - retained) > 1e-12:
+                raise RuntimeError(
+                    f"{row['sample_id']}: recomputed LOOKUP score {value!r} is not the retained "
+                    f"cohort's {retained!r}")
+            deltas[row["sample_id"]] = value
+    log.write(f"profile deltas reproduce {len(deltas)} retained cohort profile scores")
+    return deltas
+
+
+def comparable_store(cohort: C.Cohort, query_id: str) -> dict | None:
+    """The retained profile to cross-check one rebuild against, or None with a reason.
+
+    A store built at a cap that binds where this export's does not describes a
+    different alignment, so it is not compared. The two describe the same row set
+    when the two caps are equal, or when the retained row count is below both.
+    """
+
+    store = cohort.profile_store
+    if store is None:
+        return None
+    expectation = store.expectation(query_id)
+    if expectation is None:
+        return None
+    if store.max_sequences == cohort.max_sequences:
+        return expectation
+    retained = expectation["n_profile_sequences"]
+    if retained < store.max_sequences and retained <= cohort.max_sequences:
+        return expectation
+    return None
+
+
+def reused_support(cohort: C.Cohort, name: str, rows: list[dict], inputs: Path,
+                   log: Log) -> dict:
+    """Take a reusable reference's alignment from the cohort it is reused from.
+
+    The bytes are copied, not referenced: the fit and the GEMME stage hash the
+    alignment they are given, and a retained parameter file is only the model of
+    one alignment. Copying under this cohort's own identifier keeps that binding
+    checkable from this export alone.
+    """
+
+    reuse = cohort.reuse[name]
+    if reuse["max_sequences"] != cohort.max_sequences:
+        raise RuntimeError(
+            f"{name}: {reuse['cohort']} built its alignment at {reuse['max_sequences']} rows and "
+            f"this cohort declares {cohort.max_sequences}; a model of another depth is not this "
+            "cohort's model")
+    source = reuse["support"]
+    fasta, weights = inputs / "msa" / f"{name}.fa", inputs / "msa" / f"{name}.weights"
+    for origin, destination, recorded in (
+            (ROOT / source["msa"], fasta, source["msa_sha256"]),
+            (ROOT / source["weights"], weights, source["weights_sha256"])):
+        if digest(origin) != recorded:
+            raise RuntimeError(
+                f"{name}: {origin} is not the alignment {reuse['cohort']} recorded; its fits "
+                "cannot be reused onto it")
+        destination.write_bytes(origin.read_bytes())
+    entry = {key: source[key] for key in (
+        "rows", "neff_at_30_percent_identity", "weights_sum", "effective_depth_per_site",
+        "frequencies_max_absolute_deviation", "frequencies_verified") if key in source}
+    log.write(f"reuse {name} from {reuse['cohort']}/{reuse['wildtype_id']} "
+              f"rows={entry['rows']} status={reuse['status']}")
+    return {
+        "wildtype_id": name,
+        "length": len(cohort.sequences[name]),
+        "query_id": reuse["wildtype_id"],
+        "aliases": list(next(entry.aliases for entry in cohort.references
+                             if entry.wildtype_id == name)),
+        "assays": sorted({row["assay"] for row in rows}),
+        "samples": len(rows),
+        "max_sequences": cohort.max_sequences,
+        "support_source": {
+            "cohort": reuse["cohort"],
+            "wildtype_id": reuse["wildtype_id"],
+            "msa": source["msa"],
+            "msa_sha256": source["msa_sha256"],
+            "weights_sha256": source["weights_sha256"],
+            "reason": "byte-identical reference sequence; the reused alignment is the model's own",
+        },
+        "params_available_for_reuse": reuse.get("params"),
+        "msa": record_path(fasta),
+        "msa_sha256": digest(fasta),
+        "weights": record_path(weights),
+        "weights_sha256": digest(weights),
+        **entry,
+    }
+
+
+def grouped_hits(cohort: C.Cohort, log: Log) -> dict[str, list]:
+    """Every reference's retained alignment hits, read once from the cohort's table."""
+
+    wanted = {entry.query_id: entry.wildtype_id for entry in cohort.references
+              if entry.wildtype_id not in cohort.reuse}
+    hits: dict[str, list] = {name: [] for name in wanted}
+    for hit in parse_hits(cohort.hits, fields=ALIGNMENT_FIELDS):
+        if hit.query in hits:
+            hits[hit.query].append(hit)
+    log.write(f"{sum(len(value) for value in hits.values())} retained alignments over "
+              f"{sum(1 for value in hits.values() if value)} of {len(hits)} searched references")
+    return {wanted[name]: value for name, value in hits.items()}
 
 
 def stage_export(args: argparse.Namespace, log: Log) -> dict:
-    out = args.out
+    cohort = load_cohort(args)
+    out = args.out or cohort.out
     if (out / "inputs").exists():
         raise FileExistsError(
             f"{out / 'inputs'} exists; the export is written once. Remove that directory "
             "deliberately if the inputs genuinely changed.")
     resource_check(out, lengths=[1], workers=args.workers, log=log)
+    log.write(f"cohort {cohort.name}: {json.dumps(cohort.counts())} cap={cohort.max_sequences} "
+              f"search_cap={cohort.search_max_target_seqs} reuse={len(cohort.reuse)}")
 
-    samples = load(ROOT / SAMPLES)
-    catalogue = load(ROOT / SUPPORT / "wildtypes.json")
-    profiles = load(ROOT / SUPPORT / "profiles.json")
-    lookup = load(ROOT / SUPPORT / "lookup.json")
-    cohort = cohort_by_assay()
-    admission = load(ROOT / ADMISSION)
-    sequences = wildtype_sequences()
-    stored = np.load(ROOT / SUPPORT / "profiles.npz", allow_pickle=False)
-    background = np.array([catalogue["corpus"]["background"][residue] for residue in AA20],
-                          dtype=np.float64)
-    if not np.isclose(float(lookup["settings"]["alpha"]), PSEUDOCOUNT_ALPHA):
-        raise ValueError("the retained lookup alpha is not the declared profile pseudocount")
-
-    from scripts.capability.reporting.export_prediction_details import sample_id as frozen_id
-    cohort_sha = admission["cohort_sha256"]
-    variant_table = B.build_variant_table(
-        samples, wildtype_of_assay=catalogue["assay_to_wildtype"], sequences=sequences,
-        cohort=cohort, sample_id_of=lambda assay, mutation: frozen_id(cohort_sha, assay, mutation))
-    counts = B.substitution_counts(variant_table)
-    log.write(f"variant table {counts}")
-    if (counts["samples"], counts["single_substitution"], counts["multiple_substitution"]) != (
-            EXPECTED_SAMPLES, EXPECTED_SINGLE_SUBSTITUTION, EXPECTED_MULTIPLE_SUBSTITUTION):
-        raise ValueError(f"the frozen R1 table's shape changed: {counts}")
-    assays = sorted({row["assay"] for row in variant_table})
-    wildtype_ids = sorted({row["wildtype_id"] for row in variant_table})
-    if len(assays) != EXPECTED_ASSAYS:
-        raise ValueError(f"{len(assays)} assays, expected {EXPECTED_ASSAYS}")
-    for assay in assays:
-        record = cohort["assays"][assay]
-        if record["wildtype"] != sequences[record["wildtype_id"]]:
-            raise ValueError(f"{assay}: cohort wild type differs from the retained FASTA")
-    log.write(f"{len(assays)} assays over {len(wildtype_ids)} wild types")
-
-    hits: dict[str, list] = {name: [] for name in wildtype_ids}
-    for hit in parse_hits(ROOT / SUPPORT / "corpus_hits.tsv", fields=ALIGNMENT_FIELDS):
-        if hit.query in hits:
-            hits[hit.query].append(hit)
-    if any(not value for value in hits.values()):
-        raise ValueError("a wild type in the R1 support has no alignment hit")
-
+    deltas = profile_rung(cohort, log)
+    hits = grouped_hits(cohort, log)
+    grouped = cohort.by_reference
     inputs = out / "inputs"
     (inputs / "msa").mkdir(parents=True, exist_ok=True)
-    support_by_wildtype: dict[str, dict] = {}
-    by_wildtype: dict[str, list[dict]] = {}
-    for row in variant_table:
-        by_wildtype.setdefault(row["wildtype_id"], []).append(row)
-    profile_scores = {assay: row["profile_scores"] for assay, row in cohort["assays"].items()}
-    profile_deltas: dict[str, dict[str, float]] = {}
-    for name in wildtype_ids:
-        wildtype = sequences[name]
-        metadata = profiles["profiles"][name]
+    support: dict[str, dict] = {}
+    refusals: dict[str, dict] = {}
+    saturated: list[str] = []
+    for entry in cohort.references:
+        name, wildtype = entry.wildtype_id, entry.sequence
+        if name in cohort.reuse:
+            support[name] = reused_support(cohort, name, grouped[name], inputs, log)
+            continue
+        if not hits.get(name):
+            refusals[name] = {"reason": "no retained alignment hit", "rows": 0,
+                              "samples": len(grouped[name])}
+            log.write(f"refuse {name}: no retained alignment hit")
+            continue
+        expectation = comparable_store(cohort, entry.query_id)
         rows, weights, _, statistics = B.reconstruct_support(
-            wildtype, name, hits[name], frequencies=stored[name], record=metadata)
+            wildtype, entry.query_id, hits[name], max_sequences=cohort.max_sequences,
+            expect=expectation)
+        if statistics["rows"] < B.MIN_POTTS_ROWS:
+            refusals[name] = {
+                "reason": f"{statistics['rows']} retained homolog rows is below the "
+                          f"{B.MIN_POTTS_ROWS}-row floor of a Potts fit",
+                "rows": statistics["rows"], "samples": len(grouped[name])}
+            log.write(f"refuse {name}: {refusals[name]['reason']}")
+            continue
         fasta, weights_path = inputs / "msa" / f"{name}.fa", inputs / "msa" / f"{name}.weights"
         B.write_query_first_alignment(fasta, weights_path, wildtype, rows, weights)
-        variants = [tuple(tuple(token) for token in row["substitutions"]) for row in by_wildtype[name]]
-        deltas = B.profile_deltas(np.asarray(stored[name], dtype=np.float64), background, variants)
-        profile_deltas[name] = dict(zip([row["sample_id"] for row in by_wildtype[name]], deltas))
-        support_by_wildtype[name] = {
+        if statistics["depth_cap_reached"]:
+            saturated.append(name)
+        support[name] = {
             "wildtype_id": name,
             "length": len(wildtype),
-            "assays": sorted({row["assay"] for row in by_wildtype[name]}),
-            "samples": len(by_wildtype[name]),
+            "query_id": entry.query_id,
+            "aliases": list(entry.aliases),
+            "assays": sorted({row["assay"] for row in grouped[name]}),
+            "samples": len(grouped[name]),
             "hits_retrieved": len(hits[name]),
-            "hit_list_saturated": metadata["hit_list_saturated"],
-            "diamond_hit_list_saturated": metadata["diamond_hit_list_saturated"],
-            "max_identity_over_query": metadata["max_identity_over_query"],
-            "msa": str(fasta.relative_to(ROOT)),
+            "msa": record_path(fasta),
             "msa_sha256": digest(fasta),
-            "weights": str(weights_path.relative_to(ROOT)),
+            "weights": record_path(weights_path),
             "weights_sha256": digest(weights_path),
             **statistics,
         }
         log.write(f"support {name} L={len(wildtype)} rows={statistics['rows']} "
                   f"neff={statistics['neff_at_30_percent_identity']:.3f} "
-                  f"deviation={statistics['frequencies_max_absolute_deviation']:.2e}")
-    if not all(entry["frequencies_verified"] for entry in support_by_wildtype.values()):
-        raise RuntimeError("a rebuilt alignment does not reproduce the retained profile")
+                  f"verified={statistics['frequencies_verified']}")
+    verified = [entry for entry in support.values() if entry.get("frequencies_verified")]
+    declared = cohort.expect.get("refusals")
+    if declared is not None and declared != len(refusals):
+        raise RuntimeError(
+            f"{cohort.name}: {len(refusals)} references are refused where the descriptor declares "
+            f"{declared}; the cohort's support changed and the contract would misstate it")
 
-    for row in variant_table:
-        row["profile_delta"] = profile_deltas[row["wildtype_id"]][row["sample_id"]]
-        retained = profile_scores[row["assay"]][row["variant_index"]]
-        if abs(row["profile_delta"] - retained) > 1e-12:
-            raise RuntimeError(
-                f"{row['sample_id']}: recomputed LOOKUP score {row['profile_delta']!r} is not the "
-                f"retained cohort's {retained!r}")
-    log.write(f"profile deltas reproduce {len(variant_table)} retained cohort profile scores")
-
+    table = [dict(row) for row in cohort.rows]
+    for row in table:
+        if deltas:
+            row["profile_delta"] = deltas[row["sample_id"]]
+    counts = cohort.counts()
     save(inputs / "variant_table.json", {
-        "schema": "r1_msa_variant_table_v1",
-        "source": str(SAMPLES),
-        "source_sha256": digest(ROOT / SAMPLES),
-        "profile_pseudocount": PSEUDOCOUNT_ALPHA,
-        "profile_score": B.PROFILE_SCORE_DEFINITION,
-        "counts": counts | {"assays": len(assays), "wildtypes": len(wildtype_ids)},
-        "samples": variant_table,
+        "schema": B.SCHEMA_VARIANT_TABLE,
+        "cohort": cohort.name,
+        "source": str(cohort.inputs[cohort.variant_source_label]),
+        "source_label": cohort.variant_source_label,
+        "source_sha256": C.path_digest(ROOT / cohort.inputs[cohort.variant_source_label]),
+        "profile_pseudocount": PSEUDOCOUNT_ALPHA if deltas else None,
+        "profile_score": B.PROFILE_SCORE_DEFINITION if deltas else None,
+        "counts": counts,
+        "samples": table,
     })
     protocol = B.manifest_protocol(plmc_record=plmc_record())
+    protocol["max_sequences"] = cohort.max_sequences
     save(inputs / "support.json", {
         "schema": B.SCHEMA_SUPPORT,
+        "cohort": cohort.name,
         "protocol": {key: protocol[key] for key in (
-            "max_sequences", "coverage_floor", "reweight_identity", "neff_identity", "focus_weight")},
-        "wildtypes": support_by_wildtype,
+            "max_sequences", "coverage_floor", "reweight_identity", "neff_identity",
+            "focus_weight")},
+        "wildtypes": support,
     })
-    lengths = [entry["length"] for entry in support_by_wildtype.values()]
-    driver = sum(entry["rows"] * entry["length"] ** 2 for entry in support_by_wildtype.values())
+    save(inputs / "refusals.json", {
+        "schema": "explicit_statistics_refusals_v1",
+        "cohort": cohort.name,
+        "rule": cohort.protocol["refusal_rule"],
+        "count": len(refusals),
+        "samples_without_support": sum(entry["samples"] for entry in refusals.values()),
+        "refused": refusals,
+    })
+    lengths = [entry["length"] for entry in support.values()]
     manifest = {
         "schema": B.SCHEMA_MANIFEST,
+        "cohort": cohort.name,
+        "cohort_title": cohort.title,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "code": code_record(),
-        "inputs": input_record(),
+        "inputs": input_record(cohort),
         "protocol": protocol,
-        "cohort_sha256": cohort_sha,
+        "cohort_protocol": cohort.protocol,
         "counts": counts | {
-            "assays": len(assays), "wildtypes": len(wildtype_ids),
-            "homolog_rows": int(sum(entry["rows"] for entry in support_by_wildtype.values())),
-            "length_max": max(lengths), "length_median": int(np.median(lengths)),
-            "fit_cost_driver_rows_times_length_squared": int(driver)},
+            "backgrounds_exported": len(support),
+            "backgrounds_refused": len(refusals),
+            "backgrounds_reused": len(cohort.reuse),
+            "backgrounds_profile_verified": len(verified),
+            "backgrounds_at_depth_cap": len(saturated),
+            "homolog_rows": int(sum(entry["rows"] for entry in support.values())),
+            # A cohort whose every reference is refused exports no length at all.
+            # It is an honest empty export, not a crash.
+            "length_max": max(lengths, default=None),
+            "length_median": int(np.median(lengths)) if lengths else None},
         "largest_profile_frequency_deviation": max(
-            entry["frequencies_max_absolute_deviation"] for entry in support_by_wildtype.values()),
+            (entry["frequencies_max_absolute_deviation"] for entry in verified), default=None),
+        "depth_cap_declaration": {
+            "max_sequences": cohort.max_sequences,
+            "rule": cohort.protocol["max_sequences_rule"],
+            "search_max_target_seqs": cohort.search_max_target_seqs,
+            "search_depth_limitation": cohort.protocol["search_depth_limitation"],
+            "backgrounds_at_depth_cap": saturated,
+            "profile_store_role": cohort.protocol["profile_store_role"],
+            "profile_store_max_sequences": (
+                cohort.profile_store.max_sequences if cohort.profile_store else None),
+            "backgrounds_profile_verified": len(verified),
+            "backgrounds_profile_not_comparable": len(support) - len(verified),
+        },
     }
     save(inputs / "manifest.json", manifest)
-    log.write(f"export complete: {len(wildtype_ids)} wild types, "
-              f"{manifest['counts']['homolog_rows']} homolog rows, "
-              f"max profile deviation {manifest['largest_profile_frequency_deviation']:.2e}")
+    save(out / "contract.json", contract(cohort, manifest, refusals, out))
+    log.write(f"export complete: {len(support)} exported, {len(refusals)} refused, "
+              f"{len(cohort.reuse)} reused, {manifest['counts']['homolog_rows']} homolog rows")
     return manifest
+
+
+def contract(cohort: C.Cohort, manifest: dict, refusals: dict, out: Path) -> dict:
+    """The analysis contract, written before anything is fitted.
+
+    It states what this cohort's explicit-statistics features are, the depth the
+    support was built at, which references are refused and why, and the two
+    limitations that are properties of the retained inputs rather than of this
+    run. Nothing here is decided after a fit has been read.
+    """
+
+    return {
+        "analysis": f"explicit_statistics_{cohort.name}_20261109",
+        "cohort": cohort.name,
+        "title": cohort.title,
+        "purpose": "Make the explicit evolutionary statistics of the R1 ladder -- a plmc Potts "
+                   "energy difference and an official GEMME score -- available for this cohort's "
+                   "reference sequences under R1's own protocol, so that a later stage can add "
+                   "the E and G control blocks to this lane.",
+        "code_sha256": manifest["code"],
+        "inputs": manifest["inputs"],
+        "support": {
+            "references": manifest["counts"]["wildtypes"],
+            "exported": manifest["counts"]["backgrounds_exported"],
+            "reused": manifest["counts"]["backgrounds_reused"],
+            "refused": manifest["counts"]["backgrounds_refused"],
+            "samples": manifest["counts"]["samples"],
+            "single_substitution": manifest["counts"]["single_substitution"],
+            "multiple_substitution": manifest["counts"]["multiple_substitution"],
+            "assays": manifest["counts"]["assays"],
+        },
+        "depth_cap": manifest["depth_cap_declaration"],
+        "potts": {
+            "protocol": manifest["protocol"],
+            "score": B.POTTS_SCORE_DEFINITION,
+            "reuse_rule": "a reference whose sequence is byte-identical to an already fitted R1 "
+                          "wild type takes that wild type's frozen alignment and its retained "
+                          "parameter file; only this cohort's own mutation list is rescored, "
+                          "because the retained per-variant scores cover other mutations",
+            "cost_model": COST_MODEL,
+            "memory_model": MEMORY_MODEL,
+        },
+        "gemme": {
+            "runs_per_reference": 3,
+            "aggregate": "arithmetic mean of the raw official combined score over three "
+                         "independent complete official runs",
+            "additivity_limitation": GEMME_ADDITIVITY,
+        },
+        "refusals": {
+            "rule": cohort.protocol["refusal_rule"],
+            "count": len(refusals),
+            "refused": refusals,
+        },
+        "limitations": [
+            cohort.protocol["search_depth_limitation"],
+            cohort.protocol["profile_store_role"],
+            GEMME_ADDITIVITY,
+        ],
+        "policy": "Frozen before any fit of this cohort is read. No reference is excluded on an "
+                  "outcome, no refusal is imputed, and no score is read from a different depth "
+                  "cap than the one declared here.",
+        "resource": resource_record(out),
+    }
 
 
 # ------------------------------------------------------------------------ fit
@@ -414,6 +672,68 @@ def fit_one(job: dict) -> dict:
     return B.fit_background(job)
 
 
+def reuse_params(name: str, support: dict, variants: list[dict], staged: Path,
+                 log: Log) -> dict | None:
+    """Score this cohort's mutation list with an already fitted model, or decline.
+
+    A reference whose sequence is byte-identical to an already fitted R1 wild
+    type needs no second fit: the alignment is that wild type's own, so the
+    retained parameter file is exactly the model of it. What is *not* reusable is
+    the retained per-variant score, because this cohort asks about other
+    mutations; they are rescored here, which costs milliseconds.
+
+    The staged file is accepted only at the digest the reused cohort recorded. If
+    it is absent, this returns None and the caller fits the reference instead:
+    declining to reuse is a slower run, reusing the wrong bytes is a wrong score.
+    """
+
+    recorded = support.get("params_available_for_reuse")
+    source = support.get("support_source")
+    if not recorded or not source:
+        return None
+    candidate = staged / Path(recorded["path"]).name
+    if not candidate.is_file():
+        log.write(f"reuse-miss {name}: {candidate} is not staged; it will be fitted")
+        return None
+    found = digest(candidate)
+    if found != recorded["sha256"]:
+        raise RuntimeError(
+            f"{name}: {candidate} hashes {found}, not the {recorded['sha256']} that "
+            f"{source['cohort']}/{source['wildtype_id']} recorded; it is not that model")
+    if candidate.stat().st_size != recorded["bytes"]:
+        raise RuntimeError(f"{name}: {candidate} is not {recorded['bytes']} bytes")
+
+    from src.capability.stability.pairwise_stability import read_plmc
+
+    wildtype = B.read_fasta(ROOT / support["msa"])[0][1]
+    scorer = B.potts_scorer(read_plmc(candidate), wildtype)
+    record = {
+        "wildtype_id": name,
+        "length": support["length"],
+        "status": B.STATUS_FITTED,
+        "support": support,
+        "regularization_policy": None,
+        "cv_qualified": False,
+        "selected_lambda_e": None,
+        "lambda_h": B.LAMBDA_H,
+        "max_iter_caps": [int(cap) for cap in B.MAX_ITER_CAPS],
+        "params": {"path": str(candidate), "sha256": found, "bytes": candidate.stat().st_size},
+        "sign_check": B.shuffle_sign_check(scorer),
+        "sample_scores": {
+            row["sample_id"]: scorer.delta(B.mutant_codes(wildtype, row["substitutions"]))
+            for row in variants},
+    }
+    reused = {key: source[key] for key in ("cohort", "wildtype_id", "msa_sha256")}
+    record["reused_from"] = reused | {
+        "params_sha256": found,
+        "status": "the fit, its convergence and its selected regularization are the reused "
+                  "cohort's; only this cohort's mutation list is scored here",
+    }
+    log.write(f"reuse-fit {name} from {reused['cohort']}/{reused['wildtype_id']} "
+              f"variants={len(variants)}")
+    return record
+
+
 def checkpoint_path(fit_out: Path, name: str) -> Path:
     return fit_out / "backgrounds" / f"{name}.json"
 
@@ -436,20 +756,28 @@ def reuse_checkpoint(fit_out: Path, name: str, execution_sha: str, log: Log) -> 
     return record
 
 
-def verify_export(support: dict, selected: Sequence[str], table: dict) -> None:
+def verify_export(support: dict, refused: dict, selected: Sequence[str], table: dict) -> None:
     """The derived export must still be the bytes the manifest describes."""
 
-    wildtypes = {row["wildtype_id"] for row in table["samples"]}
-    if wildtypes != set(support):
-        raise RuntimeError("the variant table and the support table name different wild types")
+    named = {row["wildtype_id"] for row in table["samples"]}
+    if named != set(support) | set(refused):
+        raise RuntimeError(
+            "the variant table names references the support table neither exports nor refuses")
+    if table["counts"]["samples"] != len(table["samples"]):
+        raise RuntimeError("the variant table does not hold the sample count it declares")
     for name in selected:
         entry = support[name]
         for key, path in (("msa_sha256", entry["msa"]), ("weights_sha256", entry["weights"])):
             if digest(ROOT / path) != entry[key]:
                 raise RuntimeError(
                     f"{path} is not the export the manifest describes; rebuild the export")
-    if len(table["samples"]) != EXPECTED_SAMPLES:
-        raise RuntimeError("the variant table does not hold the frozen sample count")
+
+
+def read_export(out: Path) -> tuple[dict, dict, dict]:
+    table = load(out / "inputs" / "variant_table.json")
+    support = load(out / "inputs" / "support.json")["wildtypes"]
+    refusals = load(out / "inputs" / "refusals.json")["refused"]
+    return table, support, refusals
 
 
 def stage_fit(args: argparse.Namespace, log: Log) -> dict:
@@ -461,23 +789,36 @@ def stage_fit(args: argparse.Namespace, log: Log) -> dict:
     execution_sha = digest(fit_out / "execution_manifest.json")
     log.write(f"frozen inputs verified; execution manifest {execution_sha[:16]} "
               f"created_utc={execution['created_utc']}")
-    table = load(out / "inputs" / "variant_table.json")
-    support = load(out / "inputs" / "support.json")["wildtypes"]
-    sequences = wildtype_sequences()
+    table, support, refusals = read_export(out)
     by_wildtype: dict[str, list[dict]] = {}
     for row in table["samples"]:
         by_wildtype.setdefault(row["wildtype_id"], []).append(row)
-    selected = sorted(by_wildtype) if not args.wildtypes else list(args.wildtypes)
-    unknown = [name for name in selected if name not in by_wildtype]
+    selected = sorted(support) if not args.wildtypes else list(args.wildtypes)
+    unknown = [name for name in selected if name not in support]
     if unknown:
-        raise SystemExit(f"unknown wild types: {unknown[:5]}")
+        raise SystemExit(f"references with no exported support: {unknown[:5]}")
     if len(set(selected)) != len(selected):
-        raise SystemExit("duplicate wild types requested")
-    verify_export(support, selected, table)
-    log.write(f"export verified for {len(selected)} wild types")
+        raise SystemExit("duplicate references requested")
+    # One fit's memory is set by its reference's length alone, so a length band
+    # is how a batch is admitted against the host's memory rather than against
+    # its core count. The band is part of the run record, not a convenience.
+    banded = [name for name in selected
+              if args.min_length < support[name]["length"] <= args.max_length]
+    if not banded:
+        raise SystemExit(
+            f"no exported reference has a length in ({args.min_length}, {args.max_length}]")
+    if len(banded) != len(selected):
+        log.write(f"length band ({args.min_length}, {args.max_length}] admits {len(banded)} of "
+                  f"{len(selected)} requested references")
+    selected = banded
+    verify_export(support, refusals, selected, table)
+    log.write(f"export verified for {len(selected)} of {len(support)} exported references "
+              f"({len(refusals)} refused)")
 
     resource_check(fit_out, lengths=[support[name]["length"] for name in selected],
                    workers=args.workers, log=log)
+    staged = None if args.reuse_params is None else (
+        args.reuse_params if args.reuse_params.is_absolute() else ROOT / args.reuse_params)
     records: dict[str, dict] = {}
     jobs = []
     for name in selected:
@@ -488,10 +829,17 @@ def stage_fit(args: argparse.Namespace, log: Log) -> dict:
                     "checkpoints whose execution manifest still matches")
             records[name] = reuse_checkpoint(fit_out, name, execution_sha, log)
             continue
-        jobs.append(fit_job(args, fit_out, name, sequences[name], support[name],
-                            by_wildtype[name]))
+        wildtype = B.read_fasta(ROOT / support[name]["msa"])[0][1]
+        reused = None if staged is None else reuse_params(
+            name, support[name], by_wildtype[name], staged, log)
+        if reused is not None:
+            reused["execution_manifest_sha256"] = execution_sha
+            save(checkpoint_path(fit_out, name), reused)
+            records[name] = reused
+            continue
+        jobs.append(fit_job(args, fit_out, name, wildtype, support[name], by_wildtype[name]))
     if jobs:
-        log.write(f"fitting {len(jobs)} wild types with {args.workers} workers x "
+        log.write(f"fitting {len(jobs)} references with {args.workers} workers x "
                   f"{args.threads} plmc threads, caps {list(B.MAX_ITER_CAPS)}")
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(fit_one, job): job["wildtype_id"] for job in jobs}
@@ -531,8 +879,7 @@ def assemble(args: argparse.Namespace, log: Log) -> dict:
     execution = B.load_or_create_execution(
         fit_out, inputs=inputs, code_paths={label: ROOT / path for label, path in CODE.items()},
         plmc_record=plmc_record())
-    table = load(out / "inputs" / "variant_table.json")["samples"]
-    support = load(out / "inputs" / "support.json")["wildtypes"]
+    table, support, refusals = read_export(out)
     records: dict[str, dict] = {}
     for name in sorted(support):
         path = checkpoint_path(fit_out, name)
@@ -546,70 +893,106 @@ def assemble(args: argparse.Namespace, log: Log) -> dict:
                 "cannot enter a table presented as this execution's result")
         records[name] = record
     document, arrays = B.assemble_scores(
-        table, records, wildtype_ids=sorted(support), protocol=execution["optimization"],
+        table["samples"], records, wildtype_ids=sorted(support), refused=refusals,
+        protocol=execution["optimization"],
         inputs={"inputs_manifest_sha256": inputs["manifest"]["sha256"],
                 "variant_table_sha256": inputs["derived"]["variant_table"]["sha256"],
                 "support_sha256": inputs["derived"]["support"]["sha256"],
                 "source": {label: entry["sha256"]
                            for label, entry in inputs["source"].items()}})
+    document["cohort"] = table.get("cohort")
     document["execution_manifest_sha256"] = digest(fit_out / "execution_manifest.json")
     document["counts"]["cost"] = cost_projection(records, support)
     save(fit_out / "scores.json", document)
     np.savez_compressed(fit_out / "scores.npz", **arrays)
+    save(fit_out / "completion.json",
+         completion(fit_out, document, records, support, refusals))
     log.write(f"assembly {json.dumps(document['counts'], default=str)}")
     return document
 
 
-def cost_projection(records: dict[str, dict], support: dict) -> dict:
-    """Measured cost per fit, projected onto the backgrounds that have not run.
+def completion(fit_out: Path, document: dict, records: dict[str, dict], support: dict,
+               refusals: dict) -> dict:
+    """What this run delivered, stated last and only from what exists on disk."""
 
-    plmc's iteration cost grows with the number of sequences and with the square
-    of the alignment width, so one fit's driver is ``rows * length**2``. The
-    constant is measured on the fits that have run; the projection counts the
-    fits each remaining background will need (six when it can hold out, one when
-    it is fitted at the fixed low-depth regularization) and is labelled as a
-    projection rather than a measurement.
+    counts = document["counts"]
+    return {
+        "status": "complete" if counts["complete"] else "incomplete",
+        "cohort": document.get("cohort"),
+        "rung": "potts",
+        "counts": counts,
+        "refused": {name: entry["reason"] for name, entry in sorted(refusals.items())},
+        "reused": {name: records[name]["reused_from"] for name in sorted(records)
+                   if "reused_from" in records[name]},
+        "pending": [name for name in sorted(support) if name not in records],
+        "output_sha256": {name: digest(fit_out / name)
+                          for name in ("scores.json", "scores.npz")
+                          if (fit_out / name).is_file()},
+    }
+
+
+def cost_projection(records: dict[str, dict], support: dict) -> dict:
+    """What this cohort's fits cost, and what the ones still to run will cost.
+
+    The projection uses :data:`COST_MODEL`, fitted to the completed R1 run's own
+    per-attempt records, rather than a single ``rows * length**2`` constant: that
+    constant underpredicted R1's measured 390.9 wall-hours by a factor of 3.7,
+    because the cost grows faster than linearly in the alignment width and
+    sublinearly in its depth, and no single product of the two reproduces both
+    ends of the cohort. It remains a projection and is labelled as one.
     """
 
-    measured = []
+    measured, seconds, attempts = [], 0.0, 0
     for name, record in records.items():
-        if name not in support or not record.get("final_seconds"):
+        if name not in support or "reused_from" in record:
             continue
-        fits = len(record.get("final", {}).get("attempts", [])) + sum(
-            len(entry.get("attempts", [])) for entry in record.get("sweep", []))
-        driver = support[name]["rows"] * support[name]["length"] ** 2
-        seconds = record["final_seconds"] + sum(entry.get("seconds") or 0.0
-                                                for entry in record.get("sweep", []))
-        measured.append((seconds, fits, driver, name))
-    if not measured:
-        return {"measured_backgrounds": 0}
-    # Ratio of sums rather than a median of per-background constants: with one or
-    # two measured backgrounds a per-background median is dominated by whichever
-    # tiny fit happened to run first.
-    per_fit_driver = sum(entry[0] for entry in measured) / sum(
-        entry[1] * entry[2] for entry in measured)
-    remaining, projected = [], 0.0
-    for name in support:
-        if name in records:
+        entries = list(record.get("sweep", [])) + (
+            [record["final"]] if "final" in record else [])
+        total = sum(entry.get("seconds") or 0.0 for attempt in entries
+                    for entry in attempt.get("attempts", []))
+        if not total:
             continue
-        # A background that cannot clear the held-out floor is fitted once; one
-        # that might is budgeted at the full six-fit sweep.
-        fits = 1 if support[name]["rows"] < 2 * (B.MIN_TRAIN_ROWS + B.MIN_HELD_OUT_ROWS) else 6
-        driver = support[name]["rows"] * support[name]["length"] ** 2
-        projected += fits * driver
-        remaining.append(name)
+        attempts += sum(len(entry.get("attempts", [])) for entry in entries)
+        seconds += total
+        measured.append({
+            "wildtype_id": name, "length": support[name]["length"],
+            "rows": support[name]["rows"], "seconds": total,
+            "predicted_seconds": model_seconds(support[name], record.get("regularization_policy")),
+        })
+    remaining = [name for name in support if name not in records]
+    projected = sum(model_seconds(support[name], None) for name in remaining)
+    ratios = [entry["seconds"] / entry["predicted_seconds"] for entry in measured
+              if entry["predicted_seconds"]]
     return {
+        "model": COST_MODEL,
         "measured_backgrounds": len(measured),
-        "measured_seconds": float(sum(entry[0] for entry in measured)),
-        "measured_fits": int(sum(entry[1] for entry in measured)),
-        "seconds_per_fit_rows_length_squared": per_fit_driver,
+        "measured_seconds": seconds,
+        "measured_fit_attempts": attempts,
+        "measured_over_predicted_median": float(np.median(ratios)) if ratios else None,
         "remaining_backgrounds": len(remaining),
-        "remaining_fit_driver": float(projected),
-        "projected_seconds_remaining": per_fit_driver * projected,
-        "projected_hours_remaining_single_worker": per_fit_driver * projected / 3600.0,
-        "driver": "rows * length**2 per fit; constant is the measured ratio of total seconds "
-                  "to total fit-driver, extrapolated, not a measurement of the long alignments",
+        "projected_seconds_remaining": projected,
+        "projected_hours_remaining_single_worker": projected / 3600.0,
+        "note": "projected at the model's 4 plmc threads per fit; a worker runs one background "
+                "at a time and the lambda sweep inside one background is sequential, so the "
+                "longest single background is a wall-clock floor no concurrency removes",
     }
+
+
+def model_seconds(entry: dict, policy: str | None) -> float:
+    """One background's projected fit seconds under :data:`COST_MODEL`.
+
+    Without a measured policy the branch is taken from the support itself, by the
+    same floors the fit uses: a background that cannot hold out rows is fitted
+    once at the pinned regularization and never sweeps.
+    """
+
+    rows, length = entry["rows"], entry["length"]
+    if policy is None:
+        policy = (B.POLICY_CROSS_VALIDATED
+                  if rows >= 2 * (B.MIN_TRAIN_ROWS + B.MIN_HELD_OUT_ROWS)
+                  else B.POLICY_FIXED_LOW_DEPTH)
+    model = COST_MODEL.get(policy) or COST_MODEL[B.POLICY_CROSS_VALIDATED]
+    return model["constant"] * length ** model["length"] * max(rows, 1) ** model["rows"]
 
 
 # ----------------------------------------------------------------------- main
@@ -619,30 +1002,52 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("stage", choices=("export", "fit", "assemble"))
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
-                        help="the frozen export directory holding inputs/")
+    parser.add_argument("--cohort", default=DEFAULT_COHORT,
+                        help=f"a cohort declared in {CONFIG} (default {DEFAULT_COHORT})")
+    parser.add_argument("--config", type=Path, default=CONFIG)
+    parser.add_argument("--out", type=Path, default=None,
+                        help="the export directory holding inputs/; defaults to the cohort's own")
     parser.add_argument("--fit-out", type=Path, default=None,
-                        help="the fit tree; defaults to <out>/potts-v2")
-    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG)
+                        help="the fit tree; defaults to the cohort's own subdirectory of <out>")
+    parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--threads", type=int, default=4, help="plmc OpenMP threads per fit")
     parser.add_argument("--resume", action="store_true",
                         help="reuse per-wild-type checkpoints whose execution manifest still "
                              "matches")
+    parser.add_argument("--reuse-params", type=Path, default=None,
+                        help="a directory of staged plmc parameter files of the reused cohort; "
+                             "a reference whose export names a reusable fit is scored from the "
+                             "staged file at its recorded digest instead of being refitted")
     parser.add_argument("--wildtypes", nargs="*", default=None,
-                        help="fit only these wild types; assembly marks the rest pending")
+                        help="fit only these references; assembly marks the rest pending")
+    parser.add_argument("--min-length", type=int, default=0,
+                        help="fit only references longer than this; one fit's memory is set by "
+                             "its length, so a band is how concurrency is admitted")
+    parser.add_argument("--max-length", type=int, default=1 << 30,
+                        help="fit only references of at most this length")
     args = parser.parse_args()
     if args.workers < 1 or args.threads < 1:
         raise SystemExit("workers and threads must be positive")
-    args.out = args.out if args.out.is_absolute() else ROOT / args.out
-    default_fit = args.out / "potts-v2"
-    args.fit_out = default_fit if args.fit_out is None else (
-        args.fit_out if args.fit_out.is_absolute() else ROOT / args.fit_out)
+    if args.min_length >= args.max_length:
+        raise SystemExit("--min-length must be below --max-length")
+    descriptor = C.load_config(
+        args.config if args.config.is_absolute() else ROOT / args.config)["cohorts"]
+    if args.cohort not in descriptor:
+        raise SystemExit(f"unknown cohort {args.cohort!r}; declared: {sorted(descriptor)}")
+    declared = descriptor[args.cohort]
+    args.out = (ROOT / declared["out"] if args.out is None
+                else (args.out if args.out.is_absolute() else ROOT / args.out))
+    args.fit_out = (args.out / declared["fit_subdir"] if args.fit_out is None
+                    else (args.fit_out if args.fit_out.is_absolute() else ROOT / args.fit_out))
+    args.log_dir = (ROOT / declared["log_dir"] if args.log_dir is None
+                    else (args.log_dir if args.log_dir.is_absolute() else ROOT / args.log_dir))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    log = Log(ROOT / args.log_dir / f"{args.stage}_{stamp}.log")
-    log.write(f"stage={args.stage} out={args.out} fit_out={args.fit_out} "
+    log = Log(args.log_dir / f"{args.cohort}_{args.stage}_{stamp}.log")
+    log.write(f"cohort={args.cohort} stage={args.stage} out={args.out} fit_out={args.fit_out} "
               f"workers={args.workers} threads={args.threads} resume={args.resume} "
-              f"caps={list(B.MAX_ITER_CAPS)}")
+              f"reuse_params={args.reuse_params} "
+              f"length=({args.min_length}, {args.max_length}] caps={list(B.MAX_ITER_CAPS)}")
     if args.stage == "export":
         stage_export(args, log)
     elif args.stage == "fit":

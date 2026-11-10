@@ -286,16 +286,19 @@ def support_fixture():
 
 def test_reconstructed_support_reproduces_and_verifies_the_retained_profile():
     wildtype, hits, frequencies, record, rows, weights = support_fixture()
+    expect = {"frequencies": frequencies, "n_profile_sequences": len(rows),
+              "neff": record["neff"]}
     rebuilt, rebuilt_weights, neff, statistics = B.reconstruct_support(
-        wildtype, "q0", hits, frequencies=frequencies, record=record)
+        wildtype, "q0", hits, max_sequences=B.MAX_SEQUENCES, expect=expect)
     assert statistics["frequencies_verified"]
     assert statistics["rows"] == len(rows) == 3
+    assert statistics["max_sequences"] == B.MAX_SEQUENCES
     np.testing.assert_array_equal(rebuilt, rows)
     assert neff == pytest.approx(record["neff"])
 
-    tampered = frequencies + 0.01
-    with pytest.raises(RuntimeError, match="do not reproduce"):
-        B.reconstruct_support(wildtype, "q0", hits, frequencies=tampered, record=record)
+    with pytest.raises(RuntimeError, match="does not reproduce"):
+        B.reconstruct_support(wildtype, "q0", hits, max_sequences=B.MAX_SEQUENCES,
+                              expect=expect | {"frequencies": frequencies + 0.01})
 
 
 def test_exported_alignment_round_trips_with_a_weightless_query_row(tmp_path):
@@ -639,8 +642,12 @@ def test_the_retained_support_rebuilds_for_a_real_wild_type():
     hits = [hit for hit in parse_hits(STORE / "corpus_hits.tsv", fields=ALIGNMENT_FIELDS)
             if hit.query == name]
     assert hits
+    record = profiles["profiles"][name]
     _, _, _, statistics = B.reconstruct_support(
-        wildtype, name, hits, frequencies=stored[name], record=profiles["profiles"][name])
+        wildtype, name, hits, max_sequences=B.MAX_SEQUENCES,
+        expect={"frequencies": stored[name],
+                "n_profile_sequences": record["n_profile_sequences"],
+                "neff": record["neff"]})
     assert statistics["frequencies_verified"]
     assert statistics["rows"] == profiles["profiles"][name]["n_profile_sequences"]
     assert catalogue["wildtypes"][name]["length"] == len(wildtype)

@@ -8,11 +8,15 @@
     scores, and no selection by phenotype and no top-up: the number of runs is a
     property of the protocol, not of the result.
 
-    Two consequences are enforced rather than documented. A wild type is
+    Three consequences are enforced rather than documented. A wild type is
     *complete* only when all three runs completed and each produced its own
     official output file; a partial mean is never emitted, so a failed repeat
     removes the wild type from the score table instead of shrinking its sample
-    size. And the three runs are three draws of one protocol, not biological
+    size. A wild type whose every mutation scored 0.0 in every run is *refused*
+    rather than scored: JET2 placed no position, so the tool returned no
+    estimate, and a column of zeros averaged into a feature would read
+    "neutral everywhere" off a tool that said nothing. The raw runs are kept as
+    the evidence of the refusal and the score itself is null. And the three runs are three draws of one protocol, not biological
     replicates: their spread is reported per variant as a standard deviation and
     as run-to-run rank agreement, which is what the caller needs to know before
     reading a small difference, and nothing in this module calls them replicates.
@@ -34,7 +38,9 @@
     Inputs are the export this repository already produces for the ladder
     (``inputs/manifest.json``, ``inputs/support.json``, ``inputs/variant_table.json``
     and the per-wild-type alignments under ``inputs/msa``); this stage rebuilds no
-    alignment. Every alignment is hash-checked against the export before it is
+    alignment. That export layout is cohort-neutral, so ``--root`` is the only
+    thing that changes between the R1 cohort and any other one the export
+    entry point produces. Every alignment is hash-checked against the export before it is
     run, and every run is laired in its own new directory with its own record, so
     a resumed stage can only ever reuse runs whose inputs, parameters and image
     digest hash identically.
@@ -61,6 +67,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from scripts.capability.baselines import gemme_runtime as G  # noqa: E402
+from src.capability.baselines import cohorts as C  # noqa: E402
 from src.capability.baselines import msa_baselines as B  # noqa: E402
 
 SCHEMA_CHECKPOINT = "r1_gemme_wildtype"
@@ -74,10 +81,9 @@ SCHEMA_SCORES = "r1_gemme_scores"
 RUN_KEY_SCHEMA = "r1_gemme_wildtype_v2"
 RUN_KEY_RUNTIME = "gemme_runtime_v1"
 
-#: The export's own variant-table schema string. It is a literal in the export
-#: entrypoint rather than a shared constant, so it is restated here and checked,
-#: which is what stops this stage reading a table of a different shape.
-SCHEMA_VARIANT_TABLE = "r1_msa_variant_table_v1"
+#: The export's own variant-table schema tag, read from the module that defines
+#: it; checking it is what stops this stage reading a table of a different shape.
+SCHEMA_VARIANT_TABLE = B.SCHEMA_VARIANT_TABLE
 
 #: Fixed by protocol. Not a flag: a caller who could choose the number of runs
 #: could choose the one that agreed with their expectation.
@@ -165,9 +171,11 @@ def verify_export(root: Path) -> dict[str, Any]:
     for label, entry in manifest["inputs"].items():
         path = Path(entry["path"])
         path = path if path.is_absolute() else ROOT / path
-        if not path.is_file():
+        if not path.exists():
             drift.append(f"input {label}: {path} is missing")
-        elif sha256_file(path) != entry["sha256"]:
+        elif C.path_digest(path) != entry["sha256"]:
+            # ``path_digest`` is the export's own rule, so a cohort defined by a
+            # directory of measured rows is bound here exactly as a file is.
             drift.append(f"input {label}: {path} changed since the export")
     if drift:
         raise RuntimeError("the export manifest does not describe these files -- " + "; ".join(drift))
@@ -378,6 +386,38 @@ def run_wildtype(entry: dict[str, Any], args: argparse.Namespace, image_digest: 
     return checkpoint
 
 
+#: A wild type the official tool returned no estimate for, and one of its
+#: samples. Named so that a reader of either table can refuse the row by status
+#: rather than by inferring it from a column of zeros.
+REFUSED_DEGENERATE = "refused_degenerate"
+
+
+def degenerate_refusal(aggregated: dict[str, Any], support_entry: dict[str, Any]) -> dict[str, Any]:
+    """Why one wild type carries no GEMME score, with the support that explains it.
+
+    Every mutation scored 0.0 in every run: JET2 placed no position, so the
+    official tool returned no estimate. A column of zeros is not a score of zero,
+    and averaging it into a feature would read "neutral everywhere" off a tool
+    that said nothing. The alignment depth is recorded beside the reason because
+    that is what the refusal tracks -- in the completed R1 run every degenerate
+    wild type had at most 14 homolog rows and none at 15 or more.
+    """
+
+    if not aggregated["degenerate"]:
+        raise ValueError("this wild type is not degenerate; it carries scores")
+    return {
+        "reason": aggregated["deficient_note"],
+        "alignment_rows": support_entry.get("rows"),
+        "samples": len(aggregated["variants"]),
+    }
+
+
+def refused_variant(variant: dict[str, Any]) -> dict[str, Any]:
+    """One refused sample: the raw runs kept as evidence, the score itself null."""
+
+    return variant | {"gemme_score": None, "gemme_sd": None, "status": REFUSED_DEGENERATE}
+
+
 def record_scores(out: Path) -> list[dict[str, Any]]:
     """The per-mutant rows of one run, read back from the official output."""
 
@@ -571,6 +611,8 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
     """One table keyed by sample_id, stating exactly which wild types are complete."""
 
     scored: dict[str, dict[str, Any]] = {}
+    degenerate: dict[str, dict[str, Any]] = {}
+    refused: dict[str, dict[str, Any]] = {}
     wildtypes: dict[str, dict[str, Any]] = {}
     incomplete: list[dict[str, Any]] = []
     for entry in plans:
@@ -626,6 +668,13 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
             samples_scored=len(aggregated["variants"]),
         )
         wildtypes[name] = block
+        if aggregated["degenerate"]:
+            block["status"] = REFUSED_DEGENERATE
+            block["failure"] = aggregated["deficient_note"]
+            refused[name] = degenerate_refusal(aggregated, export["support"]["wildtypes"][name])
+            for variant in aggregated["variants"]:
+                degenerate[variant["sample_id"]] = refused_variant(variant)
+            continue
         for variant in aggregated["variants"]:
             scored[variant["sample_id"]] = variant
 
@@ -637,7 +686,7 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
     # exists when the whole panel does.
     samples: list[dict[str, Any]] = []
     for row in export["table"]["samples"]:
-        variant = scored.get(row["sample_id"])
+        variant = scored.get(row["sample_id"]) or degenerate.get(row["sample_id"])
         if variant is not None:
             samples.append(variant)
             continue
@@ -691,26 +740,34 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
         "wildtypes": wildtypes,
         "samples": samples,
         "incomplete": incomplete,
+        "refused": refused,
         "counts": {
             "wildtypes_expected": len(wildtypes),
             "wildtypes_complete": sum(1 for block in wildtypes.values() if block["status"] == "complete"),
             "wildtypes_incomplete": len(incomplete),
+            "wildtypes_refused": len(refused),
             "samples": len(samples),
             "samples_scored": len(scored),
+            "samples_refused": len(degenerate),
             "samples_expected": export["counts"]["samples"],
             "wildtypes_degenerate": sum(
                 1 for block in wildtypes.values() if block.get("degenerate") is True),
         },
     }
+    # A declared refusal is a stated limit of the support, not an unfinished run:
+    # the panel is complete when every sample is either scored or refused with a
+    # reason, and never when a refusal has been counted as a score.
     document["counts"]["complete"] = (
-        document["counts"]["samples_scored"] == document["counts"]["samples_expected"]
+        document["counts"]["samples_scored"] + document["counts"]["samples_refused"]
+        == document["counts"]["samples_expected"]
         and document["counts"]["wildtypes_incomplete"] == 0)
     save(Path(args.out) / "scores.json", document)
     write_arrays(Path(args.out) / "scores.npz", samples)
     log.write(
         f"assembled {document['counts']['samples_scored']}/{document['counts']['samples_expected']} samples "
         f"over {document['counts']['wildtypes_complete']} complete wild types "
-        f"({document['counts']['wildtypes_incomplete']} incomplete)")
+        f"({document['counts']['wildtypes_incomplete']} incomplete, "
+        f"{document['counts']['wildtypes_refused']} refused as degenerate)")
     return document
 
 

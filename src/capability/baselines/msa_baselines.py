@@ -1,4 +1,4 @@
-"""Homologous-support statistical baselines for the R1 capability comparison.
+"""Homologous-support statistical baselines of the capability comparison.
 
 Two rungs are exported per mutant, both keyed by the frozen R1 ``sample_id``:
 
@@ -22,10 +22,15 @@ the model prefers the mutant to the wild type, which is the LOOKUP convention
 this repository already publishes.
 
 Support. Homolog rows, weights, coverage and identity floors are the ones the
-retained profile store was built with (80% query coverage, highest bit score per
-subject, at most 5000 sequences, 80% identity reweighting). They are rebuilt
-through :func:`~..core.sequence_alignment.alignment_rows` and then verified
-column by column against ``profiles.npz`` for every wild type before any fit.
+R1 profile store was built with (80% query coverage, highest bit score per
+subject, 80% identity reweighting) at the depth cap the caller declares, which is
+R1's own 5000 for every cohort published so far. They are rebuilt through
+:func:`~..core.sequence_alignment.alignment_rows`; where a retained profile store
+describes an alignment of the same depth, every wild type's rebuild is verified
+column by column against it before any fit, and where no store does, the skipped
+comparison is recorded rather than weakened. The procedure is cohort-neutral:
+:mod:`~.cohorts` resolves which wild types, variants, hit table and depth cap one
+run is about, and R1 is one of its descriptors.
 
 The query row carries weight zero. It fixes the modelled columns and contributes
 no evidence, so the Potts fit sees exactly the weights the profile saw. A real
@@ -70,12 +75,11 @@ from ..context.profiles import (
     PROFILE_COVERAGE_FLOOR,
     PSEUDOCOUNT_ALPHA,
     REWEIGHT_IDENTITY_FLOOR,
-    Profile,
     lookup_score,
     sequence_weights,
     substitution_codes,
 )
-from ..core.sequence_alignment import alignment_rows, verify_rows_against_profile
+from ..core.sequence_alignment import alignment_rows
 from ..models.fitness import parse_mutant
 
 #: Schema tags. One per artefact, so a reader can refuse a document it does not
@@ -84,6 +88,11 @@ SCHEMA_MANIFEST = "r1_msa_baseline_manifest_v1"
 SCHEMA_EXECUTION = "r1_msa_potts_execution_manifest_v1"
 SCHEMA_SUPPORT = "r1_msa_support_v1"
 SCHEMA_SCORES = "r1_msa_baseline_scores_v1"
+#: The exported variant table. One tag for one shape: every cohort's export has
+#: the same columns, so a second tag would mean a second reader. The ``r1_``
+#: spelling is the shape's first publisher and is kept because the frozen R1
+#: artefacts name it.
+SCHEMA_VARIANT_TABLE = "r1_msa_variant_table_v1"
 
 #: Support protocol. Restates the settled values of the retained profile store
 #: and the archived pairwise fit; ``tests/baselines/test_msa_baselines.py`` holds
@@ -117,6 +126,10 @@ INDEPENDENT_SITE_PSEUDOCOUNT = 0.5
 #: A rebuilt alignment must reduce to the retained float32 frequencies this
 #: closely. It is a float32 serialization tolerance, not a modelling tolerance.
 PROFILE_FREQUENCY_TOLERANCE = 1e-6
+
+#: Fewer rows than this cannot carry a pairwise model at all. A wild type below
+#: the floor is refused with its reason, in the export and in the fit alike.
+MIN_POTTS_ROWS = 2
 
 CONVERGED_STATUS = "Minimization success"
 CAP_HIT_MARK = "MAXIMUMITERATION"
@@ -296,7 +309,7 @@ def build_variant_table(
         if cohort is not None:
             _check_against_cohort(row, wildtype, cohort)
         rows.append(row)
-    _check_assay_blocks(rows)
+    check_assay_blocks(rows)
     return rows
 
 
@@ -322,7 +335,7 @@ def _check_against_cohort(row: dict, wildtype: str, cohort: dict) -> None:
         raise ValueError(f"{row['assay']}: {row['mutation']} does not rebuild the cohort's sequence")
 
 
-def _check_assay_blocks(rows: Sequence[dict]) -> None:
+def check_assay_blocks(rows: Sequence[dict]) -> None:
     """Each assay is one contiguous block with a dense, zero-based variant index."""
 
     previous, expected = None, 0
@@ -346,21 +359,6 @@ def substitution_counts(rows: Iterable[dict]) -> dict[str, int]:
 # ----------------------------------------------------------------- the support
 
 
-def stored_profile(query_id: str, wildtype: str, record: dict, frequencies: np.ndarray) -> Profile:
-    """The retained profile of one wild type, read back from its stored frequencies.
-
-    Rebuilt exactly as the retained store's own consumer rebuilds it, so the
-    column weights a verification compares are the ones the store implies.
-    """
-
-    table = np.asarray(frequencies, dtype=np.float64)
-    return Profile(query_id=query_id, wildtype=wildtype, n_hits=int(record["n_hits"]),
-                   n_sequences=int(record["n_profile_sequences"]),
-                   saturated=bool(record["hit_list_saturated"]), frequencies=table,
-                   column_weight=table.sum(axis=1), neff=float(record["neff"]),
-                   max_identity_over_query=float(record["max_identity_over_query"]))
-
-
 def reconstructed_frequencies(rows: np.ndarray, weights: np.ndarray) -> np.ndarray:
     frequencies = np.zeros((rows.shape[1], len(AA20)), dtype=np.float64)
     for code in range(len(AA20)):
@@ -371,38 +369,78 @@ def reconstructed_frequencies(rows: np.ndarray, weights: np.ndarray) -> np.ndarr
     return frequencies
 
 
-def reconstruct_support(wildtype: str, query_id: str, hits: Sequence, *, frequencies: np.ndarray,
-                        record: dict) -> tuple[np.ndarray, np.ndarray, float, dict]:
-    """Rebuild one wild type's homolog rows and prove they are the retained ones.
+def reconstruct_support(wildtype: str, query_id: str, hits: Sequence, *,
+                        max_sequences: int = MAX_SEQUENCES,
+                        expect: dict | None = None) -> tuple[np.ndarray, np.ndarray, float, dict]:
+    """Rebuild one wild type's homolog rows at a declared depth, and cross-check them.
 
-    ``verify_rows_against_profile`` is the archive's own cross-reader guard; the
-    explicit deviation, row count and Neff comparison beside it is what makes the
-    claim per wild type rather than per example, because the stored frequencies
-    are float32 and a silent difference of one row would otherwise still pass a
-    loose tolerance.
+    ``max_sequences`` is the depth cap the alignment is built at. It is an
+    argument rather than a constant because the same procedure serves several
+    cohorts and each one has to state the depth it was built at; every current
+    caller passes R1's own 5000.
+
+    ``expect`` is a retained site-independent profile of the same wild type --
+    ``frequencies``, ``n_profile_sequences``, ``neff`` and the precision that
+    ``neff`` was retained at -- used as a
+    cross-check and never as an input. It makes the claim per wild type rather
+    than per example, because the stored frequencies are float32 and a silent
+    difference of one row would otherwise still pass a loose tolerance. A
+    retained store built at a depth cap that binds where this one does not
+    describes a different alignment, so the caller passes ``None`` and the
+    skipped comparison is recorded rather than weakened.
     """
 
     rows, weights, neff = alignment_rows(
-        wildtype, query_id, hits, max_sequences=MAX_SEQUENCES, coverage_floor=COVERAGE_FLOOR,
+        wildtype, query_id, hits, max_sequences=max_sequences, coverage_floor=COVERAGE_FLOOR,
         reweight_identity=REWEIGHT_IDENTITY)
-    profile = stored_profile(query_id, wildtype, record, frequencies)
-    verify_rows_against_profile(rows, weights, profile, tolerance=PROFILE_FREQUENCY_TOLERANCE)
-    rebuilt = reconstructed_frequencies(rows, weights)
-    deviation = float(np.abs(rebuilt - profile.frequencies).max()) if len(rows) else 0.0
-    if len(rows) != int(record["n_profile_sequences"]):
-        raise RuntimeError(
-            f"{query_id}: rebuilt {len(rows)} homolog rows where the retained profile holds "
-            f"{record['n_profile_sequences']}")
-    if not np.isclose(neff, float(record["neff"]), rtol=1e-9, atol=1e-9):
-        raise RuntimeError(
-            f"{query_id}: rebuilt Neff {neff!r} where the retained profile records {record['neff']!r}")
-    return rows, weights, neff, {
+    statistics = {
         "rows": int(len(rows)),
+        "max_sequences": int(max_sequences),
+        "depth_cap_reached": bool(len(rows) == max_sequences),
         "neff_at_30_percent_identity": float(neff),
         "weights_sum": float(weights.sum()),
         "effective_depth_per_site": float(neff) / len(wildtype),
+    }
+    return rows, weights, neff, statistics | compare_frequencies(
+        rows, weights, neff=neff, query_id=query_id, expect=expect)
+
+
+def compare_frequencies(rows: np.ndarray, weights: np.ndarray, *, neff: float, query_id: str,
+                        expect: dict | None) -> dict:
+    """Compare a rebuilt alignment with a retained profile of the same wild type.
+
+    The deviation is the quantity
+    :func:`~..core.sequence_alignment.verify_rows_against_profile` computes, and
+    the tolerance is the same float32 serialization tolerance; the row count and
+    Neff beside it are what a frequency comparison alone cannot see.
+    """
+
+    if expect is None:
+        return {"frequencies_verified": None,
+                "frequencies_check": "no retained profile describes this alignment's depth"}
+    retained = np.asarray(expect["frequencies"], dtype=np.float64)
+    rebuilt = reconstructed_frequencies(rows, weights)
+    deviation = float(np.abs(rebuilt - retained).max()) if len(rows) else 0.0
+    if len(rows) != int(expect["n_profile_sequences"]):
+        raise RuntimeError(
+            f"{query_id}: rebuilt {len(rows)} homolog rows where the retained profile holds "
+            f"{expect['n_profile_sequences']}")
+    # A store that wrote Neff to four decimals can only be compared to four
+    # decimals. The tolerance is the store's retained precision, declared by the
+    # reader that knows it, and never a modelling allowance.
+    tolerance = float(expect.get("neff_tolerance", 1e-9))
+    if abs(neff - float(expect["neff"])) > tolerance:
+        raise RuntimeError(
+            f"{query_id}: rebuilt Neff {neff!r} where the retained profile records "
+            f"{expect['neff']!r}, beyond its retained precision {tolerance:g}")
+    if deviation > PROFILE_FREQUENCY_TOLERANCE:
+        raise RuntimeError(
+            f"{query_id}: the rebuilt alignment does not reproduce the retained profile "
+            f"(max |difference| {deviation:.3e} > {PROFILE_FREQUENCY_TOLERANCE:.0e})")
+    return {
         "frequencies_max_absolute_deviation": deviation,
-        "frequencies_verified": deviation <= PROFILE_FREQUENCY_TOLERANCE,
+        "frequencies_verified": True,
+        "frequencies_source": expect.get("source"),
     }
 
 
@@ -839,9 +877,10 @@ def fit_background(job: dict) -> dict:
     record["alignment"] = {"msa": job["msa"], "msa_sha256": job["msa_sha256"],
                            "weights_sha256": job["weights_sha256"],
                            "rows": int(len(rows)), "weights_sum_on_disk": float(weights.sum())}
-    if len(rows) < 2:
+    if len(rows) < MIN_POTTS_ROWS:
         record["status"] = STATUS_NO_SUPPORT
-        record["failure"] = f"{len(rows)} homolog rows cannot carry a Potts fit"
+        record["failure"] = (
+            f"{len(rows)} homolog rows is below the {MIN_POTTS_ROWS}-row floor of a Potts fit")
         return record
 
     held = held_out_mask(rows)
@@ -958,20 +997,29 @@ def background_status(record: dict | None) -> str:
 
 
 def assemble_scores(variant_table: Sequence[dict], records: dict[str, dict], *,
-                    wildtype_ids: Sequence[str], protocol: dict, inputs: dict) -> tuple[dict, dict]:
+                    wildtype_ids: Sequence[str], protocol: dict, inputs: dict,
+                    refused: dict[str, dict] | None = None) -> tuple[dict, dict]:
     """The unified per-sample score table, in the frozen sample order.
 
     A sample whose background is absent or failed is retained with its explicit
     status and a ``NaN`` Potts value. Nothing is dropped, duplicated or padded
     with a zero, because a zero here would be a legitimate score.
+
+    ``refused`` names the backgrounds the export refused, with the reason it
+    recorded. Their samples carry :data:`STATUS_NO_SUPPORT` rather than the
+    pending status of a background that has simply not run yet, and they are
+    counted separately: a declared refusal is a stated limit of the cohort, so it
+    does not make a finished run read as unfinished, and it is never imputed.
     """
 
+    refused = dict(refused or {})
     samples = []
     potts = np.full(len(variant_table), np.nan, dtype=np.float64)
     status = np.empty(len(variant_table), dtype=object)
     for index, row in enumerate(variant_table):
         record = records.get(row["wildtype_id"])
-        state = background_status(record)
+        state = (STATUS_NO_SUPPORT if row["wildtype_id"] in refused
+                 else background_status(record))
         status[index] = state
         if record is not None and state in SCOREABLE:
             potts[index] = record["sample_scores"][row["sample_id"]]
@@ -981,7 +1029,7 @@ def assemble_scores(variant_table: Sequence[dict], records: dict[str, dict], *,
             "wildtype_id": row["wildtype_id"],
             "mutation": row["mutation"],
             "n_substitutions": row["n_substitutions"],
-            "profile_delta": row["profile_delta"],
+            "profile_delta": row.get("profile_delta"),
             "potts_delta": None if np.isnan(potts[index]) else float(potts[index]),
             "status": state,
         })
@@ -990,7 +1038,9 @@ def assemble_scores(variant_table: Sequence[dict], records: dict[str, dict], *,
     counts = {
         "samples": len(samples),
         "samples_with_potts": int(np.isfinite(potts).sum()),
+        "samples_refused": sum(1 for row in samples if row["wildtype_id"] in refused),
         "backgrounds_expected": len(wildtype_ids),
+        "backgrounds_refused": len(refused),
         "backgrounds_resolved": len(resolved),
         "backgrounds_fitted": sum(records[n]["status"] in COMPLETE for n in resolved),
         "backgrounds_final_not_converged": sum(
@@ -1022,6 +1072,7 @@ def assemble_scores(variant_table: Sequence[dict], records: dict[str, dict], *,
         "protocol": protocol,
         "inputs": inputs,
         "counts": counts,
+        "refused": refused,
         "backgrounds": summaries,
         "samples": samples,
     }
@@ -1030,7 +1081,9 @@ def assemble_scores(variant_table: Sequence[dict], records: dict[str, dict], *,
         "assay": np.array([row["assay"] for row in samples]),
         "wildtype_id": np.array([row["wildtype_id"] for row in samples]),
         "mutation": np.array([row["mutation"] for row in samples]),
-        "profile_delta": np.array([row["profile_delta"] for row in samples], dtype=np.float64),
+        "profile_delta": np.array(
+            [np.nan if row["profile_delta"] is None else row["profile_delta"] for row in samples],
+            dtype=np.float64),
         "potts_delta": potts,
         "status": np.array([str(value) for value in status]),
     }
@@ -1041,7 +1094,7 @@ def _background_summary(record: dict) -> dict:
     keep = ("status", "length", "regularization_policy", "cv_qualified", "selected_lambda_e",
             "held_out_gain_over_independent_site", "selected_at_grid_edge", "selection",
             "sweep", "final", "params", "sign_check", "effective_samples_check",
-            "score_variation", "max_iter_caps", "failure", "support")
+            "score_variation", "max_iter_caps", "failure", "support", "reused_from")
     return {key: record.get(key) for key in keep if key in record}
 
 
@@ -1118,8 +1171,14 @@ def verify_inputs(out_dir: Path, *, root: Path) -> dict:
     table_path = out_dir / "inputs" / "variant_table.json"
     support = json.loads(support_path.read_text())
     table = json.loads(table_path.read_text())
-    if table["source_sha256"] != source["samples"]["sha256"]:
-        drift.append("variant_table: its source digest is not the manifest's sample table")
+    # The table names the input it was derived from. The frozen R1 export predates
+    # that field and was derived from the input labelled ``samples``, so its own
+    # spelling remains readable here rather than being rewritten.
+    label = table.get("source_label", "samples")
+    if label not in source:
+        drift.append(f"variant_table: its source {label!r} is not an input of this manifest")
+    elif table["source_sha256"] != source[label]["sha256"]:
+        drift.append(f"variant_table: its source digest is not the manifest's {label}")
     msa_weights = {}
     for name, entry in support["wildtypes"].items():
         for label, field in (("msa", "msa"), ("weights", "weights")):
