@@ -131,6 +131,11 @@ MINIMUM_BOOTSTRAP_UNITS = 8
 #: data cannot inform at all, which is not a wide interval and never an estimate of
 #: zero. A lane that declares no margin cannot reach ``bounded_negative`` for
 #: smallness and reports the interval's own bound instead.
+#:
+#: What is shared is these four names. The rule that assigns them to an interval is
+#: per endpoint: the text above is the general rule for a lane, and an endpoint that
+#: pre-registers its own assignment (the objective-tuned prediction endpoint reads a
+#: band's larger end against the controls' own performance) is governed by that rule.
 SUPPORTED = "supported"
 BOUNDED_NEGATIVE = "bounded_negative"
 UNRESOLVED = "unresolved"

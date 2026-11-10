@@ -1,0 +1,26 @@
+{
+  "schema": "objective_tuned_prediction_declaration",
+  "declared_in": "docs/objective-alignment.md, third amendment of 2026-11-10",
+  "frozen": "2026-11-10, before any tuned arm was scored on the R1 cohort",
+  "finding_states": "the four state names come from the single source in src/capability/core/statistics.py; the rule that assigns them to a column is this endpoint's own, declared in the third and fourth amendments (a band containing zero is bounded_negative when its larger end is below the controls' own performance), and does not follow the general lane rule stated there",
+  "admitted": [
+    "protgpt3-112m-dpo",
+    "protgpt3-1.3b-dpo",
+    "protgpt3-10b-dpo",
+    "progen2-small-mix7"
+  ],
+  "not_measured": {
+    "zymctrl": "the pair cannot carry a matched contrast (amendment of 2026-11-10 to docs/objective-alignment.md): ZymCTRL takes an EC class tag that ProtGPT2 cannot receive, scoring it without the tag is 1.73 nats off distribution (EXP-R2-034), and scoring it with one needs an exact-wild-type EC annotation that most R1 backgrounds lack, so its support would not match its base's. Not a cost decision."
+  },
+  "cost_estimate": {
+    "path": "logs/operations/objective-tuned-prediction-20261110/cost-estimate.json",
+    "sha256": "66f3dfc2386e2854b01221d1ad753b25b39b263433413af9e260ed225e61b5bc",
+    "reading": "L20, float32, one sequence per forward, 12-assay slice extrapolated to 25,929 sequences by a per-length line; the four admitted pairs cost 13633 s of single-L20 scoring in total (the archived ProtGPT3-1.3B base is reused, not rescored), the 10B pair being 71% of it, so no admitted pair is dropped for cost"
+  },
+  "instrument_floor": {
+    "path": "logs/operations/objective-tuned-prediction-20261110/instrument-floor.json",
+    "sha256": "0c04fd4666c056cbfb3ecb02bb877cba128e304ee865f3f467a4f7bf12179e3f",
+    "correlation": 0.00136499036977078,
+    "basis": "Gaussian noise of the declared 1.07e-2 per-variant coupling spread added to the Potts column, controls and the ProtGPT3-1.3B reference refitted on the full support, largest shift in the family-mean rho of the controls and of both increments over 3 draws at the nominal spread; the 4x iteration-cap scenario is recorded for reference only because a capped background is booked incomplete and never used"
+  }
+}
