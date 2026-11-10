@@ -84,6 +84,12 @@ RUN_KEY_RUNTIME = "gemme_runtime_v1"
 #: The export's own variant-table schema tag, read from the module that defines
 #: it; checking it is what stops this stage reading a table of a different shape.
 SCHEMA_VARIANT_TABLE = B.SCHEMA_VARIANT_TABLE
+#: Written by the export stage, which holds the only other copy of this literal.
+#: It belongs beside the other export schemas in ``msa_baselines``, and is kept
+#: here until the Potts chain finishes: that module's digest is bound into the
+#: execution manifest of every fit now running, and moving it would invalidate
+#: their checkpoints for a constant.
+SCHEMA_REFUSALS = "explicit_statistics_refusals_v1"
 
 #: Fixed by protocol. Not a flag: a caller who could choose the number of runs
 #: could choose the one that agreed with their expectation.
@@ -183,6 +189,18 @@ def verify_export(root: Path) -> dict[str, Any]:
     support = load(inputs / "support.json")
     if support.get("schema") != B.SCHEMA_SUPPORT:
         raise ValueError(f"{inputs / 'support.json'}: schema {support.get('schema')!r} is not {B.SCHEMA_SUPPORT!r}")
+    # A reference the export refused carries no alignment, so it is never planned
+    # here and its samples can never be scored or refused by this stage. They are
+    # still rows of the frozen table, and the only honest way to account for them
+    # is to read the export's own declaration of why. R1's export predates the
+    # declaration and has no refusals, which is consistent because every
+    # reference of its table carries support; an undeclared unplanned reference
+    # therefore stays pending rather than being assumed refused.
+    refusals = load(inputs / "refusals.json") if (inputs / "refusals.json").is_file() else {}
+    if refusals and refusals.get("schema") != SCHEMA_REFUSALS:
+        raise ValueError(
+            f"{inputs / 'refusals.json'}: schema {refusals.get('schema')!r} is not "
+            f"{SCHEMA_REFUSALS!r}")
     table = load(inputs / "variant_table.json")
     if table.get("schema") != SCHEMA_VARIANT_TABLE:
         raise ValueError(
@@ -192,6 +210,7 @@ def verify_export(root: Path) -> dict[str, Any]:
         "manifest": manifest,
         "support": support,
         "table": table,
+        "refusals": refusals,
         "files": {
             label: {"path": display(inputs / name), "sha256": sha256_file(inputs / name)}
             for label, name in (
@@ -199,6 +218,7 @@ def verify_export(root: Path) -> dict[str, Any]:
                 ("support", "support.json"),
                 ("variant_table", "variant_table.json"),
             )
+            + ((("refusals", "refusals.json"),) if refusals else ())
         },
         "counts": manifest["counts"],
     }
@@ -683,8 +703,12 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
     # runs. A sample of an incomplete or unplanned wild type keeps its row with a
     # null score and its status, so coverage is never faked by dropping rows and
     # no partial mean can stand in for one: the ladder's numeric column only
-    # exists when the whole panel does.
+    # exists when the whole panel does. A row whose reference the export refused
+    # is a declared limit of the support rather than work still owed, and it says
+    # so in the same word the sibling Potts assembly uses.
+    without_support = export.get("refusals", {}).get("refused") or {}
     samples: list[dict[str, Any]] = []
+    unsupported = 0
     for row in export["table"]["samples"]:
         variant = scored.get(row["sample_id"]) or degenerate.get(row["sample_id"])
         if variant is not None:
@@ -694,6 +718,9 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
         status = "wildtype_pending"
         if block is not None:
             status = "wildtype_complete" if block["status"] == "complete" else "wildtype_incomplete"
+        elif row["wildtype_id"] in without_support:
+            status = B.STATUS_NO_SUPPORT
+            unsupported += 1
         samples.append(
             {
                 "sample_id": row["sample_id"],
@@ -749,18 +776,26 @@ def assemble(args: argparse.Namespace, log: Log, export: dict[str, Any], image: 
             "samples": len(samples),
             "samples_scored": len(scored),
             "samples_refused": len(degenerate),
+            "samples_without_support": unsupported,
             "samples_expected": export["counts"]["samples"],
+            "wildtypes_without_support": sum(
+                1 for name in without_support if name not in wildtypes),
             "wildtypes_degenerate": sum(
                 1 for block in wildtypes.values() if block.get("degenerate") is True),
         },
     }
     # A declared refusal is a stated limit of the support, not an unfinished run:
-    # the panel is complete when every sample is either scored or refused with a
-    # reason, and never when a refusal has been counted as a score.
+    # the panel is complete when every sample is accounted for by exactly one of
+    # the three outcomes this stage can reach -- scored, refused as degenerate, or
+    # belonging to a reference the export itself refused -- and never when a
+    # refusal has been counted as a score. One equation names every row once, so
+    # a sample of an incomplete or still-pending reference falls outside all three
+    # and the panel reads incomplete, which is the whole point of the check.
     document["counts"]["complete"] = (
-        document["counts"]["samples_scored"] + document["counts"]["samples_refused"]
-        == document["counts"]["samples_expected"]
-        and document["counts"]["wildtypes_incomplete"] == 0)
+        document["counts"]["samples_scored"]
+        + document["counts"]["samples_refused"]
+        + document["counts"]["samples_without_support"]
+        == document["counts"]["samples_expected"])
     save(Path(args.out) / "scores.json", document)
     write_arrays(Path(args.out) / "scores.npz", samples)
     log.write(

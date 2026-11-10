@@ -385,6 +385,49 @@ def test_a_degenerate_gemme_wildtype_is_refused_rather_than_scored():
         gemme.degenerate_refusal(aggregated | {"degenerate": False}, {"rows": 9})
 
 
+def test_an_export_refused_reference_is_accounted_for_and_never_called_pending(tmp_path):
+    """Every row of the frozen table belongs to exactly one outcome.
+
+    A reference the export refused carries no alignment, so this stage can never
+    run it: calling its rows pending claims work that is owed, and leaving them
+    out of the completeness equation makes a finished wave read unfinished. A
+    reference that is planned and has not finished is the opposite case and must
+    still hold the panel open.
+    """
+
+    samples = [
+        {"sample_id": "kept::V1A", "assay": "kept", "wildtype_id": "kept",
+         "mutation": "V1A", "n_substitutions": 1},
+        {"sample_id": "gone::V1A", "assay": "gone", "wildtype_id": "gone",
+         "mutation": "V1A", "n_substitutions": 1},
+    ]
+    export = {
+        "support": {"wildtypes": {"kept": {"rows": 9}}},
+        "table": {"samples": samples},
+        "refusals": {"refused": {"gone": {"reason": "0 retained homolog rows", "rows": 0,
+                                          "samples": 1}}},
+        "files": {},
+        "counts": {"samples": len(samples)},
+    }
+    plans = [{"wildtype_id": "kept", "length": 40, "assays": ["kept"], "samples": 1,
+              "mutations": ["V1A"], "shared_mutations": 0}]
+    checkpoints = {"kept": {"status": "failed", "run_key": "k", "runs": [],
+                            "failure": "the official run did not finish"}}
+    args = argparse.Namespace(root=str(tmp_path), out=str(tmp_path / "gemme"),
+                              nseqs=20000, iterations=1, image="image:tag")
+    document = gemme.assemble(args, gemme.Log(tmp_path / "log"), export,
+                              {"image_id": "sha256:0"}, {}, plans, checkpoints)
+
+    status = {row["sample_id"]: row["status"] for row in document["samples"]}
+    assert status["gone::V1A"] == B.STATUS_NO_SUPPORT
+    assert document["counts"]["samples_without_support"] == 1
+    assert document["counts"]["wildtypes_without_support"] == 1
+    # The planned reference did not finish, so the panel is not complete -- the
+    # one equation catches it without a second guard.
+    assert status["kept::V1A"] == "wildtype_incomplete"
+    assert document["counts"]["complete"] is False
+
+
 # ----------------------------------------------------- the reproduction gate
 
 
