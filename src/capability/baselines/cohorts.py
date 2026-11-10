@@ -57,7 +57,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-import hashlib
 import json
 import re
 
@@ -67,8 +66,8 @@ from .msa_baselines import (
     build_variant_table,
     check_assay_blocks,
     parse_substitutions,
+    path_digest,
     read_fasta,
-    sha256_file,
     substitution_counts,
 )
 
@@ -603,23 +602,6 @@ def _check_expectations(cohort: Cohort) -> None:
         raise ValueError(
             f"{cohort.name}: the cohort no longer has the shape its descriptor declares -- "
             + "; ".join(f"{key} declared {want}, measured {got}" for key, (want, got) in drift.items()))
-
-
-def path_digest(path: Path) -> str:
-    """One digest for one input, whether it is a file or a directory of them.
-
-    A cohort may be defined by a directory -- the phenotype rows are five JSONL
-    files -- and such an input has to be bound as tightly as a single file. The
-    directory's digest is the digest of its own sorted ``name sha256`` listing,
-    so adding, removing or editing any file in it changes the manifest.
-    """
-
-    path = Path(path)
-    if not path.is_dir():
-        return sha256_file(path)
-    listing = "".join(f"{entry.name} {sha256_file(entry)}\n"
-                      for entry in sorted(path.iterdir()) if entry.is_file())
-    return hashlib.sha256(listing.encode()).hexdigest()
 
 
 def input_record(cohort: Cohort, *, extra: dict[str, str] | None = None) -> dict:

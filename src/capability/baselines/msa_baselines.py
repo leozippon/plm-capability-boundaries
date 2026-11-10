@@ -170,6 +170,26 @@ POTTS_SCORE_DEFINITION = (
 )
 
 
+def path_digest(path: Path) -> str:
+    """One digest for one input, whether it is a file or a directory of them.
+
+    A cohort may be defined by a directory -- the phenotype rows are five JSONL
+    files -- and such an input has to be bound as tightly as a single file. The
+    directory's digest is the digest of its own sorted ``name sha256`` listing,
+    so adding, removing or editing any file in it changes the manifest. Every
+    producer and every verifier of a manifest uses this one function, because a
+    verifier that only understood files would report a staged directory as
+    missing and refuse a fit whose inputs were in fact intact.
+    """
+
+    path = Path(path)
+    if not path.is_dir():
+        return sha256_file(path)
+    listing = "".join(f"{entry.name} {sha256_file(entry)}\n"
+                      for entry in sorted(path.iterdir()) if entry.is_file())
+    return hashlib.sha256(listing.encode()).hexdigest()
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -1181,9 +1201,9 @@ def verify_inputs(out_dir: Path, *, root: Path) -> dict:
     source, drift = {}, []
     for label, entry in manifest["inputs"].items():
         path = _resolve(root, entry["path"])
-        if not path.is_file():
+        if not path.exists():
             drift.append(f"source {label}: {path} is missing")
-        elif sha256_file(path) != entry["sha256"]:
+        elif path_digest(path) != entry["sha256"]:
             drift.append(f"source {label}: {path} changed")
         source[label] = {"path": entry["path"], "sha256": entry["sha256"]}
     support_path = out_dir / "inputs" / "support.json"

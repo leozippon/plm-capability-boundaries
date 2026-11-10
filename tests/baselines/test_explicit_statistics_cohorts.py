@@ -230,6 +230,52 @@ def test_the_export_refuses_a_refusal_count_the_descriptor_does_not_declare(tmp_
         R.stage_export(arguments, R.Log(tmp_path / "log" / "export.log"))
 
 
+def test_a_directory_input_is_digested_and_verifies(tmp_path):
+    """A cohort can be defined by a directory of measured rows, and both the
+    producer and the verifier of a manifest must agree on what that binds to.
+    A verifier that only understood files reported a staged directory as missing
+    and refused a fit whose inputs were in fact intact."""
+
+    rows = tmp_path / "rows"
+    rows.mkdir()
+    (rows / "a.jsonl").write_text('{"x": 1}\n')
+    (rows / "b.jsonl").write_text('{"x": 2}\n')
+    first = B.path_digest(rows)
+    assert first == C.path_digest(rows), "one definition, one digest"
+    assert first != B.path_digest(rows / "a.jsonl")
+    # Every file in the directory is bound: adding, editing or removing one moves it.
+    (rows / "c.jsonl").write_text('{"x": 3}\n')
+    assert B.path_digest(rows) != first
+    (rows / "c.jsonl").unlink()
+    assert B.path_digest(rows) == first
+    (rows / "b.jsonl").write_text('{"x": 9}\n')
+    assert B.path_digest(rows) != first
+
+
+@pytest.mark.skipif(R.available_memory() < R.MIN_HEADROOM_BYTES,
+                    reason="the export's declared memory headroom is not available here")
+def test_verify_inputs_accepts_a_directory_the_manifest_names(tmp_path):
+    config = tiny_cohort(tmp_path, expect={"references": 1, "samples": 2, "refusals": 0})
+    hits_tsv(tmp_path / "hits.tsv", 4)
+    extra = tmp_path / "rows"
+    extra.mkdir()
+    (extra / "one.jsonl").write_text('{"row": 1}\n')
+    declared = json.loads(config.read_text())
+    declared["cohorts"]["tiny"]["inputs"]["rows"] = str(extra)
+    config.write_text(json.dumps(declared))
+    arguments = argparse.Namespace(cohort="tiny", config=config, out=tmp_path / "out",
+                                   workers=1, threads=1)
+    R.stage_export(arguments, R.Log(tmp_path / "log" / "export.log"))
+    # The root is the repository's, as in production: this cohort's own inputs are
+    # absolute and the plmc binary the manifest names is repository-relative.
+    verified = B.verify_inputs(tmp_path / "out", root=REPO_ROOT)
+    assert verified["source"]["rows"]["sha256"] == B.path_digest(extra)
+    # And a change inside it is drift, not silence.
+    (extra / "one.jsonl").write_text('{"row": 2}\n')
+    with pytest.raises(RuntimeError, match="no longer match their manifest"):
+        B.verify_inputs(tmp_path / "out", root=REPO_ROOT)
+
+
 # --------------------------------------------------------------------- depth
 
 
