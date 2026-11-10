@@ -432,6 +432,12 @@ def reuse_scope():
                            "'one instrument' is established on that check and no wider"))
 
 
+def reused_archive(arm, fresh_bases):
+    """Whether a base contributes its archived scalar; ``--fresh-bases`` declines every reuse."""
+    from src.capability.extensions import objective_tuned_prediction as endpoint
+    return endpoint.reuses_archive(arm) and not fresh_bases
+
+
 def run(args):
     from src.capability.extensions import objective_tuned_prediction as endpoint
     if args.out.exists():
@@ -457,7 +463,7 @@ def run(args):
     for pair in endpoint.admitted_pairs():
         for arm in pair.arms:
             vector = np.full(len(row_assay), np.nan)
-            if endpoint.reuses_archive(arm):
+            if reused_archive(arm, args.fresh_bases):
                 vector[:] = data['features'][arm]
             else:
                 for assay, values in score_arm(arm, table, scores, args.device,
@@ -470,7 +476,7 @@ def run(args):
     models = {arm for p in endpoint.admitted_pairs() for arm in p.arms}
     rows, digests = fit_rows(data, {arm: np.nan_to_num(v) for arm, v in scalars.items()
                                     if arm in models}, mask)
-    reused = {p.base for p in endpoint.admitted_pairs() if endpoint.reuses_archive(p.base)}
+    reused = {p.base for p in endpoint.admitted_pairs() if reused_archive(p.base, args.fresh_bases)}
     reproduced = verify_reuse(rows, reused) if mask.all() and reused else None
     difference = endpoint.difference_matrix(rows)
     # The controls are one fit shared by every arm, so their performance is one number.
@@ -481,10 +487,14 @@ def run(args):
                            dict(digests, controls=endpoint.support_digest(
                                data['sample_ids'][mask])),
                            controls_performance=controls_performance.pop())
+    contract = endpoint.contract()
+    if args.fresh_bases:
+        contract['reused_archived_bases'] = []
     record = dict(schema='objective_tuned_prediction_result', dry_run=bool(args.dry_run),
-                  claims_result=not args.dry_run, contract=endpoint.contract(),
+                  claims_result=not args.dry_run, contract=contract,
+                  base_source='fresh full-support scores' if args.fresh_bases else 'archived reuse',
                   support={k: v for k, v in support.items() if k != 'mask'},
-                  archived_reuse_max_difference=reproduced, reuse_scope=reuse_scope(),
+                  archived_reuse_max_difference=reproduced, reuse_scope=None if args.fresh_bases else reuse_scope(),
                   band=result,
                   # Descriptive only: each arm's own family-mean rho per design, outside the
                   # declared family. Forward = MPEG - PEG, reverse = MPEG - M.
@@ -528,6 +538,8 @@ def main(argv=None):
     p.add_argument('--device')
     p.add_argument('--scores', type=Path)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--fresh-bases', action='store_true',
+                   help='score every base, the archived one included, from fresh scores in --scores')
     p.add_argument('--out', type=Path, required=True)
     p.set_defaults(handler=run)
     args = parser.parse_args(argv)

@@ -311,3 +311,10 @@ def test_family_mean_reads_one_arms_rows_out_of_the_whole_run():
     want = float(np.mean([r['spearman']['MPEG'] for r in rows if r['model'] == arms[0]]))
     assert got == pytest.approx(want)
     assert script.family_mean(rows, arms[1], 'MPEG') != pytest.approx(got)
+
+
+def test_fresh_bases_declines_every_archived_reuse():
+    from scripts.capability.extensions import score_objective_tuned_prediction as script
+    reused = {p.base for p in endpoint.admitted_pairs() if script.reused_archive(p.base, False)}
+    assert reused == {p.base for p in endpoint.admitted_pairs() if endpoint.reuses_archive(p.base)} != set()
+    assert not any(script.reused_archive(p.base, True) for p in endpoint.admitted_pairs())

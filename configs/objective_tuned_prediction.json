@@ -3,6 +3,7 @@
   "declared_in": "docs/objective-alignment.md, third amendment of 2026-11-10",
   "frozen": "2026-11-10, before any tuned arm was scored on the R1 cohort",
   "finding_states": "the four state names come from the single source in src/capability/core/statistics.py; the rule that assigns them to a column is this endpoint's own, declared in the third and fourth amendments (a band containing zero is bounded_negative when its larger end is below the controls' own performance), and does not follow the general lane rule stated there",
+  "fresh_bases_option": "run --fresh-bases takes every base, the archived ProtGPT3-1.3B included, from fresh full-support scores instead of the archive; the declared reuse stays the default and its record is kept beside the fresh one (tenth amendment of docs/objective-alignment.md, digest 857f753a4a9c1ce7)",
   "admitted": [
     "protgpt3-112m-dpo",
     "protgpt3-1.3b-dpo",
