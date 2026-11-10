@@ -48,6 +48,56 @@ INTERPRETATION = (
 )
 
 
+#: One declared seed re-applied to every structure. The historical behaviour, and
+#: the rule every tree folded before 2026-11-10 was measured under.
+SEED_RULE_CONSTANT = "constant"
+
+#: Each structure seeded from its own sequence digest.
+SEED_RULE_SEQUENCE_DIGEST = "sequence_digest"
+
+SEED_RULES: tuple[str, ...] = (SEED_RULE_CONSTANT, SEED_RULE_SEQUENCE_DIGEST)
+
+#: Seeds stay inside the range every backend accepts for a 32-bit seed.
+_SEED_MODULUS = 2**31
+
+
+def fold_seed(sequence: str, *, base_seed: int, rule: str) -> int:
+    """The stream seed for one structure's replica axis.
+
+    Folding at 32 diffusion samples is stochastic, so this choice decides what a
+    resampling interval over sequences can see.
+
+    Under :data:`SEED_RULE_CONSTANT` every structure draws the same stream. The
+    noise is then *common-mode*: one realisation is shared by the whole cohort, so
+    the component never enters the between-sequence spread and a bootstrap over
+    sequences cannot recover it at any sample size. An interval built that way is
+    conditional on the single realisation it happened to get, and understates its
+    own uncertainty by exactly the term it cannot observe.
+
+    Under :data:`SEED_RULE_SEQUENCE_DIGEST` each structure draws an independent
+    stream keyed to its own content, so the noise variance lands inside the
+    per-sequence spread that the resampling already resamples, and the interval is
+    valid as constructed rather than needing a stated limitation.
+
+    Keying on content rather than on position is what makes this free of the
+    layout: the seed does not depend on which shard a sequence lands in, on its
+    ordinal in a worker's queue, or on how many workers share a card. Two
+    identical sequences keep identical folds, which the cohort's digest-keyed
+    deduplication already requires, so the one case where two arms meet is
+    unchanged.
+
+    The rule is part of the measurement contract, not a convenience: a tree folded
+    under one rule must not resume or merge under the other, and recording it is
+    what makes the evaluation signature refuse that.
+    """
+
+    if rule == SEED_RULE_CONSTANT:
+        return int(base_seed)
+    if rule == SEED_RULE_SEQUENCE_DIGEST:
+        return (int(base_seed) + int(sequence_digest(sequence)[:16], 16)) % _SEED_MODULUS
+    raise ValueError(f"unknown fold seed rule {rule!r}; declared: {list(SEED_RULES)}")
+
+
 def digest_json(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 

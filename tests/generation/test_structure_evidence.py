@@ -227,6 +227,88 @@ class StructureEvidence(unittest.TestCase):
             self.assertFalse(unattained["calibration_attained"])
             self.assertEqual(unattained["interpretation"], "uncalibrated_predictor")
 
+    def test_the_constant_seed_rule_is_bit_unchanged(self):
+        """Every tree folded before the digest rule existed was measured this way.
+
+        A changed default would alter the measured quantity for every other
+        campaign and break resumes on existing trees, so the historical rule has
+        to stay exactly what it was: one declared seed, re-applied per structure.
+        """
+
+        for sequence in ("MKTAYIAKQR", "A" * 16, "WYFV" * 40):
+            self.assertEqual(
+                se.fold_seed(sequence, base_seed=20260905, rule=se.SEED_RULE_CONSTANT),
+                20260905,
+            )
+        self.assertEqual(se.SEED_RULES[0], se.SEED_RULE_CONSTANT)
+
+    def test_the_digest_rule_gives_each_sequence_its_own_stream(self):
+        """Distinct content draws distinct streams; identical content does not.
+
+        The first property is the point of the rule: it moves the diffusion noise
+        out of a single common-mode realisation, which no resampling over
+        sequences can observe, and into the per-sequence spread that the project's
+        bands already resample. The second keeps the one case where two arms meet
+        unchanged, because the cohort shares exact duplicates by digest and the
+        seed source is that same digest.
+        """
+
+        first, second = "MKTAYIAKQR", "MKTAYIAKQQ"
+        seeds = [
+            se.fold_seed(value, base_seed=20260905, rule=se.SEED_RULE_SEQUENCE_DIGEST)
+            for value in (first, second)
+        ]
+        self.assertNotEqual(seeds[0], seeds[1])
+        self.assertEqual(
+            seeds[0],
+            se.fold_seed(first, base_seed=20260905, rule=se.SEED_RULE_SEQUENCE_DIGEST),
+        )
+        # Keyed on content, so neither shard layout nor queue position can reach it.
+        self.assertEqual(
+            seeds[1],
+            se.fold_seed(second, base_seed=20260905, rule=se.SEED_RULE_SEQUENCE_DIGEST),
+        )
+
+    def test_every_seed_stays_in_the_accepted_range(self):
+        for index in range(64):
+            sequence = "ACDEFGHIKLMNPQRSTVWY"[index % 20] * (16 + index)
+            for rule in se.SEED_RULES:
+                seed = se.fold_seed(sequence, base_seed=20260905, rule=rule)
+                self.assertGreaterEqual(seed, 0)
+                self.assertLess(seed, 2**31)
+
+    def test_an_unknown_seed_rule_is_refused_rather_than_defaulted(self):
+        for rule in ("", "digest", "Constant", None):
+            with self.assertRaisesRegex(ValueError, "unknown fold seed rule"):
+                se.fold_seed("MKTA", base_seed=1, rule=rule)
+
+    def test_the_seed_rule_changes_the_evaluation_signature(self):
+        """Two incompatible instruments must not validate as one.
+
+        ``load_result`` admits a stored prediction on its evaluation signature, so
+        if the seeding rule did not enter the contract then a content-addressed
+        result and a constant-seed result would both be accepted into one tree,
+        and nothing anywhere would detect the mixture. This is the property that
+        makes the rule a declaration rather than an option.
+        """
+
+        contract = {
+            "schema_version": se.SCHEMA_VERSION,
+            "model_id": se.PREDICTOR_ID,
+            "seed": 20260905,
+        }
+        signatures = {
+            rule: se.contract_signature({**contract, "seed_rule": rule})
+            for rule in se.SEED_RULES
+        }
+        self.assertEqual(len(set(signatures.values())), len(se.SEED_RULES))
+        # The rule is part of the measured quantity, not provenance, so it must
+        # survive the stripping that removes code digests from the signature.
+        self.assertIn(
+            "seed_rule",
+            se.measurement_contract({**contract, "seed_rule": se.SEED_RULE_CONSTANT}),
+        )
+
     def test_refuse_retired_esmfold_v1_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -129,6 +129,19 @@ def main() -> None:
     parser.add_argument("--num-sampling-steps", type=int, default=None, help="None keeps config.structure_head.inference_num_steps")
     parser.add_argument("--num-diffusion-samples", type=int, default=None, help="None keeps config.structure_head.num_diffusion_samples")
     parser.add_argument("--seed", type=int, default=20260905)
+    parser.add_argument(
+        "--seed-rule",
+        default=se.SEED_RULE_CONSTANT,
+        choices=se.SEED_RULES,
+        help=(
+            "how each structure's replica-axis stream is seeded. 'constant' re-applies "
+            "--seed to every structure, which makes the diffusion noise common-mode and "
+            "invisible to any resampling over sequences; 'sequence_digest' keys each "
+            "structure to its own content, so the noise enters the per-sequence spread. "
+            "The default is the historical rule; the choice enters the measurement "
+            "contract, so trees folded under the two rules cannot resume or merge"
+        ),
+    )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--index-only", action="store_true", help="Combine all result objects into index.jsonl without GPU/model loading")
     parser.add_argument("--verify", action="store_true", help="Replay an existing tree against its own receipts; writes nothing, needs no GPU")
@@ -223,6 +236,7 @@ def main() -> None:
         "seed": args.seed,
         "never_truncate": True,
         "sample_selection": "highest pTM, matching infer_protein_as_pdb",
+        "seed_rule": args.seed_rule,
         "plddt_conversion": "ESMFold2 plddt_ca raw [0,1] multiplied by 100 for metrics; PDB B factors remain the library 0-1 scale",
         "raw_outputs": "selected-sample CA pLDDT, full PAE, pTM, diffusion sample index; latent embeddings/logits omitted",
         "interpretation": se.INTERPRETATION,
@@ -303,7 +317,10 @@ def main() -> None:
             features = None
             try:
                 output, splits = _fold_replica_axis(
-                    model, sequence, n_samples, args.seed, fold_kwargs,
+                    model, sequence,
+                    n_samples,
+                    se.fold_seed(sequence, base_seed=args.seed, rule=args.seed_rule),
+                    fold_kwargs,
                     prepare_protein_features, device,
                 )
                 features = prepare_protein_features(sequence, device="cpu")
