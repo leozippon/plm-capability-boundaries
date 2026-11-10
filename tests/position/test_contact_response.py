@@ -458,7 +458,8 @@ def test_the_receiver_burial_matched_sensitivity_preserves_a_within_band_contras
     columns = [{
         "arm": "arm", "direction": "downstream",
         "family_values": contact_family_table(
-            _family_rows({family: 0.1 for family in range(1, 7)}), rsa_boundary=0.25
+            _family_rows({family: 0.1 * family for family in range(1, 7)}),
+            rsa_boundary=0.25,
         )["family_values"],
     }]
     plain = panel_contact_simultaneous(columns, outcome="absolute_response", draws=200)
@@ -631,6 +632,26 @@ def test_a_constant_column_does_not_set_the_critical_value():
     assert pinned["simultaneous_interval"][3] == [0.0, 0.0]
 
 
+def test_a_constant_column_is_degenerate_whether_or_not_it_is_representable():
+    # The exact-zero case above has always been dropped from the maximum. 0.3 has
+    # no exact binary representation, so a column of it has a rounding-residue
+    # standard error rather than a zero one; `se > 0` admitted it and its
+    # residue-over-residue studentised deviation then took the family maximum.
+    rng = np.random.default_rng(7)
+    varying = rng.normal(0.0, 0.05, (16, 3))
+    free = simultaneous_bands(varying, draws=2000)
+    pinned = simultaneous_bands(
+        np.column_stack([varying, np.full(16, 0.3)]), draws=2000
+    )
+    assert pinned["critical_value"] == pytest.approx(free["critical_value"], rel=1e-12)
+    assert pinned["degenerate_columns"] == 1
+    assert pinned["simultaneous_interval"][3] == pytest.approx([0.3, 0.3], abs=1e-15)
+    # A family in which nothing varies has no studentised maximum at all, and a
+    # zero critical value would read as every column resolved exactly.
+    with pytest.raises(ValueError, match="no studentised maximum"):
+        simultaneous_bands(np.full((16, 2), 0.3), draws=200)
+
+
 def test_a_simultaneous_family_refuses_unsupported_or_nonfinite_units():
     with pytest.raises(ValueError):
         simultaneous_bands(np.zeros((8,)), draws=100)
@@ -690,7 +711,7 @@ def test_a_thinly_supported_arm_is_named_rather_than_blocking_the_panel():
 
     assert MIN_FAMILIES is contact_response.MIN_FAMILIES
 
-    supported = {family: 0.1 for family in range(1, 1 + MIN_FAMILIES + 3)}
+    supported = {family: 0.1 * family for family in range(1, 1 + MIN_FAMILIES + 3)}
     thin = {family: 0.9 for family in range(1, MIN_FAMILIES)}
     columns = [
         {"arm": "supported", "direction": "downstream",

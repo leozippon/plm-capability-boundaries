@@ -30,6 +30,7 @@ import numpy as np
 
 from ..context.homology import ALIGNMENT_FIELDS, Hit, parse_hits
 from ..core.amino_acids import AA20
+from ..core.statistics import columns_with_spread
 
 SCHEMA_QUEUE = "family_distribution_queue"
 SCHEMA_AUDIT = "family_distribution_audit"
@@ -1486,12 +1487,20 @@ def _family_inference(matrix: np.ndarray, arms: Sequence[str], *, draws: int, se
         raise ValueError("inference needs a finite matrix")
     point = matrix.mean(axis=0)
     se = matrix.std(axis=0, ddof=1) / np.sqrt(len(matrix))
-    varying = se > 0
+    # A column with no spread is degenerate, not infinitely precise, and `se > 0`
+    # did not say so: a constant that is not exactly representable leaves a
+    # rounding residue in both the standard error and the resampled deviation, and
+    # their ratio then took the family maximum. The test is the shared one, so
+    # `varying` keeps carrying the per-arm `status` and `degenerate_arms` below.
+    varying = columns_with_spread(matrix, se)
     # Generate ONE matrix of resampled family means. Both intervals below use
     # these exact rows, not two different RNG algorithms with the same seed.
     counts = np.random.default_rng(seed).multinomial(
         len(matrix), np.full(len(matrix), 1 / len(matrix)), size=draws)
     resampled = counts @ matrix / len(matrix)
+    # This panel already declares degeneracy per arm, in `status` and
+    # `degenerate_arms` below, so it takes the mask rather than
+    # `studentisable_family`'s refusal of a family with no spread anywhere.
     maximum = (np.max(np.abs((resampled[:, varying] - point[varying]) / se[varying]), axis=1)
                if varying.any() else np.zeros(draws))
     critical = float(np.quantile(maximum, 0.95))

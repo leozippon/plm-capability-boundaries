@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
 
+from ..core.statistics import columns_with_spread
+
 CATEGORIES = ('Activity', 'Binding', 'Expression', 'OrganismalFitness', 'Stability')
 SEEDS = (20260923, 20260924, 20260925)
 
@@ -127,8 +129,18 @@ def shared_bootstrap(values, *, draws=10000, seed=20261007):
         if attempts > draws * 100:
             raise ValueError('excessive empty-category draws; inference blocked')
     boot = np.concatenate(output)
-    varying = se > 0
-    maxima = np.max(np.abs((boot[:, varying]-point[varying])/se[varying]), axis=1) if varying.any() else np.zeros(draws)
+    # A column with no spread is degenerate, not infinitely precise. The test is the
+    # shared one rather than `se > 0`, which admitted a column whose constant value
+    # is not exactly representable and let its rounding-residue studentised
+    # deviation take the family maximum; the ratio-mean arithmetic here is the same
+    # arithmetic that exposed it in the position and contact families.
+    varying = columns_with_spread(values, se)
+    # A perfectly paired contrast legitimately has no between-group spread, and the
+    # panels this feeds report that family as the zero-width band the sixth
+    # amendment (`8fc7a6fffae8e8b2`) declares it to be, with respect to the
+    # declared resampling unit alone. So this takes the mask, not the refusal.
+    maxima = (np.max(np.abs((boot[:, varying]-point[varying])/se[varying]), axis=1)
+              if varying.any() else np.zeros(draws))
     critical = float(np.quantile(maxima, .95))
     return dict(point=point.tolist(), se=se.tolist(), pointwise_interval=np.quantile(boot, [.025, .975], axis=0).T.tolist(),
                 simultaneous_interval=np.column_stack((point-critical*se, point+critical*se)).tolist(),

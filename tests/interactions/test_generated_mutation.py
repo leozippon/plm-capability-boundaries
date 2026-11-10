@@ -614,7 +614,7 @@ def test_the_sequence_control_shows_length_matched_and_repeat_content_kept():
 
 
 def _predictability_rows(anchors: int, *, slope: float, extra: float,
-                         shift: float = 1.0) -> list[dict]:
+                         shift: float = 1.0, spread: float = 0.0) -> list[dict]:
     """Endpoints that are ``slope`` times the background plus a flat ``extra``.
 
     ``shift`` separates the natural arms' background from the generated arm's.
@@ -622,15 +622,22 @@ def _predictability_rows(anchors: int, *, slope: float, extra: float,
     condition under which a binned adjustment on that covariate is interpolation;
     at ``shift=1`` they do not overlap at all, which is the condition the
     common-support diagnostic exists to report.
+
+    ``spread`` adds a seeded offset per anchor and origin. Without it every
+    endpoint is a deterministic function of its origin's background, so every
+    triad contrast is the same number in every group and the panel has no spread
+    for a simultaneous band to be taken over at all.
     """
 
     rows = []
+    offsets = np.random.default_rng(20261110)
     for index in range(anchors):
         for origin, background in (
             ("generated", 1.0 + 0.01 * index),
             ("natural_low_homology", 1.0 + shift + 0.01 * index),
             ("natural_high_homology", 1.0 + shift + 0.01 * index),
         ):
+            offset = float(offsets.normal(0.0, spread)) if spread else 0.0
             identity = f"{origin}_{index}"
             shared = {"group": f"g{index}", "origin": origin, "sequence_id": identity}
             rows.append(dict(shared, mutation="<wild-type>",
@@ -638,7 +645,8 @@ def _predictability_rows(anchors: int, *, slope: float, extra: float,
                              absolute_likelihood_nats=None, site_term_nats=None,
                              downstream_absolute_nats=None, downstream_share=None))
             for mutation in range(6):
-                value = slope * background + (extra if origin == "generated" else 0.0)
+                value = (slope * background + offset
+                         + (extra if origin == "generated" else 0.0))
                 rows.append(dict(shared, mutation=f"A{mutation + 1}G",
                                  wild_type_nll_per_residue_nats=None,
                                  absolute_likelihood_nats=value,
@@ -693,7 +701,7 @@ def test_the_predictability_control_reports_a_covariate_that_separates_the_origi
 
 def test_the_simultaneous_band_covers_the_point_every_marginal_interval_reports():
     module = _analysis()
-    rows = _predictability_rows(16, slope=1.0, extra=0.5, shift=0.3)
+    rows = _predictability_rows(16, slope=1.0, extra=0.5, shift=0.3, spread=0.05)
     panel = {
         (f"{left}__minus__{right}", endpoint): gm.paired_group_differences(
             gm.relabelled_pair(rows, left, right), value=endpoint

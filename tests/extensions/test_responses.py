@@ -138,9 +138,15 @@ def test_distance_adjustment_and_family_not_pair_inference():
 
 
 def test_missing_rsa_sensitivity_does_not_veto_primary():
-    pairs=[dict(j=j,distance=j,identity='A',response=float(j),wt_nll=float(j),rsa=None,
-                stratum='3-8',contact=j<5) for j in (3,4,7,8)]
-    rows=[dict(assay=f'a{f}',family=f'f{f}',protein=f'p{f}',mutation='A1C',pairs=pairs) for f in range(8)]
+    # Each family carries its own per-receiver deviation. Sharing one pairs list
+    # across all eight families made every admitted contrast the same number in
+    # every family, which is a family with no spread to resample rather than the
+    # missing-RSA condition this test is about.
+    deviation=np.random.default_rng(20261110).normal(0.,.2,(8,4))
+    rows=[dict(assay=f'a{f}',family=f'f{f}',protein=f'p{f}',mutation='A1C',
+               pairs=[dict(j=j,distance=j,identity='A',response=float(j)+deviation[f,k],
+                           wt_nll=float(j),rsa=None,stratum='3-8',contact=j<5)
+                      for k,j in enumerate((3,4,7,8))]) for f in range(8)]
     result=analyse_contacts(rows,draws=20)
     assert result['inference'] is not None
     assert ('absolute','contrast') in result['inferential_columns']

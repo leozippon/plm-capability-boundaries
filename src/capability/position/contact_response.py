@@ -50,6 +50,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from ..core.statistics import studentisable_family
 from ..extensions.responses import DISTANCE_EDGES, DISTANCE_NAMES, structure_sites
 from ..interactions.contact_enrichment import CB_CONTACT_ANGSTROM
 from ..interactions.pairwise_epistasis import BOOTSTRAP_DRAWS, BOOTSTRAP_SEED, interval
@@ -831,11 +832,16 @@ def simultaneous_bands(
     The critical value is the 95th percentile of the maximum over columns of the
     absolute centred statistic divided by the column's *fixed* standard error.
     Every column's band is then ``point +- critical * se``, so the whole family
-    of statements holds at 95 % together. This is the convention the project
-    already declared twice -- ``extensions.phenotype_strata.shared_bootstrap``
-    and ``scripts/capability/position/position_simultaneous.py`` -- restated here
-    for the units this lane resamples, which are biological families of DMS
-    assays. Unlike both of those, nothing here conditions on a fitted
+    of statements holds at 95 % together. A column with no spread beyond the
+    rounding scale of its own values has no statistic to studentise: it is
+    counted in ``degenerate_columns``, kept out of the maximum and given the
+    zero-width band its zero standard error implies.
+
+    This is the convention the project already declared twice --
+    ``extensions.phenotype_strata.shared_bootstrap`` and
+    ``scripts/capability/position/position_simultaneous.py`` -- restated here for
+    the units this lane resamples, which are biological families of DMS assays.
+    Unlike both of those, nothing here conditions on a fitted
     prediction: no model is fitted anywhere in E01, so the pointwise and
     simultaneous bands carry no out-of-fold caveat.
     """
@@ -871,12 +877,14 @@ def simultaneous_bands(
         if attempts > draws * 100:
             raise ValueError("excessive empty-family draws; simultaneous inference is blocked")
     boot = np.concatenate(blocks)[:draws]
-    varying = se > 0
-    maxima = (
-        np.max(np.abs((boot[:, varying] - point[varying]) / se[varying]), axis=1)
-        if varying.any()
-        else np.zeros(len(boot))
-    )
+    # Degenerate, not infinitely significant: a column of one repeated value says
+    # nothing about how far this family's estimates can move, so it must not set
+    # the critical value for the columns that do. The test is the shared one
+    # rather than ``se > 0``, which admitted a column whose constant value is not
+    # exactly representable and let rounding residue over rounding residue take
+    # the maximum.
+    varying = studentisable_family(values, se)
+    maxima = np.max(np.abs((boot[:, varying] - point[varying]) / se[varying]), axis=1)
     critical = float(np.quantile(maxima, 0.95))
     return {
         "method": (

@@ -9,6 +9,7 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from src.capability.core.io import write_json
+from src.capability.core.statistics import studentisable_family
 from src.capability.interactions.pairwise_epistasis import ROSTER
 KEYS=('unique_own','unique_downstream','joint_over_full','own_minus_downstream')
 SEEDS=(20260923,20260924,20260925)
@@ -18,16 +19,22 @@ def bands(values,*,draws=10000,seed=20260923):
     if values.ndim!=2 or np.isinf(values).any():raise ValueError('expected finite-or-missing family matrix')
     available=np.isfinite(values);n=available.sum(axis=0)
     if (n<8).any():raise ValueError('fewer than8 available families')
-    point=np.nanmean(values,axis=0);se=np.nanstd(values,axis=0,ddof=1)/np.sqrt(n);varying=se>0
+    point=np.nanmean(values,axis=0);se=np.nanstd(values,axis=0,ddof=1)/np.sqrt(n)
+    # A column with no spread is degenerate, not infinitely precise: it carries nothing
+    # about how far this family can move and must not set the critical value. The test is
+    # the shared one rather than `se>0`, which admitted a column whose constant value is
+    # not exactly representable and let rounding residue over rounding residue take the
+    # maximum -- 13.79 where 2.48 was correct.
+    varying=studentisable_family(values,se)
     clean=np.nan_to_num(values,nan=0.0);rng=np.random.default_rng(seed);maximum=[]
     for start in range(0,draws,100):
         count=rng.multinomial(len(values),np.full(len(values),1/len(values)),size=min(100,draws-start))
         denominator=count@available.astype(float)
         if (denominator==0).any():raise ValueError('bootstrap draw has no available family for a contrast')
         deviation=count@clean/denominator-point
-        maximum.extend(np.max(np.abs(deviation[:,varying]/se[varying]),axis=1) if varying.any() else np.zeros(len(count)))
+        maximum.extend(np.max(np.abs(deviation[:,varying]/se[varying]),axis=1))
     critical=float(np.quantile(maximum,.95))
-    return dict(method='shared-universe family multinomial bootstrap; available-family ratio mean; maximum absolute centered statistic/fixed SE',draws=draws,seed=seed,critical_value=critical,family_size=values.shape[1],family_universe=len(values),available_families=n.tolist(),point=point.tolist(),interval=np.c_[point-critical*se,point+critical*se].tolist(),conditional_on_fitted_predictions=True)
+    return dict(method='shared-universe family multinomial bootstrap; available-family ratio mean; maximum absolute centered statistic/fixed SE',draws=draws,seed=seed,critical_value=critical,family_size=values.shape[1],family_universe=len(values),degenerate_columns=int((~varying).sum()),available_families=n.tolist(),point=point.tolist(),interval=np.c_[point-critical*se,point+critical*se].tolist(),conditional_on_fitted_predictions=True)
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--records',type=Path,required=True);p.add_argument('--out',type=Path,required=True);p.add_argument('--arms',nargs='+',default=[a for a in ROSTER if a!='progen3-3b'])

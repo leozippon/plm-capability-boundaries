@@ -1,6 +1,6 @@
 """Interval estimation and group-disjoint resampling for transfer measurements.
 
-Three primitives, each answering a question this programme has got wrong at least
+Four primitives, each answering a question this programme has got wrong at least
 once, and the vocabulary every lane reads an interval with
 (:data:`FINDING_STATES`).
 
@@ -9,6 +9,18 @@ once, and the vocabulary every lane reads an interval with
     defensive noise: a single non-finite value silently turns a mean and its
     interval into ``nan``, and ``nan`` compares false against every gate, so a
     broken arm reads as a failing arm.
+
+:func:`columns_with_spread`, :func:`studentisable_family`
+    Which columns of a resampled family may enter a studentised maximum. A
+    column of one repeated value has no spread to divide by, and testing its
+    standard error for strict positivity does not say so: unless the repeated
+    value is exactly representable, that standard error comes back as rounding
+    residue, and the column's studentised deviation -- residue over residue --
+    takes the maximum for the whole family. On a column of 0.3 it reached 13.8
+    where 2.48 was correct, which widens every band in the family 5.6-fold. The
+    second adds the reading a family with *no* such column needs when the
+    statistic is studentised; the native statistic reads that same family as a
+    true zero-width band, so the lanes that take it do not.
 
 :func:`paired_group_bootstrap`
     Resamples **groups**, not rows, and scores both prediction vectors on the
@@ -203,6 +215,93 @@ def mean_interval(values: Sequence[float], confidence: float = 0.95) -> dict:
         "n": int(sample.size),
         "zero_width_from_zero_variance": bool(degenerate),
     }
+
+
+#: How far a column's standard error must exceed the rounding scale of its own
+#: values before a studentised maximum may be taken over that column.
+#:
+#: Both the resampled deviation and the standard error of a column are computed
+#: in floating point from its values, so each carries an absolute rounding error
+#: of order ``eps`` times the largest magnitude in the column. For a column of
+#: one repeated value the true spread is zero and both quantities *are* that
+#: rounding error; their ratio is then noise of order one, and the maximum over
+#: the family picks it up. Comparing the standard error against ``eps`` times the
+#: column's own magnitude separates that case from a real one, and the factor
+#: bounds what rounding can contribute to an admitted column's studentised
+#: deviation at roughly its reciprocal -- under a percent of the critical values
+#: this package publishes. The margin is not a close call either way: on the
+#: retained 163-by-132 increment family every real column standard error sits
+#: between eleven and twelve orders of magnitude above this floor, while the
+#: residue of a constant column over the same 163 units sits three below it.
+STUDENTISED_SPREAD_MARGIN = 128.0
+
+
+def columns_with_spread(values: Sequence, standard_error: Sequence) -> np.ndarray:
+    """Which columns of a resampled family may enter a studentised maximum.
+
+    ``values`` is the units-by-columns table the family was estimated from, with
+    ``nan`` where a unit carries no value for a column, and ``standard_error`` is
+    one standard error per column.
+
+    A column whose standard error does not clear the rounding scale of its own
+    values -- a column of one repeated value, exactly representable or not -- has
+    no spread. It is degenerate, not infinitely precise: it says nothing about
+    how far this family's estimates can move, so it must not be allowed to set
+    the critical value for the columns that do. Callers drop it from the maximum
+    and give it the zero-width band its zero standard error implies, which is
+    what every studentised family in this package already did for a column of
+    exact zeros.
+
+    This answers only which columns carry spread. What a family with *no* such
+    column means depends on the statistic being formed over it rather than on the
+    family, so it is applied by :func:`studentisable_family` and not here.
+    """
+
+    table = np.asarray(values, dtype=np.float64)
+    error = np.asarray(standard_error, dtype=np.float64)
+    if table.ndim != 2 or error.shape != (table.shape[1],):
+        raise ValueError(
+            "a studentised family is a units-by-columns table with one standard "
+            "error per column"
+        )
+    magnitude = np.abs(table)
+    scale = np.where(np.isfinite(magnitude), magnitude, 0.0).max(axis=0)
+    return error > STUDENTISED_SPREAD_MARGIN * np.finfo(np.float64).eps * scale
+
+
+def studentisable_family(values: Sequence, standard_error: Sequence) -> np.ndarray:
+    """:func:`columns_with_spread`, with the reading a studentised family needs.
+
+    A family in which no column carries spread has no studentised maximum: the
+    ratio is zero over zero, and in floating point it is rounding residue over
+    rounding residue. The zero critical value the arithmetic would otherwise
+    return reads as every column resolved exactly -- the narrowest possible band
+    for the least informative possible input -- so it is refused here, and the
+    refusal names :data:`NON_IDENTIFIABLE`, read from :data:`FINDING_STATES`
+    rather than respelled, so a caller can route the family to that state instead
+    of inventing a reading. The pre-registration's sixth amendment, digest
+    ``8fc7a6fffae8e8b2``, fixes the classification.
+
+    It is a property of the statistic and not of the family, which is what the
+    fifth amendment got wrong and the sixth corrects. A column with no spread
+    contributes a deviation of exactly zero to a *native* maximum absolute
+    centred deviation, so a family of such columns has a native band of zero
+    width, and that band is a true statement: under resampling of the declared
+    unit the quantity does not move, though the zero width covers that unit alone
+    and no other source of variation. The lanes that resample paired panels
+    report exactly that, and read :func:`columns_with_spread` instead of this.
+    """
+
+    carries = columns_with_spread(values, standard_error)
+    if not carries.any():
+        raise ValueError(
+            "no column of this family carries spread beyond the rounding scale of "
+            "its own values, so the family has no studentised maximum; a zero "
+            "critical value here would report every column as resolved exactly. "
+            f"The family is {NON_IDENTIFIABLE}: the data cannot inform any column "
+            "in it, which is not a wide interval and never an estimate of zero"
+        )
+    return carries
 
 
 def paired_group_bootstrap(

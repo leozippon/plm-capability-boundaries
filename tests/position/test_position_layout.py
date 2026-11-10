@@ -32,3 +32,28 @@ def test_simultaneous_bands_preserve_shared_draws_and_missing_support():
     assert result['interval'][2]==[0,0]
     assert result['interval'][0][0]<result['point'][0]<result['interval'][0][1]
     with pytest.raises(ValueError,match='fewer than8'):m.bands(values[:7])
+
+
+def test_a_constant_column_does_not_set_the_critical_value():
+    """0.3 is a constant, not a measurement of infinite precision.
+
+    A column every draw gives the same value carries nothing about how far the
+    family's estimates can move, so it must not decide the family maximum. An
+    exactly representable constant always had a zero standard error and was
+    dropped; one that is not exactly representable had a rounding-residue
+    standard error instead, and dividing a rounding-residue deviation by it put
+    noise of order one into the family maximum -- 3.87 here where the three
+    varying columns give 2.27, and 13.79 against a correct 2.48 on the 163-family
+    fixture the 2026-11-10 band audit measured.
+    """
+    m=module('position_simultaneous');rng=np.random.default_rng(20261110)
+    varying=rng.normal(0.0,0.05,(16,3));free=m.bands(varying,draws=2000)
+    for constant in (0.3,0.1,0.0):
+        held=m.bands(np.column_stack([varying,np.full(16,constant)]),draws=2000)
+        assert held['critical_value']==pytest.approx(free['critical_value'],rel=1e-12)
+        assert held['degenerate_columns']==1
+        assert held['interval'][3]==pytest.approx([constant,constant],abs=1e-15)
+    assert free['degenerate_columns']==0
+    # No column to studentise is an ill-posed family, not a zero critical value
+    # that reports every column as resolved exactly.
+    with pytest.raises(ValueError,match='no studentised maximum'):m.bands(np.full((16,2),0.3),draws=200)
