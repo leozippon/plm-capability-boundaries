@@ -191,6 +191,23 @@ def _difference(scores: dict[str, float], reference: dict) -> dict:
     return {"samples": len(scores), "max_absolute_difference": worst, "at": worst_id}
 
 
+def _retained_status(params: Path) -> str | None:
+    """The recorded outcome of the fit that wrote this retained parameter file.
+
+    A retained parameter file sits beside the checkpoint that produced it, and
+    that checkpoint says whether the delivered model converged. The distinction
+    decides what a difference means: a comparison against a fit that stopped at
+    its iteration cap measures non-convergence, not the fitter's run-to-run
+    spread, and pooling the two would overstate the instrument's precision bound
+    by more than an order of magnitude.
+    """
+
+    checkpoint = params.parents[1] / "backgrounds" / f"{params.stem}.json"
+    if not checkpoint.is_file():
+        return None
+    return json.loads(checkpoint.read_text()).get("status")
+
+
 def check_potts_replay(cohort, support: dict, reference: dict, root: Path, log: R.Log) -> dict:
     """Published scores, rescored from the parameter files retained on this host."""
 
@@ -210,6 +227,7 @@ def check_potts_replay(cohort, support: dict, reference: dict, root: Path, log: 
             entry["params"] = str(params.relative_to(ROOT))
             entry["params_sha256"] = found
             entry["is_published_model"] = found == recorded.get("sha256")
+            entry["recorded_status"] = _retained_status(params)
             entry["exact"] = entry["max_absolute_difference"] <= EXACT
             outcome.setdefault(name, []).append(entry)
             log.write(f"gate potts-replay {name} {params.name} published_model="
@@ -219,12 +237,18 @@ def check_potts_replay(cohort, support: dict, reference: dict, root: Path, log: 
             if entry["is_published_model"]]
     other = [entry for entries in outcome.values() for entry in entries
              if not entry["is_published_model"]]
+    converged = [entry for entry in other if entry["recorded_status"] in B.COMPLETE]
     return {
         "wildtypes": outcome,
         "models_identical_to_published": len(same),
         "models_identical_to_published_exact": all(entry["exact"] for entry in same),
+        "cross_host_refit_models": len(converged),
         "cross_host_refit_max_difference": max(
-            (entry["max_absolute_difference"] for entry in other), default=None),
+            (entry["max_absolute_difference"] for entry in converged), default=None),
+        "non_converged_models": [
+            {"params": entry["params"], "recorded_status": entry["recorded_status"],
+             "max_absolute_difference": entry["max_absolute_difference"]}
+            for entry in other if entry["recorded_status"] not in B.COMPLETE],
         "passed": bool(same) and all(entry["exact"] for entry in same),
     }
 

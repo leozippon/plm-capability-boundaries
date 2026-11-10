@@ -409,6 +409,29 @@ def test_the_gate_detects_a_changed_row_rather_than_passing_it():
     assert outcome["passed"] is False and outcome["field_drift"]
 
 
+def test_a_retained_fit_is_read_with_the_convergence_it_recorded(tmp_path):
+    """The precision figure may not pool a converged refit with a capped one.
+
+    A retained parameter file is compared against the published scores, and what
+    the difference means depends entirely on whether that fit converged. Both
+    kinds sit in the same tree for R1's ``q00126``, four hundred-fold apart.
+    """
+
+    tree = tmp_path / "potts"
+    (tree / "params").mkdir(parents=True)
+    (tree / "backgrounds").mkdir()
+    (tree / "params" / "q00001.params").write_bytes(b"")
+    (tree / "backgrounds" / "q00001.json").write_text(
+        json.dumps({"status": B.STATUS_FINAL_NOT_CONVERGED}))
+    (tree / "params" / "q00002.params").write_bytes(b"")
+    (tree / "backgrounds" / "q00002.json").write_text(json.dumps({"status": B.STATUS_FITTED}))
+    (tree / "params" / "q00003.params").write_bytes(b"")
+
+    assert gate._retained_status(tree / "params" / "q00001.params") not in B.COMPLETE
+    assert gate._retained_status(tree / "params" / "q00002.params") in B.COMPLETE
+    assert gate._retained_status(tree / "params" / "q00003.params") is None
+
+
 @pytest.mark.skipif(not (REPO_ROOT / "results/R4/gate_stability_20260924/cohort/cohort.json"
                          ).is_file(), reason="the retained pairwise cohorts are absent")
 def test_the_pairwise_cohort_resolves_to_its_declared_shape_and_reuse():
