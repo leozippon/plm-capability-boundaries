@@ -899,8 +899,15 @@ def fit_background(job: dict) -> dict:
         site = independent_site(train, train_weights)
         record["train_neff_at_80_percent_identity"] = float(train_weights.sum())
         record["independent_site_held_out_conditional"] = profile_conditional(site, test, test_mask)
-        sweep = []
-        for lambda_e in LAMBDA_E_GRID:
+        def grid_fit(lambda_e: float) -> dict:
+            """One regularization's own fit, independent of every other's.
+
+            Each value writes its own lambda-tagged alignment, weights,
+            parameters and log, reads back only its own parameters and scores
+            only the shared held-out rows, so running the grid concurrently
+            cannot change any value it produces -- only when it is produced.
+            """
+
             tag = f"train_le{lambda_e}"
             fasta, weight_path = work / f"{tag}.fa", work / f"{tag}.weights"
             params, log = work / f"{tag}.params", work / f"{tag}.log"
@@ -909,16 +916,28 @@ def fit_background(job: dict) -> dict:
                 entry = escalating_fit(runner, alignment=fasta, weights=weight_path, params=params,
                                        log=log, lambda_e=lambda_e, threads=job["threads"])
             except PlmcFailure as failure:
-                sweep.append({"lambda_e": lambda_e, "status": STATUS_PLMC_FAILED,
-                              "converged": False, "attempts": [],
-                              "failure": str(failure)})
-                continue
+                return {"lambda_e": lambda_e, "status": STATUS_PLMC_FAILED,
+                        "converged": False, "attempts": [], "failure": str(failure)}
             fitted = read_plmc(params)
             entry["held_out_conditional"] = plmc_conditional(
                 fitted.fields, fitted.couplings, test, test_mask)
-            sweep.append(entry)
             for path in (params, fasta, weight_path):
                 path.unlink()
+            return entry
+
+        # The grid is the sequential floor of one background: the final fit
+        # cannot start until a value is selected. ``sweep_workers`` runs the
+        # independent grid values at once; it defaults to 1, which is the order
+        # and the behaviour every existing fit tree was produced with.
+        concurrency = max(1, int(job.get("sweep_workers") or 1))
+        record["sweep_concurrency"] = concurrency
+        if concurrency == 1:
+            sweep = [grid_fit(lambda_e) for lambda_e in LAMBDA_E_GRID]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                sweep = list(pool.map(grid_fit, LAMBDA_E_GRID))
         record["sweep"] = sweep
         decision = select_cross_validated(sweep)
         record["selection"] = decision

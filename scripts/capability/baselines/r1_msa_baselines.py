@@ -663,6 +663,7 @@ def fit_job(args: argparse.Namespace, fit_out: Path, name: str, wildtype: str, s
         "work": str(fit_out / "work" / name),
         "params": str(fit_out / "params" / f"{name}.params"),
         "threads": args.threads,
+        "sweep_workers": args.sweep_workers,
     }
 
 
@@ -1012,6 +1013,11 @@ def main() -> None:
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--threads", type=int, default=4, help="plmc OpenMP threads per fit")
+    parser.add_argument("--sweep-workers", type=int, default=1,
+                        help="run this many of one background's five independent lambda fits at "
+                             "once; the default 1 is the order every existing fit tree was "
+                             "produced with. One worker then holds sweep_workers * threads "
+                             "threads and sweep_workers fits' memory, so lower --workers to match")
     parser.add_argument("--resume", action="store_true",
                         help="reuse per-wild-type checkpoints whose execution manifest still "
                              "matches")
@@ -1031,6 +1037,8 @@ def main() -> None:
         raise SystemExit("workers and threads must be positive")
     if args.min_length >= args.max_length:
         raise SystemExit("--min-length must be below --max-length")
+    if not 1 <= args.sweep_workers <= len(B.LAMBDA_E_GRID):
+        raise SystemExit(f"--sweep-workers must lie in 1..{len(B.LAMBDA_E_GRID)}")
     descriptor = C.load_config(
         args.config if args.config.is_absolute() else ROOT / args.config)["cohorts"]
     if args.cohort not in descriptor:
@@ -1046,7 +1054,7 @@ def main() -> None:
     log = Log(args.log_dir / f"{args.cohort}_{args.stage}_{stamp}.log")
     log.write(f"cohort={args.cohort} stage={args.stage} out={args.out} fit_out={args.fit_out} "
               f"workers={args.workers} threads={args.threads} resume={args.resume} "
-              f"reuse_params={args.reuse_params} "
+              f"reuse_params={args.reuse_params} sweep_workers={args.sweep_workers} "
               f"length=({args.min_length}, {args.max_length}] caps={list(B.MAX_ITER_CAPS)}")
     if args.stage == "export":
         stage_export(args, log)
