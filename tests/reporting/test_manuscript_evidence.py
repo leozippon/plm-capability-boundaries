@@ -571,6 +571,28 @@ class ARangeAcrossModelsIsNotAnEstimateWithAnInterval(unittest.TestCase):
         self.assertEqual(len(rendered.split("document}", 1)[-1]),
                          len("\nspan 0.007--0.015 on 163--174 strata---19"))
 
+    def test_a_dash_between_maths_delimiters_is_still_a_range(self):
+        """``$a$--$b$`` is how the manuscript writes a span of typeset endpoints.
+
+        The dash then has a maths delimiter on each side rather than a digit, so
+        a rule that required digits never fired there: the dash was blanked with
+        every other dash and the span read as two point estimates. The lower
+        endpoint was attributed to whichever row shared its number and reported
+        for quoting no interval, the upper went untraced, and a sentence stating
+        one range correctly collected findings for both halves of it.
+        """
+
+        rendered = CHECKER.strip_markup("\\begin{document}\nspan $0.007$--$0.015$ Spearman")
+        self.assertIn("0.007\u2013", rendered)
+        # The replacement is the dash plus padding, so every later offset holds.
+        self.assertEqual(len(rendered.split("document}", 1)[-1]),
+                         len("\nspan $0.007$--$0.015$ Spearman"))
+        report = self._run("Resolved increments span $0.007$--$0.015$ Spearman.",
+                           span("fixture/increments/resolved", 0.00712, 0.01544))
+        self.assertEqual(report["status"], "pass", report["findings"] + report["untraced"])
+        self.assertEqual(report["ranges_verified_against_a_recorded_span"], 1)
+        self.assertEqual(report["ranges_matching_no_recorded_span"], 0)
+
     def test_a_quoted_range_is_verified_against_the_span_the_table_records(self):
         report = self._run(
             "Resolved increments span 0.007--0.015 Spearman.",

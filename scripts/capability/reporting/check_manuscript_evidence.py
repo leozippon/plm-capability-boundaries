@@ -292,6 +292,17 @@ def interval_qualifiers(match: re.Match) -> list[str]:
 #: neither, and blanking it threw away the only evidence that the two numbers
 #: are one span.
 RANGE_DASH = "–"
+#: The dash itself, as the manuscript may write it between two numbers. The
+#: plain ``163--174`` puts a digit on each side of it, but a range of two
+#: typeset quantities closes and reopens maths around it -- ``$0.1313$--$0.5306$``
+#: -- and a rule that required a digit on each side never fired there. The dash
+#: was then blanked with every other dash, so the span read as two independent
+#: point estimates: the first was attributed and checked for an interval it does
+#: not have, the second went untraced, and a sentence that states one range
+#: correctly collected findings for both halves of it. The maths delimiters are
+#: part of the match so the replacement can keep the same length and leave the
+#: dash between the two numbers.
+RANGE_BETWEEN_NUMBERS = r"(?<=\d)\$?\s*--\s*\$?(?=\d)"
 #: A range over a set of quantities: two numbers the manuscript joins with an en
 #: dash, as in "resolved increments span 0.007--0.015". Only the dash itself
 #: classifies a range --- two numbers that merely sit near each other do not ---
@@ -391,7 +402,8 @@ def strip_markup_mapped(text: str) -> tuple[str, list[int]]:
     body, origin = _rewrite(body, origin, TYPESET_MINUS, "-")
     body, origin = _rewrite(body, origin, NUMERIC_SPACING, " ")
     body, origin = _rewrite(body, origin, "---", "   ")
-    body, origin = _rewrite(body, origin, r"(?<=\d)--(?=\d)", RANGE_DASH + " ")
+    body, origin = _rewrite(body, origin, RANGE_BETWEEN_NUMBERS,
+                            lambda m: RANGE_DASH + " " * (len(m.group(0)) - 1))
     body, origin = _rewrite(body, origin, "--", "  ")
     # A scientific form is one number. Rendering it in exponent notation would
     # re-tokenize as its mantissa, which reported 1.11 and 2.8 as numbers the
