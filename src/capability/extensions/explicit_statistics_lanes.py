@@ -544,7 +544,15 @@ LANES: dict[str, Lane] = {
                'estimand',
                'this lane and the stability lane read one cohort of reference sequences and '
                'have different complete-case supports, because GEMME restricts that lane\'s '
-               'support and cannot restrict this one')),
+               'support and cannot restrict this one',
+               'the declared representation channel was not fitted, by decision: every rung of '
+               'this lane sits at the error floor its own assay allows against the additive '
+               'null -- the per-rung margins are recorded in this lane\'s own panels -- so a '
+               'representation readout there could return neither a null nor a positive that '
+               'separates a readout effect from assay noise. Its 132 cells were therefore not '
+               'fitted and that family stays pending. It stays declared because the declared '
+               'channels are part of this lane\'s fit identity, and withdrawing one would '
+               'restamp every fitted cell of the lane as stale')),
     'phenotype': Lane(
         name='phenotype',
         cohort='phenotype',
@@ -1644,7 +1652,10 @@ LIMITATIONS = [
     'bounded is the evolutionary memory *as read out by sequence likelihood*, not the '
     'information content of the parameters. A probe on internal representations asks a '
     'different question and nothing here answers it; the representation channel, where a lane '
-    'declares one, is reported separately and never merged into the likelihood channel.',
+    'declares one, is reported separately and never merged into the likelihood channel. No '
+    'fitted family answers it either: the lane runner fits the likelihood plan and offers no '
+    'channel selection, so wherever a non-likelihood channel is declared its family is pending '
+    'by construction, and each declaring lane records in its own notes why it was not fitted.',
     'The two directions are not symmetric in predictors added. The reverse adds a whole '
     'family-fitted control set to one scalar; the forward adds one scalar to that control set. '
     'A resolved reverse beside an unresolved forward is therefore partly an asymmetry in power '
