@@ -8,13 +8,20 @@ attempt without a score refuses the run.
 
 Mean per-token NLL is only comparable at matched length, and the tuned arms are less
 budget-censored than their bases, so every cell is split by ledger length stratum and
-by stop status (``capped`` = budget_censored, ``native`` = native_terminal). The
-informative contrast is ``tuned sequences under the base model`` minus ``base
-sequences under the base model`` (``base_verdict``): the base model's verdict on
-tuned samples is not built in by the tuning. ``own_model`` (tuned under tuned minus
-base under base) is the sharpening diagnostic. ``dpo_implied`` (tuned sequences,
-tuned model minus base model) is close to tautological for a model trained on a
-likelihood ratio against its base, and is reported only so the matrix is complete.
+by stop status (``capped`` = budget_censored, ``native`` = native_terminal).
+
+Decomposition. With T the tuned and B the base model, the mixture contrast
+``mixture`` (tuned sequences under B minus base sequences under B) equals, exactly in
+the sample means, ``forward_divergence`` (mean over tuned sequences of NLL_B - NLL_T)
+plus ``entropy_change`` (tuned sequences under T minus base sequences under B, the
+own-model NLLs). Narrowing shows as a lower tuned own-NLL; mass genuinely moved shows
+as a large divergence. ``forward_divergence``: preference optimisation optimises this
+ratio, so its SIGN is expected a priori and is not evidence; only its magnitude says
+how far the distribution moved. ``reverse_divergence`` (mean over base sequences of
+NLL_T - NLL_B) is how strongly the tuned model disfavours its parent's samples.
+Sequences were sampled at T=0.85 and are scored at T=1, so entropy-plus-divergence is
+an approximation (the samples are not draws from the scored distribution); the
+cross-model comparison is fair because both arms were sampled alike.
 
 Length: every unpaired contrast is given raw and standardised over 32-residue length
 bins to the first-named arm's length distribution (bins with fewer than ``MIN_BIN``
@@ -128,10 +135,11 @@ def analyse_pair(run_dir: Path, scores_dir: Path, base: str, tuned: str) -> dict
         if min(g["attempts"].values()) >= MIN_N:
             sl = {a: att[a]["length"][sel[a]] for a in sel}
             f = {k: v[sel[k[1]]] for k, v in nll.items()}
-            g["base_verdict"] = contrast(f[(base, tuned)], sl[tuned], f[(base, base)], sl[base], rng)
-            g["own_model"] = contrast(f[(tuned, tuned)], sl[tuned], f[(base, base)], sl[base], rng)
-            g["tuned_model_on_base_sequences_minus_base_model"] = paired(f[(tuned, base)], f[(base, base)], rng)
-            g["dpo_implied"] = paired(f[(tuned, tuned)], f[(base, tuned)], rng)
+            g["mixture"] = contrast(f[(base, tuned)], sl[tuned], f[(base, base)], sl[base], rng)
+            g["entropy_change"] = contrast(f[(tuned, tuned)], sl[tuned], f[(base, base)], sl[base], rng)
+            g["forward_divergence"] = paired(f[(base, tuned)], f[(tuned, tuned)], rng)
+            g["reverse_divergence"] = paired(f[(tuned, base)], f[(base, base)], rng)
+            g["identity_residual"] = g["mixture"]["raw"] - g["forward_divergence"]["mean"] - g["entropy_change"]["raw"]
         out["groups"][f"{stratum}|{cap}"] = g
     return out
 
