@@ -16,8 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from scripts.capability.extensions import explicit_statistics_lane_adapters as adapters
-from scripts.capability.extensions import fit_explicit_statistics_lanes as runner
+from scripts.capability.extensions.explicit_statistics_lanes import (
+    explicit_statistics_lane_adapters as adapters)
+from scripts.capability.extensions.explicit_statistics_lanes import (
+    fit_explicit_statistics_lanes as runner)
 from src.capability.extensions import explicit_statistics_lanes as lanes
 
 STRATUM = 'activity_venus-ranking'

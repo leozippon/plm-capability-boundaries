@@ -17,7 +17,8 @@ import pathlib
 
 import pytest
 
-from scripts.capability.extensions import explicit_statistics_lane_adapters as adapters
+from scripts.capability.extensions.explicit_statistics_lanes import (
+    explicit_statistics_lane_adapters as adapters)
 from src.capability.extensions import explicit_statistics_lanes as lanes
 from src.capability.interactions import pairwise_epistasis as pairwise
 
