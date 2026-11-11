@@ -593,7 +593,18 @@ LANES: dict[str, Lane] = {
                'carries the profile block there by declaration: including it is the entire '
                'purpose of the rung, and a forward qualification that dropped it is exactly '
                'the weak control this work replaces',
-               'the frozen fitter declares no representation block for this lane')),
+               'the frozen fitter declares no representation block for this lane',
+               'the cellular_fitness_sge-ranking complete case is not estimable, and no '
+               'further fit changes that: this lane\'s GEMME table is complete, and on three '
+               'of that stratum\'s nine references it scores zero for all 256 mutations in '
+               'every one of its three runs -- the tool\'s own output on alignments seven, '
+               'nine and ten rows deep, not a failed run. The nine references are nine '
+               'singleton homology groups and the complete case drops every refused '
+               'reference, so six groups are left against the floor that stratum\'s own '
+               'fragility declares. The coupling block cannot lift that, because whatever it '
+               'returns can only keep or shrink those six, and a deeper alignment would move '
+               'the retained homolog support of every block of every reference, which is a '
+               'different protocol rather than a rerun')),
 }
 
 
