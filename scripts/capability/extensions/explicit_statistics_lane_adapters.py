@@ -35,8 +35,10 @@ correlation, and stability reads three errors, off the *identical* out-of-fold
 predictions; only the per-group statistic differs. Each adapter therefore computes
 every reading of a cell at once and serves the others from
 :attr:`_readings`, so a second stratum costs nothing. The cache is keyed by the
-support digest, the arm and the control columns, which is the full identity of a
-fit.
+support digest, the arm and *every* arm's columns, which is the full identity of a
+fit on one support. A key over the control arm alone is not: it cannot tell one
+channel's model arm from another's, and the fitters consult the cache before they
+refuse a block their archive does not carry.
 
 **The declaration's bytes are recorded, not binding.** Each adapter reports the
 declaration module's digest under a ``note:`` key, which the runner writes into a cell
@@ -154,17 +156,29 @@ def _backgrounds_per_group(backgrounds, groups) -> dict:
 class _Readings:
     """Per-cell cache of every reading one fit supports.
 
-    One fit of one (support, arm, control columns) triple serves every stratum of
-    the lane, because the strata differ only in the per-group statistic they take
-    of the same out-of-fold predictions. ``fit`` computes them all and the other
-    strata read them back here.
+    One fit of one (support, arm, designs) triple serves every stratum of the lane,
+    because the strata differ only in the per-group statistic they take of the same
+    out-of-fold predictions. ``fit`` computes them all and the other strata read them
+    back here.
+
+    **The key carries every arm's columns, not the control arm's alone.** A channel
+    is only a name for the block its model arm carries, so two channels of one rung
+    differ in exactly that arm's columns and in nothing else. A key over the control
+    arm therefore makes them indistinguishable, and because each ``fit`` consults
+    this cache before it refuses a block its archive does not carry, a representation
+    request for an arm already fitted on likelihood in the same process was answered
+    with the likelihood fit's own values, alphas and dimensions -- under the
+    representation channel's label, and with a stored identity that looks valid
+    because the channel is not part of the cell's digest. The channel itself is not
+    in the key and does not need to be: the columns it chooses already are.
     """
 
     def __init__(self):
         self._cells: dict = {}
 
     def key(self, state: dict, arm: str, designs: dict):
-        return (state['support_sha256'], arm, tuple(designs[lanes.CONTROL_ARM]))
+        return (state['support_sha256'], arm,
+                tuple((name, tuple(columns)) for name, columns in sorted(designs.items())))
 
     def get(self, state, arm, designs, reading):
         cell = self._cells.get(self.key(state, arm, designs))
@@ -673,8 +687,13 @@ class AbundanceAdapter:
         missing = sorted({name for columns in designs.values() for name in columns}
                          - set(blocks) - {'G'})
         if missing:
+            # The lane declares a representation channel and this archive cannot serve
+            # it, so the refusal names what the archive does carry rather than only
+            # what the design asked for.
             raise SystemExit(f'{arm}: the design names feature blocks the panel does not carry: '
-                             f'{missing}')
+                             f'{missing}. The restored extraction exports the model blocks '
+                             f'{sorted(model)} and nothing else, so a channel whose block is not '
+                             'among them cannot be fitted from this archive')
         readings = {name: {} for name in self.STRATA.values()}
         alphas: dict[str, dict[str, list[float]]] = {}
         dimensions: dict[str, int] = {}

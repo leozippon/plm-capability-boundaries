@@ -195,7 +195,7 @@ def test_arms_are_the_shared_directions_three_arms_and_m_is_one_column():
     representation = lanes.arm_designs('abundance', 'nuisance', QUALIFIED['abundance'],
                                        channel='representation', tokenisation=True)
     assert representation[lanes.MODEL_ARM] == ('R',)
-    with pytest.raises(ValueError, match='no .representation. channel'):
+    with pytest.raises(SystemExit, match='no .representation. channel'):
         lanes.arm_designs('phenotype', 'nuisance', QUALIFIED['phenotype'],
                           channel='representation')
 
@@ -717,13 +717,48 @@ def test_repeated_resampling_units_are_refused():
                     support_sha256='a' * 64)
 
 
-def test_an_unknown_lane_stratum_or_channel_is_refused():
+def test_an_unknown_lane_or_stratum_is_refused():
     with pytest.raises(ValueError, match='unknown lane'):
         lanes.lane('generation')
     with pytest.raises(ValueError, match='unknown stratum'):
         lanes.stratum('abundance', 'ranking_error')
-    with pytest.raises(ValueError, match='no .representation. channel'):
-        lanes.channel_block('stability', 'representation')
+
+
+def test_an_undeclared_lane_and_channel_pair_is_refused_by_name():
+    """A channel a lane does not declare is refused at one boundary, naming both.
+
+    A lane that declares no representation channel has no representation block to put
+    on a model arm, so a design, a plan, a family and a panel asked for one must all
+    be refused rather than labelled with a channel nothing can fit. The refusal is
+    checked once, in :func:`channel_block`, which every one of those paths goes
+    through, and it states the lane, the channel asked for and the channels the lane
+    does declare instead of surfacing as a traceback from inside a family assembly.
+    """
+
+    groups = [f'g{index}' for index in range(MINIMUM_BOOTSTRAP_UNITS)]
+    cells = cell_matrix('stability', 'ranking', groups, rungs=('nuisance',))
+    requests = {
+        'block': lambda: lanes.channel_block('stability', 'representation'),
+        'design': lambda: lanes.arm_designs('stability', 'nuisance', QUALIFIED['stability'],
+                                            channel='representation'),
+        'plan': lambda: lanes.fit_plan('stability', QUALIFIED['stability'],
+                                       channel='representation'),
+        'family': lambda: lanes.declared_family('stability', 'representation'),
+        'panel': lambda: lanes.panel('stability', 'ranking', 'representation', cells,
+                                     groups=groups, support_sha256='a' * 64,
+                                     role='sensitivity'),
+    }
+    for path, request in requests.items():
+        with pytest.raises(SystemExit) as error:
+            request()
+        message = str(error.value)
+        assert 'stability' in message and "'representation'" in message, path
+        assert "['likelihood']" in message, path
+    # A channel no lane declares at all is refused the same way, and a lane that does
+    # declare the channel still answers.
+    with pytest.raises(SystemExit, match="no 'embedding' channel"):
+        lanes.channel_block('abundance', 'embedding')
+    assert lanes.channel_block('abundance', 'representation') == 'R'
 
 
 # --------------------------------------------------------------------------- #

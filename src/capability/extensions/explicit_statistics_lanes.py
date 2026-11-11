@@ -483,7 +483,13 @@ LANES: dict[str, Lane] = {
                'the nuisance control is arm-conditional by design: each arm\'s nuisance set '
                'has to absorb that arm\'s own tokenisation artefacts, so a control held common '
                'across arms would credit segmentation to the model and would be the error. The '
-               'forward increment is therefore "the model beyond this arm\'s own controls"',)),
+               'forward increment is therefore "the model beyond this arm\'s own controls"',
+               'the declared representation channel cannot be fitted from this lane\'s archive: '
+               'the restored per-arm extraction exports the scalar likelihood block and the '
+               'tokenisation block and nothing else, so there is no representation block to put '
+               'on a model arm and that family stays pending for that reason. It stays declared '
+               'because the declared channels are part of this lane\'s fit identity, and '
+               'withdrawing one would restamp every fitted cell of the lane as stale',)),
     'stability': Lane(
         name='stability',
         cohort='pairwise',
@@ -598,9 +604,24 @@ def stratum(lane_name: str, name: str) -> Stratum:
 
 
 def channel_block(lane_name: str, channel: str) -> str:
+    """The block one channel's model arm carries, or a refusal naming lane and channel.
+
+    This is the only place a channel request is checked, and it is the right place
+    because every path that acts on a channel passes through it: :func:`arm_designs`
+    for a design, :func:`declared_family` and :func:`panel` for a family. A guard at
+    each of those would be the same question asked four times.
+
+    The refusal is a stated one rather than a bare exception because the channel is
+    the one declaration name on this path that arrives from outside the declaration
+    -- a cells document's ``channel`` field, or a keyword argument whose default is
+    silent -- so an undeclared pair is an operator's mistake and reaches an operator.
+    A traceback out of the middle of a family assembly does not say which lane
+    declined which channel; this does, and names what the lane does declare.
+    """
+
     declared = lane(lane_name)
     if channel not in declared.channels:
-        raise ValueError(f'{lane_name}: no {channel!r} channel; this lane declares '
+        raise SystemExit(f'{lane_name}: no {channel!r} channel; this lane declares '
                          f'{list(declared.channels)}')
     return CHANNELS[channel]['block']
 

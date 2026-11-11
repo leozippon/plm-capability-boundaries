@@ -28,6 +28,9 @@ from src.capability.interactions import pairwise_epistasis as pairwise
 
 BOUNDARY = ('inputs', 'arms', 'strata', 'qualified', 'state', 'fit', 'archived')
 
+#: The abundance lane's archived qualified control set, as its own archive records it.
+ABUNDANCE_QUALIFIED = ('ident', 'geom', 'comp', 'chem', 'prof', 'prof2', 'G')
+
 
 def test_every_lane_has_an_adapter_exposing_the_whole_boundary():
     assert sorted(adapters.ADAPTERS) == sorted(lanes.LANES)
@@ -80,7 +83,7 @@ def test_the_stability_nuisance_rung_drops_profile_and_keeps_composition():
 
 
 def test_an_abundance_arm_carries_its_own_tokenisation_block_in_its_nuisance_set():
-    frozen = ('ident', 'geom', 'comp', 'chem', 'prof', 'prof2', 'G')
+    frozen = ABUNDANCE_QUALIFIED
     plain = lanes.role_blocks('abundance', frozen)
     tokenised = lanes.role_blocks('abundance', (*frozen, 'T'))
     assert 'T' not in plain['nuisance']
@@ -211,12 +214,74 @@ def test_one_fit_serves_every_stratum_of_a_lane():
     assert cache.get(state, 'gpt2', designs, 'transfer_error')['values'] == {'U_C': [2.]}
     assert cache.get(state, 'gpt2', designs, 'ranking')['readings_available'] == [
         'ranking', 'transfer_error']
-    # A different control set, a different arm or a different support is a different
-    # fit and must not be served from this cell.
+    # A different control set, a different model arm, a different arm or a different
+    # support is a different fit and must not be served from this cell.
     other = dict(designs, **{lanes.CONTROL_ARM: ('ident', 'G', 'prof')})
     assert cache.get(state, 'gpt2', other, 'ranking') is None
+    channel = dict(designs, **{lanes.MODEL_ARM: ('R',), lanes.JOINT_ARM: ('ident', 'G', 'R')})
+    assert cache.get(state, 'gpt2', channel, 'ranking') is None
     assert cache.get(state, 'gpt2-xl', designs, 'ranking') is None
     assert cache.get({'support_sha256': 'def'}, 'gpt2', designs, 'ranking') is None
+
+
+def abundance_adapter(monkeypatch, *, archived=('M', 'T')):
+    """An abundance adapter whose archive carries what the real one exports.
+
+    ``r2_abundance.prepare`` validates that a restored extraction holds the scalar
+    likelihood block and the tokenisation block and nothing else, and refuses it
+    otherwise, so this stands in for the archive exactly: no representation block, and
+    nothing to fit.
+    """
+    import types
+
+    import numpy as np
+
+    instance = adapters.AbundanceAdapter.__new__(adapters.AbundanceAdapter)
+    instance._readings = adapters._Readings()
+    monkeypatch.setattr(instance, '_module', lambda: types.SimpleNamespace(
+        prepare=lambda arm: {'blocks': {name: np.zeros((4, 1)) for name in archived}}))
+    return instance
+
+
+def abundance_state():
+    import numpy as np
+
+    blocks = {name: np.zeros((4, 1)) for name in ABUNDANCE_QUALIFIED if name != 'G'}
+    return {'support_sha256': 'f' * 64, 'stratum': 'squared_error', 'reading': 'mse',
+            'panel': {'blocks': blocks}, 'row_mask': np.ones(4, dtype=bool),
+            'added_blocks': {}, 'group_order': ['g1']}
+
+
+def test_a_representation_cell_is_refused_rather_than_served_a_warm_likelihood_fit(monkeypatch):
+    """A channel the archive cannot serve must not be answered from the cache.
+
+    The two channels of one rung share their control arm and differ only in the block
+    on the model arm, and the lanes fit likelihood before any other channel, so by the
+    time a representation cell is asked for this arm's likelihood cell is already warm
+    in the same process. The refusal for a block the archive does not carry comes
+    *after* the cache is consulted, so a cache that cannot tell the two channels apart
+    answers with the likelihood fit's own values under the representation channel's
+    label -- and the cell's stored identity does not carry the channel, so nothing
+    downstream could notice.
+    """
+
+    instance = abundance_adapter(monkeypatch)
+    state = abundance_state()
+    likelihood = lanes.arm_designs('abundance', lanes.ARCHIVED_RUNG, ABUNDANCE_QUALIFIED)
+    representation = lanes.arm_designs('abundance', lanes.ARCHIVED_RUNG, ABUNDANCE_QUALIFIED,
+                                       channel='representation')
+    assert likelihood[lanes.CONTROL_ARM] == representation[lanes.CONTROL_ARM]
+    assert (likelihood[lanes.MODEL_ARM], representation[lanes.MODEL_ARM]) == (('M',), ('R',))
+    fitted = {'mse': {name: [0.25] for name in likelihood},
+              'rank': {name: [0.5] for name in likelihood}}
+    instance._readings.put(state, 'gpt2', likelihood, readings=fitted,
+                           alphas={'1': {name: [1.] for name in likelihood}},
+                           dimensions={name: 1 for name in likelihood})
+    assert instance.fit(state, 'gpt2', likelihood)['values'] == fitted['mse']
+    with pytest.raises(SystemExit) as error:
+        instance.fit(state, 'gpt2', representation)
+    message = str(error.value)
+    assert "['R']" in message and "['M', 'T']" in message
 
 
 def test_the_nuisance_rung_leak_through_g_is_recorded_rather_than_removed():
