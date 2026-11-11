@@ -39,7 +39,8 @@ def single_reference(scorer, sequence):
         logits = model(input_ids=torch.tensor([ids], device=device)).logits[0].float()
     logp = torch.log_softmax(logits, dim=-1)
     nll = [-float(logp[t - 1, ids[t]]) for t in range(spec_prompt_len, len(ids))]
-    return list(ids) == expected, sum(nll), len(nll)
+    stop = -float(logp[len(ids) - 1, scorer["close_id"]])
+    return list(ids) == expected, sum(nll), len(nll), stop
 
 
 def wrong_left_pad_no_mask(scorer, sequences):
@@ -86,6 +87,7 @@ def main() -> int:
         ref = [single_reference(scorer, s) for s in pick]
         wrong = wrong_left_pad_no_mask(scorer, pick)
         d_mean = [abs(b[1] / b[0] - r[1] / r[2]) for b, r in zip(batched, ref)]
+        d_stop = [abs(b[2] - r[3]) for b, r in zip(batched, ref)]
         d_sum = [abs(b[1] - r[1]) for b, r in zip(batched, ref)]
         d_wrong = [abs(w - r[1]) / r[2] for w, r in zip(wrong, ref)]
         d_recomp = [abs(shuffled[i][1] / shuffled[i][0] - batched[len(pick) - 1 - i][1] / batched[len(pick) - 1 - i][0]) for i in range(len(shuffled))]
@@ -98,13 +100,15 @@ def main() -> int:
             "batched_mean_nll": [b[1] / b[0] for b in batched],
             "single_mean_nll": [r[1] / r[2] for r in ref],
             "max_abs_diff_mean_nll_batched_vs_single": max(d_mean),
+            "close_token": scorer["close_token"], "close_id": scorer["close_id"],
+            "max_abs_diff_stop_nll_batched_vs_single": max(d_stop),
             "max_abs_diff_sum_nll_batched_vs_single": max(d_sum),
             "max_abs_diff_mean_nll_other_batch_composition": max(d_recomp),
             "negative_control_left_pad_no_mask_max_abs_diff_mean_nll": max(d_wrong),
             "negative_control_left_pad_no_mask_median_abs_diff_mean_nll": sorted(d_wrong)[len(d_wrong) // 2],
         }
         (args.out / f"{arm}.validation.json").write_text(json.dumps(report, indent=1))
-        print(json.dumps({k: v for k, v in report.items() if k.startswith(("max", "neg", "token", "n_tok", "dtype", "arm"))}), flush=True)
+        print(json.dumps({k: v for k, v in report.items() if k.startswith(("max", "close", "neg", "token", "n_tok", "dtype", "arm"))}), flush=True)
     return 0
 
 

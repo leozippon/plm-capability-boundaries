@@ -16,8 +16,11 @@ Convention
 * The prompt is the generation prompt of ``--model`` (ProtGPT3: ``<|bos|>`` then
   direction ``1``; ProGen2: direction marker alone); ``prompt_contract`` refuses one
   that does not encode to its declared marker ids.
-* Scored tokens are the extracted residues, one id per residue; the stop decision is
-  not scored, so censored and natively terminated sequences are scored alike.
+* ``mean_nll``/``sum_nll`` cover the extracted residues, one id per residue, and
+  exclude the stop decision. ``stop_nll`` is -log p(close token | prompt + residues)
+  with the *scored model's* close token (``spec.close_token`` resolved by that model's
+  tokenizer: ``<|eos|>`` for ProtGPT3, the terminal marker ``2`` for ProGen2); it is
+  recorded for every sequence and is meaningful only for attempts that ended on it.
 * Temperature 1, no top-k or top-p: the model's own likelihood, not the probability
   under the sampling procedure (T 0.85, top-k 50, top-p 0.95).
 * Float32 weights; right padding with an explicit attention mask; residue-position
@@ -29,7 +32,8 @@ Batching gate
 -------------
 After each model loads, ``GATE_SEQUENCES`` sequences of spread length are scored as
 one padded batch and one by one with no padding. If the largest absolute difference
-in mean NLL exceeds ``--gate-threshold`` (default 1e-4; float32 agreement measured
+in mean NLL, or the relative difference in stop NLL (a single-token NLL that can reach
+tens of nats, so float32 rounding scales with it; |diff| / max(1, |stop NLL|)), exceeds ``--gate-threshold`` (default 1e-4; float32 agreement measured
 on the L20 is at most 1.2e-5) the pass aborts before writing anything for that model.
 
 Output, ``<out>/<model>__on__<source>.jsonl``: ``sequence_sha256, n_tokens, sum_nll,
@@ -72,6 +76,9 @@ def load_scorer(arm: str, device: str, dtype: str = "float32"):
         int(i) for i in tokenizer(spec.prompt, add_special_tokens=spec.add_special_tokens)["input_ids"]
     ]
     residue_ids = ot.residue_alphabet_contract(arm, tokenizer)["residue_ids"]
+    close_id = tokenizer.convert_tokens_to_ids(spec.close_token)
+    if close_id is None or int(close_id) < 0 or close_id == tokenizer.unk_token_id:
+        raise ValueError(f"{arm}: close token {spec.close_token!r} has no id")
     pad_id = tokenizer.pad_token_id
     if pad_id is None:
         pad_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
@@ -81,6 +88,8 @@ def load_scorer(arm: str, device: str, dtype: str = "float32"):
         "prompt_ids": prompt_ids,
         "residue_ids": residue_ids,
         "pad_id": int(pad_id),
+        "close_token": spec.close_token,
+        "close_id": int(close_id),
         "dtype": dtype,
     }
 
@@ -93,8 +102,13 @@ def encode(scorer: dict[str, Any], sequence: str) -> list[int]:
     return scorer["prompt_ids"] + [ids[c] for c in sequence]
 
 
-def score_batch(scorer: dict[str, Any], sequences: list[str]) -> list[tuple[int, float]]:
-    """(n_tokens, sum_nll) per sequence, right-padded with an attention mask."""
+def score_batch(scorer: dict[str, Any], sequences: list[str]) -> list[tuple[int, float, float]]:
+    """(n_tokens, sum_nll, stop_nll) per sequence, right-padded with an attention mask.
+
+    ``stop_nll`` is -log p(close token | prompt + residues): defined for any prefix, and
+    meaningful only where the sequence actually ended on that token (the analysis
+    decides which attempts those are).
+    """
 
     import torch
 
@@ -113,19 +127,22 @@ def score_batch(scorer: dict[str, Any], sequences: list[str]) -> list[tuple[int,
         out = model(input_ids=ids, attention_mask=mask)
         logits = out.logits if hasattr(out, "logits") else out[0]
         # logits at position t predict token t+1; residues start at prompt_len.
-        logp = torch.log_softmax(logits[:, prompt_len - 1 : width - 1].float(), dim=-1)
+        logp = torch.log_softmax(logits[:, prompt_len - 1 : width].float(), dim=-1)
         target = ids[:, prompt_len:]
-        token_nll = -logp.gather(-1, target.unsqueeze(-1)).squeeze(-1)
+        token_nll = -logp[:, :-1].gather(-1, target.unsqueeze(-1)).squeeze(-1)
         valid = mask[:, prompt_len:].bool()
         sums = (token_nll * valid).sum(dim=1)
-    return [(int(valid[i].sum()), float(sums[i])) for i in range(len(encoded))]
+        counts = valid.sum(dim=1)
+        # the position after the last residue of row i is index counts[i] of logp
+        stop = -logp[torch.arange(len(encoded), device=device), counts, scorer["close_id"]]
+    return [(int(counts[i]), float(sums[i]), float(stop[i])) for i in range(len(encoded))]
 
 
 def score_all(scorer: dict[str, Any], sequences: list[str], *, max_batch: int, max_tokens: int):
     """Score distinct sequences length-sorted; return {sequence: (n, sum_nll)}."""
 
     order = sorted(set(sequences), key=len)
-    results: dict[str, tuple[int, float]] = {}
+    results: dict[str, tuple[int, float, float]] = {}
     i = 0
     while i < len(order):
         # sorted ascending, so the batch's width is its last member's length
@@ -170,12 +187,13 @@ def batching_gate(scorer: dict[str, Any], sequences: list[str], threshold: float
     pick = [ordered[round(i * (len(ordered) - 1) / max(k - 1, 1))] for i in range(k)]
     batched = score_batch(scorer, pick)
     worst = 0.0
-    for seq, (n, total) in zip(pick, batched):
-        n1, total1 = score_batch(scorer, [seq])[0]
+    for seq, (n, total, stop) in zip(pick, batched):
+        n1, total1, stop1 = score_batch(scorer, [seq])[0]
         if n1 != n:
             raise SystemExit(f"batching gate: token count {n} batched against {n1} alone")
-        worst = max(worst, abs(total / n - total1 / n1))
-    record = {"lengths": [len(s) for s in pick], "max_abs_diff_mean_nll": worst,
+        worst = max(worst, abs(total / n - total1 / n1),
+                    abs(stop - stop1) / max(1.0, abs(stop1)))
+    record = {"lengths": [len(s) for s in pick], "max_abs_diff_mean_nll_or_stop_nll": worst,
               "threshold": threshold, "passed": worst <= threshold}
     if not record["passed"]:
         raise SystemExit(f"batching gate FAILED: {worst:.3e} > {threshold:.1e}; nothing written")
@@ -210,23 +228,24 @@ def main(argv: list[str] | None = None) -> int:
     scorer = load_scorer(args.model, args.device, args.dtype)
     gate = batching_gate(scorer, pools[args.source[0]][2], args.gate_threshold)
     (args.out / f"{args.model}.gate.json").write_text(json.dumps(gate, indent=1), encoding="utf-8")
-    print(f"{args.model}: batching gate passed, max diff {gate['max_abs_diff_mean_nll']:.2e}", flush=True)
+    print(f"{args.model}: batching gate passed, max diff {gate['max_abs_diff_mean_nll_or_stop_nll']:.2e}", flush=True)
 
     for source, (attempts, non_empty, distinct) in pools.items():
         results = score_all(scorer, distinct, max_batch=args.max_batch, max_tokens=args.max_tokens)
         stem = f"{args.model}__on__{source}"
         with (args.out / f"{stem}.jsonl").open("w", encoding="utf-8") as fh:
             for seq in distinct:
-                n, total = results[seq]
+                n, total, stop = results[seq]
                 fh.write(json.dumps({
                     "sequence_sha256": hashlib.sha256(seq.encode()).hexdigest(),
-                    "n_tokens": n, "sum_nll": total, "mean_nll": total / n,
+                    "n_tokens": n, "sum_nll": total, "mean_nll": total / n, "stop_nll": stop,
                 }) + "\n")
         (args.out / f"{stem}.manifest.json").write_text(json.dumps({
             "model": args.model, "source": source, "attempts": attempts,
             "non_empty_attempts": non_empty, "distinct_sequences_scored": len(distinct),
             "limit": args.limit, "prompt_ids": scorer["prompt_ids"], "dtype": scorer["dtype"],
-            "temperature": 1.0, "scored_tokens": "extracted residues only; stop token excluded",
+            "temperature": 1.0, "scored_tokens": "mean_nll and sum_nll over extracted residues only; stop_nll is -log p(close token | prompt + residues), separate",
+            "close_token": scorer["close_token"], "close_id": scorer["close_id"],
         }, indent=1), encoding="utf-8")
         print(f"{stem}: scored {len(distinct)} distinct sequences", flush=True)
     return 0
