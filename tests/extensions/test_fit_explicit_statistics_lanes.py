@@ -454,6 +454,121 @@ def test_a_stratum_whose_declared_rung_is_not_the_published_design_has_no_gate(w
 
 
 # --------------------------------------------------------------------------- #
+# The numerical environment a refusal is measured in.
+# --------------------------------------------------------------------------- #
+
+def published_run(root, threads):
+    """A published run directory, and the ``--published`` argument naming it.
+
+    ``threads`` is what its resource record names under ``resources.threads``, or
+    ``None`` for a run directory carrying no resource record at all.
+    """
+
+    directory = root / 'published'
+    directory.mkdir(parents=True, exist_ok=True)
+    record = directory / runner.RESOURCE_RECORD
+    if threads is None:
+        record.unlink(missing_ok=True)
+    else:
+        record.write_text(json.dumps({'resources': {'threads': threads}}))
+    return ['--published', str(directory)]
+
+
+def at_threads(monkeypatch, count):
+    """Pin this process's thread counts, as the runner pins them before NumPy."""
+
+    for name in runner.THREAD_VARIABLES:
+        monkeypatch.setenv(name, count)
+    return {name: count for name in runner.THREAD_VARIABLES}
+
+
+def test_a_failed_gate_names_both_numerical_environments(workspace, monkeypatch):
+    # A refitted rank statistic can disagree over a last bit while every penalty and
+    # every design dimension reproduces, so the refusal has to name the environment it
+    # was measured in beside the numbers rather than leave the fitting path as the only
+    # candidate the reader is given.
+    refit = at_threads(monkeypatch, '1')
+    recorded = {name: '4' for name in runner.THREAD_VARIABLES}
+    published = published_run(workspace['root'], recorded)
+    StubAdapter.perturb = 1e-6
+    assert runner.main(['pilot'] + workspace['base'] + published) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert record['status'] == 'failed'
+    environment = record['numerical_environment']
+    assert environment['threads_in_force'] == refit
+    assert environment['published']['threads'] == recorded
+    assert environment['published']['known'] is True and environment['differs'] is True
+    reason = record['reason']
+    # The refusal keeps its own statement and carries both environments beside it.
+    assert 'the fitting path is not the published one' in reason
+    assert 'OMP_NUM_THREADS=1' in reason and 'OMP_NUM_THREADS=4' in reason
+    assert runner.RESOURCE_RECORD in reason
+    # Offered as a candidate explanation, with nothing admitted on its account.
+    assert 'candidate explanation' in reason and 'not a conclusion' in reason
+    assert 'refuses on the numbers as measured' in reason
+    # A rerun compares cells re-read from cache, whose own environment this process
+    # does not know; the note states that rather than claiming them.
+    assert runner.main(['pilot'] + workspace['base'] + published) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    environment = record['numerical_environment']
+    assert environment['cells_from_cache'] == environment['cells_compared'] > 0
+    assert 're-read from cache' in record['reason']
+
+
+def test_the_environment_diagnostic_does_not_move_the_gates_decision(workspace, monkeypatch):
+    at_threads(monkeypatch, '1')
+    differing = published_run(workspace['root'], {name: '4' for name in runner.THREAD_VARIABLES})
+    # In the very environment the diagnostic faults, a difference beyond the tolerance
+    # still fails with the same measured number and one inside it still passes.
+    StubAdapter.perturb = 1e-6
+    assert runner.main(['pilot'] + workspace['base'] + differing) == 1
+    failed = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert failed['strata'][STRATUM]['worst_per_group_difference'] == pytest.approx(1e-6)
+    assert failed['tolerance'] == runner.PILOT_TOLERANCE
+    StubAdapter.perturb = runner.PILOT_TOLERANCE / 2
+    assert runner.main(['pilot'] + workspace['base'] + differing) == 0
+    passed = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert passed['status'] == 'passed' and passed['tolerance'] == runner.PILOT_TOLERANCE
+    # A passing gate records no environment: this is a diagnostic on a refusal only.
+    assert 'numerical_environment' not in passed
+    # And two agreeing environments do not excuse a difference the gate measured.
+    agreeing = published_run(workspace['root'], {name: '1' for name in runner.THREAD_VARIABLES})
+    StubAdapter.perturb = 1e-6
+    assert runner.main(['pilot'] + workspace['base'] + agreeing) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert record['numerical_environment']['differs'] is False
+    assert 'not among the candidate explanations' in record['reason']
+
+
+def test_an_unknown_published_environment_is_named_rather_than_guessed(workspace, monkeypatch):
+    refit = at_threads(monkeypatch, '1')
+    StubAdapter.perturb = 1e-6
+    # No published run was named at all.
+    assert runner.main(['pilot'] + workspace['base']) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert record['numerical_environment']['threads_in_force'] == refit
+    assert record['numerical_environment']['differs'] is None
+    assert 'no --published run was named' in record['reason']
+    assert 'unestablished rather than excluded' in record['reason']
+    assert 'OMP_NUM_THREADS=1' in record['reason']
+    # A published run whose resource record is absent: the path looked for is named.
+    assert runner.main(['pilot'] + workspace['base']
+                       + published_run(workspace['root'], None)) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert record['numerical_environment']['published']['known'] is False
+    assert record['numerical_environment']['differs'] is None
+    assert runner.RESOURCE_RECORD in record['reason'] and 'are not known' in record['reason']
+    # A record that names other thread variables and none of these.
+    assert runner.main(['pilot'] + workspace['base']
+                       + published_run(workspace['root'],
+                                       {'NUMEXPR_NUM_THREADS': '8'})) == 1
+    record = json.loads((workspace['out'] / 'pilot.json').read_text())
+    assert record['numerical_environment']['published']['known'] is False
+    assert record['numerical_environment']['differs'] is None
+    assert 'none of' in record['reason'] and 'unestablished' in record['reason']
+
+
+# --------------------------------------------------------------------------- #
 # The arm-conditional control set.
 # --------------------------------------------------------------------------- #
 

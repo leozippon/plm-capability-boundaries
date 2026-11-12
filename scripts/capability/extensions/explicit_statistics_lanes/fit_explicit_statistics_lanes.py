@@ -58,7 +58,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-for _variable in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+#: The BLAS thread variables this script pins before NumPy is imported, and the ones a
+#: published run's resource record names beside its own fits. A library splits a
+#: reduction over this many threads and sums the parts in that order, so two counts
+#: agree on a fit only down to its last bits. That is why the reproduction gate reports
+#: both environments when it refuses (:func:`numerical_environment`).
+THREAD_VARIABLES = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')
+
+for _variable in THREAD_VARIABLES:
     os.environ.setdefault(_variable, '1')
 
 import numpy as np
@@ -83,6 +90,11 @@ PILOT_SCHEMA = 'explicit_statistics_lane_pilot'
 #: the same rows in the same order, so anything above this is a different fit, not a
 #: rounding difference.
 PILOT_TOLERANCE = 1e-9
+
+#: Where a published run records the environment it was fitted in: its thread counts sit
+#: under ``resources.threads`` of this file in the run directory ``--published`` names.
+#: The gate reads it on its refusal path only, to report an environment, never a number.
+RESOURCE_RECORD = 'resource-start.json'
 
 #: What the reproduction gate measures, named so it cannot be mistaken for inference.
 REPRODUCTION_CRITERION = (
@@ -386,6 +398,98 @@ def plan(args, instance, wave) -> dict:
     return record
 
 
+def threads_in_force() -> dict[str, str]:
+    """The thread counts this process is fitting at, as the refit sees them."""
+
+    return {name: os.environ.get(name, 'unset') for name in THREAD_VARIABLES}
+
+
+def published_threads(published) -> dict:
+    """The thread counts the published run recorded, or why they are not known.
+
+    The counts are read from the resource record of the run ``--published`` names and
+    never inferred from anything else. A record that is absent, unreadable or names
+    none of these variables leaves the published environment unknown, and that is
+    reported as unknown: a diagnostic that guessed it would point the next reader at a
+    difference nobody measured, which is the failure this reports in the first place.
+    """
+
+    if published is None:
+        return {'known': False, 'path': None,
+                'reason': 'no --published run was named, so no resource record could be read'}
+    path = Path(published) / RESOURCE_RECORD
+    if not path.is_file():
+        return {'known': False, 'path': str(path),
+                'reason': f'{path} is absent, so this published run records no environment of '
+                          'its own'}
+    try:
+        recorded = dict(json.loads(path.read_text(encoding='utf-8'))['resources']['threads'])
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        return {'known': False, 'path': str(path),
+                'reason': f'{path} is not a readable resource record naming its thread counts '
+                          f'({error.__class__.__name__}: {error})'}
+    named = {name: str(recorded[name]) for name in THREAD_VARIABLES if name in recorded}
+    if not named:
+        return {'known': False, 'path': str(path),
+                'reason': f'{path} records thread counts {sorted(recorded)} and none of '
+                          f'{list(THREAD_VARIABLES)}'}
+    return {'known': True, 'path': str(path), 'threads': named}
+
+
+def threads_text(counts: dict) -> str:
+    """One thread environment as text, naming every variable it does not carry."""
+
+    return ', '.join(f'{name}={counts.get(name, "unrecorded")}' for name in THREAD_VARIABLES)
+
+
+def numerical_environment(published, *, compared: int, reused: int) -> dict:
+    """The environment this refit ran in beside the published one, for a refusal.
+
+    This is read only once the gate has refused, it reaches no number the gate compares
+    and no decision the gate makes, and a difference it finds is a candidate explanation
+    for a disagreement the gate measured -- never a reason to admit one, widen the
+    tolerance or retry at other counts. Where the published record is unreachable or
+    names no thread count, the subject is reported as unknown rather than guessed or
+    dropped, and where cells were re-read from cache the counts are not claimed for
+    them: a cell is bound to its inputs and its code, which do not include this.
+    """
+
+    refit = threads_in_force()
+    recorded = published_threads(published)
+    differs = (None if not recorded['known'] else
+               any(refit[name] != value for name, value in recorded['threads'].items()))
+    partial = ('' if differs is None or len(recorded['threads']) == len(THREAD_VARIABLES) else
+               f' The record names only {sorted(recorded["threads"])}, so the rest of the '
+               'published environment is not known.')
+    if differs is None:
+        reading = (f'the refit ran at {threads_text(refit)}; the published run\'s own thread '
+                   f'counts are not known ({recorded["reason"]}), so whether the two numerical '
+                   'environments agree is unestablished rather than excluded.')
+    elif differs:
+        reading = (f'the refit ran at {threads_text(refit)} and the published run at '
+                   f'{recorded["path"]} records {threads_text(recorded["threads"])}.{partial} '
+                   'The two numerical environments differ, which is a candidate explanation for '
+                   'a reproduction difference and not a conclusion about this one: a BLAS thread '
+                   'count decides the order a reduction is summed in and so moves a prediction '
+                   'in its last bits, and a within-background rank statistic carries such a move '
+                   'only where it flips a near-tie. Nothing above was widened, retried or '
+                   'excused on this account -- the gate refuses on the numbers as measured, and '
+                   'whether these counts explain them is settled by rerunning this gate in the '
+                   'published environment, not here.')
+    else:
+        reading = (f'the refit and the published run at {recorded["path"]} both record '
+                   f'{threads_text(recorded["threads"])}, so a thread-count difference is not '
+                   f'among the candidate explanations for what was refitted here.{partial}')
+    cache = ('' if not reused else
+             f' {reused} of the {compared} compared cells were re-read from cache rather than '
+             'refitted in this process, and a cell records no thread count of its own, so the '
+             'counts above are this process\'s and not necessarily the ones those cells were '
+             'fitted at; --refit fits them here.')
+    return {'threads_in_force': refit, 'published': recorded, 'differs': differs,
+            'cells_compared': compared, 'cells_from_cache': reused,
+            'reading': reading + cache}
+
+
 def pilot(args, instance) -> dict:
     """Refit the archived arms on the full support and require the published values.
 
@@ -409,11 +513,19 @@ def pilot(args, instance) -> dict:
     narrow measurement of anything -- it would be the narrowest possible statement
     asserted for the least informative possible input. The band machinery is reached
     only from :func:`panels`, over per-group arm performances that do vary.
+
+    **A refusal names the numerical environment it was measured in**
+    (:func:`numerical_environment`), because a last-bit difference between two thread
+    counts is one thing a refitted rank statistic can disagree over while every penalty
+    and every design dimension reproduces. That is a diagnostic beside the numbers and
+    not part of the criterion: it is read after the decision is made and cannot change
+    it.
     """
 
     declared = lanes.lane(args.lane)
     inputs = instance.inputs()
     strata = args.stratum or instance.strata()
+    compared_cells: list[bool] = []
     report = {'schema': PILOT_SCHEMA, 'lane': args.lane, 'status': 'passed',
               'created_utc': datetime.now(timezone.utc).isoformat(),
               'tolerance': PILOT_TOLERANCE, 'criterion': REPRODUCTION_CRITERION,
@@ -457,6 +569,7 @@ def pilot(args, instance) -> dict:
                             qualified=qualified,
                             inputs_sha256=cell_identity(args.lane, 'full', inputs),
                             out=args.out, refit=args.refit)
+            compared_cells.append(bool(cell['reused']))
             differences = {}
             for name in (lanes.CONTROL_ARM, lanes.JOINT_ARM):
                 expected = np.asarray(archived['values'][arm][name], dtype=float)
@@ -496,9 +609,13 @@ def pilot(args, instance) -> dict:
             'support_shape': archived.get('support_shape'),
             'worst_per_group_difference': worst, 'arms_reproduced': reproduced}
     if report['status'] != 'passed':
+        environment = numerical_environment(args.published, compared=len(compared_cells),
+                                            reused=sum(compared_cells))
+        report['numerical_environment'] = environment
         report['reason'] = ('a refitted archived arm did not reproduce the published per-group '
                             f'values within {PILOT_TOLERANCE:g} or chose a different penalty; the '
-                            'fitting path is not the published one and no panel may be written')
+                            'fitting path is not the published one and no panel may be written. '
+                            f'The numerical environment: {environment["reading"]}')
     return report
 
 
