@@ -40,10 +40,10 @@ Each lane keeps its endpoint, support, controls and interval procedure explicit.
 |---|---|
 | `src/capability/core/` | Shared numbers, paths, sequences and records |
 | `src/capability/models/` | Checkpoint scoring |
-| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation |
+| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation, forcing, decoding, evaluation; `baselines/` holds the explicit statistical controls (profile and Potts scoring, cohort descriptors), `ladder/` the variant-effect baseline ladder, and `extensions/` the later estimand declarations |
 | `scripts/capability/` | Entry points in the same groups, plus `data/` (dataset acquisition and checksum registry), `stages/`, `gates/` and `reporting/` (derived quantities, figure code and plotted source tables) |
 | `scripts/ops/` | Dataset preparation utilities for the composition-matched fold set, the EC-labelled Swiss-Prot corpus and the OpenWebText subset |
-| `configs/` | Scientific contract for the generation replication endpoint |
+| `configs/` | Declarations read by the entry points: the generation replication manifest and the matched-discrimination manifest, the explicit-statistics cohort descriptors, and the family-conditionals, family-distribution and objective-tuned-prediction contracts |
 | `tests/` | Test suite, grouped like the library |
 | `requirements.txt` | Direct Python dependencies |
 
@@ -77,7 +77,7 @@ Three entry points are not category-specific:
 
 Endpoint-specific campaigns declare their own support and checkpoints, which are not the same panel as that foundational stage.
 
-Checkpoint weights, model directories and dataset paths are environment variables. `src/capability/core/arms.py` reads the model and corpus locations, and the modules and entry points that need other inputs (ProteinGym, InterPro, CATH, Swiss-Prot XML, MegaScale, AlphaFold structures, DIAMOND) read their own. All of them are named in `.env.example`, with a comment saying what each points at. Copy that file to `.env.local` and fill in this machine's paths. `.env.local` is ignored. A variable already exported in the shell is left unchanged, and an unset or empty one keeps the default in the code that reads it. A missing input stops the run with the variable's name. On the cluster, the launch script assigns the path variables before Python starts. Never commit `.env.local`.
+Checkpoint weights, model directories and dataset paths are environment variables. `src/capability/core/arms.py` reads the model and corpus locations, and the modules and entry points that need other inputs (ProteinGym, InterPro, CATH, Swiss-Prot XML, MegaScale, AlphaFold structures, DIAMOND) read their own. The dataset and checkpoint variables are named in `.env.example`, with a comment saying what each points at. Copy that file to `.env.local` and fill in this machine's paths. Three variables are read by code and deliberately absent from it: `TRANSFER_PROJECT_ROOT` and `TRANSFER_PACKAGE_ROOT`, which the host-local cluster launch layer (`h200/h200_env.sh`) exports before Python starts, and `PYMOL_EXECUTABLE`, which only names an existing PyMOL binary for `render_framework_structures.py` and has `--pymol` as its equivalent. `.env.local` is ignored. A variable already exported in the shell is left unchanged, and an unset or empty one keeps the default in the code that reads it. A missing input stops the run with the variable's name. On the cluster, the launch script assigns the path variables before Python starts. Never commit `.env.local`.
 
 ## Figures
 
