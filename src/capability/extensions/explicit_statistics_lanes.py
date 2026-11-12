@@ -592,7 +592,12 @@ LANES: dict[str, Lane] = {
                'the binding quantitative cell qualified no profile block, and the hierarchy '
                'carries the profile block there by declaration: including it is the entire '
                'purpose of the rung, and a forward qualification that dropped it is exactly '
-               'the weak control this work replaces',
+               'the weak control this work replaces. One consequence is accepted rather than '
+               'worked around: the archived rung is realised there over five blocks where the '
+               'published fit has three, so the reproduction gate has no published counterpart '
+               'to reproduce and refuses that stratum up front. Its full-support panel '
+               'therefore cannot be gated as declared and is not written, while the lane\'s '
+               'three profile-qualified strata gate normally',
                'the frozen fitter declares no representation block for this lane',
                'the cellular_fitness_sge-ranking complete case is not estimable, and no '
                'further fit changes that: this lane\'s GEMME table is complete, and on three '

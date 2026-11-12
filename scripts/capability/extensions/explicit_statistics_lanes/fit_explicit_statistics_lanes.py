@@ -431,6 +431,27 @@ def pilot(args, instance) -> dict:
             if published_columns != list(qualified):
                 raise SystemExit(f'{stratum}/{arm}: the published panel was fitted over '
                                  f'{published_columns}, not {list(qualified)}')
+            # The archived qualified set is not the archived rung's realised design. Where a
+            # lane declares a role its own forward qualification dropped, the rung carries
+            # that block anyway -- which is the hierarchy's whole point -- and the refit then
+            # sits on columns the published fit never had. Reproduction is not merely unlikely
+            # there, it is undefined, so it is refused here with that reason and never
+            # attempted: a declared structural impossibility is not a numerical failure and
+            # must not be reported as one.
+            realised = list(lanes.arm_designs(args.lane, lanes.ARCHIVED_RUNG, qualified,
+                                              channel='likelihood')[lanes.CONTROL_ARM])
+            if realised != published_columns:
+                raise SystemExit(
+                    f'{stratum}: this stratum has no reachable reproduction gate. The '
+                    f'{lanes.ARCHIVED_RUNG!r} rung of {arm} is realised over {realised} and the '
+                    f'published panel was fitted over {published_columns}; the declaration '
+                    f'carries {sorted(set(realised) - set(published_columns))} at this rung '
+                    'although this stratum\'s archive did not qualify it. A fit over other '
+                    'columns is a different fit, so there is nothing here for a reproduction to '
+                    'reproduce and none was attempted -- this is the declaration\'s own '
+                    'structure, not a difference between the published numbers and these. The '
+                    'gate is not widened to admit it and this stratum is not panelled; the '
+                    'lane\'s notes record why')
             cell = fit_cell(args.lane, instance, state, stratum=stratum, channel='likelihood',
                             support='full', rung=lanes.ARCHIVED_RUNG, arm=arm,
                             qualified=qualified,

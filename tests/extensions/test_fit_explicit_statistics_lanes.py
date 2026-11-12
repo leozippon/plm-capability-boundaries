@@ -431,6 +431,28 @@ def test_the_pilot_refuses_a_published_control_set_that_is_not_the_arms_own(work
     assert 'was fitted over' in str(error.value)
 
 
+def test_a_stratum_whose_declared_rung_is_not_the_published_design_has_no_gate(workspace,
+                                                                               monkeypatch):
+    # A stratum whose archive qualified no profile block still carries it from the profile
+    # rung upwards, so the archived rung is realised over columns the published fit never
+    # had. The archive and the adapter agree about the qualified set, so the gate would
+    # otherwise refit a different design and report the disagreement as a failed
+    # reproduction. It has to be named as the declared impossibility it is instead.
+    monkeypatch.setattr(StubAdapter, 'qualified', lambda self, stratum, arm=None: ('ident',
+                                                                                   'geom'))
+    with pytest.raises(SystemExit) as error:
+        runner.main(['pilot'] + workspace['base'])
+    message = str(error.value)
+    assert 'no reachable reproduction gate' in message
+    assert "['ident', 'geom', 'prof', 'prof2']" in message and "['ident', 'geom']" in message
+    assert 'none was attempted' in message
+    # Neither the gate record nor a cell of the design it refused to compare is written.
+    assert not (workspace['out'] / 'pilot.json').exists()
+    assert not runner.cell_path(workspace['out'], STRATUM, 'likelihood', 'full',
+                                lanes.ARCHIVED_RUNG, StubAdapter.arms(StubAdapter)[0]).exists()
+    assert StubAdapter.calls == []
+
+
 # --------------------------------------------------------------------------- #
 # The arm-conditional control set.
 # --------------------------------------------------------------------------- #
