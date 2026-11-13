@@ -50,6 +50,33 @@ def test_pdf_contract_keeps_main_and_supplement_table_identifiers(tmp_path, monk
     assert contract['figures_without_a_complete_binding'] == ['figures/unknown.pdf']
 
 
+def test_pdf_contract_reads_the_figures_the_sections_hold(tmp_path, monkeypatch):
+    # The main document holds no \includegraphics of its own: every main figure
+    # is written in a section file it \input{}s. A contract that searched the
+    # root file alone saw no main figure at all and bound nothing.
+    docs = tmp_path / paths.SUBMISSION
+    (docs / 'sections').mkdir(parents=True)
+    (docs / 'main.tex').write_text('\\input{sections/results}\n')
+    (docs / 'sections/results.tex').write_text(
+        r'\includegraphics{figures/figure-1-framework.pdf}')
+    (docs / 'supplementary-information.tex').write_text('')
+    source = tmp_path / 'retained.json'
+    source.write_text('{}')
+    tables = tmp_path / 'scripts/capability/reporting/figure_data'
+    (tables / 'main').mkdir(parents=True)
+    (tables / 'main/Fig1_framework-plotted.csv').write_text(
+        f'source_path,source_sha256\nretained.json,{digest(source)}\n')
+    monkeypatch.setattr(builder, 'REPO_ROOT', tmp_path)
+    monkeypatch.setattr(builder, 'FIGURE_DIR', tables)
+    contract = builder.figure_data_contract(Artifacts(tmp_path), {'counts': {'quantities': 0}})
+    figure = contract['figures']['figures/figure-1-framework.pdf']
+    assert figure['bound']
+    assert figure['input_tables'] == [
+        'scripts/capability/reporting/figure_data/main/Fig1_framework-plotted.csv']
+    assert contract['figures_without_a_complete_binding'] == []
+    assert contract['tables_claimed_by_no_figure'] == []
+
+
 def test_packaged_stage_restores_retained_json_names_and_shared_helper(tmp_path, monkeypatch):
     # Loading the adapter must not leave a bytecode cache inside the handoff
     # package, which carries only the files its manifest records.

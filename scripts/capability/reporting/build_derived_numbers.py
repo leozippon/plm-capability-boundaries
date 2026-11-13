@@ -49,6 +49,7 @@ from src.capability.context.cross_measure_association import (  # noqa: E402
 )
 
 from scripts.capability.reporting import publication_paths  # noqa: E402
+from scripts.capability.reporting.validate_manuscript import read_document  # noqa: E402
 
 FIGURE_DIR = REPO_ROOT / "scripts" / "capability" / "reporting" / "figure_data"
 
@@ -1745,10 +1746,17 @@ def figure_data_contract(artifacts: Artifacts, table: dict[str, object]) -> dict
     artifact still hashes to the recorded digest, and records the binding, so a
     figure cannot drift from the evidence without the contract failing. The
     renderer is untouched.
+
+    Each document is read as LaTeX reads it, with every manuscript-local
+    ``\\input`` substituted where it stands. The main document holds its figures
+    in the section files it inputs and not one ``\\includegraphics`` of its own,
+    so searching the root file alone found no main figure at all and bound
+    nothing.
     """
-    main = (REPO_ROOT / publication_paths.SUBMISSION / "main.tex").read_text()
-    supplement = (REPO_ROOT / publication_paths.SUBMISSION / "supplementary-information.tex").read_text()
-    included = re.findall(r"\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}", main + supplement)
+    root = REPO_ROOT / publication_paths.SUBMISSION
+    assembled = "".join(read_document((root / name).read_text(), root)[0] for name in
+                        ("main.tex", "supplementary-information.tex"))
+    included = re.findall(r"\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}", assembled)
 
     tables: dict[str, dict[str, object]] = {}
     for csv_path in sorted(FIGURE_DIR.rglob("*.csv")):
