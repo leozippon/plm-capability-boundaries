@@ -11,6 +11,9 @@ unbounded remote-code weight load.
 from __future__ import annotations
 
 import gc
+import json
+import os
+import subprocess
 import sys
 import weakref
 from pathlib import Path
@@ -37,7 +40,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.capability.core.arms import MODEL_BASE_DIR  # noqa: E402
-from src.capability.core.precision_policy import FP32_PER_TARGET_ABS  # noqa: E402
+from src.capability.core.precision_policy import (  # noqa: E402
+    FP32_PER_TARGET_ABS,
+    snapshot_matmul_policy,
+)
 from src.capability.models.scale_comparison import STRATUM_N_TO_C  # noqa: E402
 from src.capability.models.text_aa_fitness import (  # noqa: E402
     ENCODING_MERGED_BPE,
@@ -857,13 +863,32 @@ def test_stored_bf16_checkpoint_is_upcast_and_recorded_not_refused(
         scorer.release()
 
 
-def test_fp32_matmul_context_restores_caller_state(gpt2_tokenizer):
-    model = _tiny_gpt2(gpt2_tokenizer)
-    scorer = _scorer(model, gpt2_tokenizer, _gpt2_boundary(), window=64, hard=64)
+@pytest.fixture
+def tf32_caller_policy():
+    """A caller's own non-declared matmul policy, always put back.
+
+    These three fields are process-wide, so a test that dirties them and does
+    not restore them makes every later fp32 guard read this test's state
+    instead of the one its own run was taken under. The restoration is a
+    fixture rather than trailing statements so a failing body cannot skip it.
+    """
+    before = snapshot_matmul_policy(torch)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
+    try:
+        yield snapshot_matmul_policy(torch)
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = bool(before["cuda_matmul_allow_tf32"])
+        torch.backends.cudnn.allow_tf32 = bool(before["cudnn_allow_tf32"])
+        torch.set_float32_matmul_precision(str(before["float32_matmul_precision"]))
+
+
+def test_fp32_matmul_context_restores_caller_state(gpt2_tokenizer, tf32_caller_policy):
+    model = _tiny_gpt2(gpt2_tokenizer)
+    scorer = _scorer(model, gpt2_tokenizer, _gpt2_boundary(), window=64, hard=64)
     scorer.log_likelihood(["M"])
+    assert snapshot_matmul_policy(torch) == tf32_caller_policy
     assert torch.backends.cuda.matmul.allow_tf32 is True
     assert torch.backends.cudnn.allow_tf32 is True
     assert torch.get_float32_matmul_precision() == "high"
@@ -945,3 +970,43 @@ def test_load_refuses_missing_path_and_window_beyond_hard_context(
             device="cpu",
             name="gpt2",
         )
+
+
+#: Set in the child interpreter the policy check runs. The child must never
+#: start a grandchild, whatever its own selection does.
+POLICY_PROBE = "TEXT_AA_MATMUL_POLICY_PROBE"
+
+
+def test_this_module_puts_the_process_matmul_policy_back(tmp_path):
+    """Running this module leaves the three precision globals as it found them.
+
+    One test here dirties them on purpose, and the fixture that does it is the
+    only thing that puts them back. No test can observe a global its own
+    module leaked, so this runs the module in a child interpreter and compares
+    the policy either side of the run: a restoration that goes missing fails
+    here, under the module that caused it, instead of in whichever unrelated
+    fp32 guard happens to run next.
+    """
+    if os.environ.get(POLICY_PROBE):
+        pytest.skip("the child interpreter runs the module, not this check")
+    payload = tmp_path / "matmul-policy.json"
+    guard = f"{__file__}::{test_this_module_puts_the_process_matmul_policy_back.__name__}"
+    probe = "\n".join([
+        "import json, sys",
+        "from pathlib import Path",
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})",
+        "import pytest, torch",
+        "from src.capability.core.precision_policy import snapshot_matmul_policy",
+        "before = snapshot_matmul_policy(torch)",
+        f"code = pytest.main([{__file__!r}, '-q', '-p', 'no:randomly',",
+        f"                    '-p', 'no:cacheprovider', '--deselect', {guard!r}])",
+        "after = snapshot_matmul_policy(torch)",
+        f"Path({str(payload)!r}).write_text(json.dumps(",
+        "    {'code': int(code), 'before': before, 'after': after}))",
+    ])
+    run = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, text=True,
+                         capture_output=True, env={**os.environ, POLICY_PROBE: "1"})
+    assert payload.is_file(), run.stdout + run.stderr
+    record = json.loads(payload.read_text())
+    assert record["code"] == 0, run.stdout + run.stderr
+    assert record["after"] == record["before"]
