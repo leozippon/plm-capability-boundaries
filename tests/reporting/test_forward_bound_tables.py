@@ -35,6 +35,10 @@ STUDENTISED = "standardized_maxT_sensitivity"
 #: The layouts that keep only the point of each column in their own record, so a native interval
 #: can be changed consistently without the record objecting first.
 POINT_RECORDS = ("stability", "abundance")
+#: One lane panel of the complete-case primary family, and the full-support panel beside it.
+LANE = tables.lane_panel("abundance", "ranking", "complete_case")
+LANE_FULL = tables.lane_panel("abundance", "ranking", "full")
+LANE_LABEL = "Abundance, ranking (Spearman)"
 
 
 def retained_artifacts_present() -> bool:
@@ -78,7 +82,7 @@ def cells(block):
 
 def test_each_table_has_the_rows_and_columns_its_header_names(retained):
     for name, rows in ((tables.FORWARD_BOUND, 9), (tables.RESOLUTION_COUNTS, 10),
-                       (tables.BASELINE_STRUCTURE, 3)):
+                       (tables.BASELINE_STRUCTURE, 3), (tables.LANE_COMPLETE_CASE, 6)):
         lines = retained[name].split("\n")
         width = lines[0].count("|")
         assert len(lines) == 2 + rows and all(line.count("|") == width for line in lines)
@@ -148,6 +152,101 @@ def test_the_documents_carry_what_the_panels_render(retained):
     if not all((REPO / path).is_file() for path in tables.DOCUMENTS):
         pytest.skip("the summary and the run note are held locally and are not in this checkout")
     assert tables.main(["--check"]) == 0
+
+
+# --- the lane campaign's complete-case primary family --------------------------------------------
+
+def test_a_lane_row_agrees_with_the_two_panels_it_was_read_from(retained):
+    """Recomputed from the panels: the groups, the limit, its share and both resolution counts."""
+    read = tables.reader(REPO)
+    panel, full = read(LANE), read(LANE_FULL)
+    top = panel["family"]["control_sets"][-1]
+    forward = panel["forward_bound"]["per_control_set"][top]
+    row = {r[0]: r for r in cells(retained[tables.LANE_COMPLETE_CASE])}[LANE_LABEL]
+    assert row[1] == f"{full['groups']} → {panel['groups']}"
+    assert row[2] == "profile, couplings, GEMME"
+    limit, share = forward["largest_upper_limit"], forward["largest_fraction_of_control_performance"]
+    assert row[3] == f"{tables.sig2(limit)}, {tables.percent(share)}"
+    states = dict(zip(((c["arm"], c["direction"]) for c in panel["columns"]
+                       if c["control_set"] == top), panel["states"]))
+    per_direction = len(panel["family"]["control_sets"]) * tables.ARMS
+    resolved = {direction: sum(state in tables.LANE_RESOLVED
+                               for column, state in zip(panel["columns"], panel["states"])
+                               if column["direction"] == direction)
+                for direction in (FORWARD, REVERSE)}
+    assert row[4] == f"{resolved[FORWARD]} of {per_direction}"
+    at_top = sum(state == "supported" for (_, direction), state in states.items() if direction == REVERSE)
+    assert row[5] == f"{at_top} of {tables.ARMS} → {resolved[REVERSE]} of {per_direction}"
+
+
+def test_the_lane_rows_do_not_depend_on_the_order_of_a_panels_columns(retained):
+    def reverse_order(document):
+        order = list(range(len(document["columns"])))[::-1]
+        for key in ("columns", "states", "point"):
+            document[key] = [document[key][i] for i in order]
+    assert tables.render(amended(LANE, reverse_order)) == retained
+
+
+def test_a_lane_panel_without_one_point_per_column_is_refused(retained):
+    refused(LANE, lambda d: d["point"].pop(), "one point per column")
+
+
+@pytest.mark.parametrize("key,value", [("role", "sensitivity"), ("support", "full"),
+                                       ("status", "pending"), ("stratum", "squared_error")])
+def test_a_lane_panel_that_stops_declaring_the_primary_family_is_refused(retained, key, value):
+    refused(LANE, lambda d: d.__setitem__(key, value), "no longer describes the declared")
+
+
+def test_a_lane_panels_states_must_line_up_with_its_columns_and_its_own_counts(retained):
+    refused(LANE, lambda d: d["states"].__setitem__(0, "narrow"), "has no word for")
+    refused(LANE, lambda d: d["states"].pop(), "one state per column")
+    refused(LANE, lambda d: d["columns"].__setitem__(0, dict(d["columns"][1])), "is listed twice")
+    refused(LANE, lambda d: d["columns"][0].__setitem__("arm", "nobody"),
+            "not a declared rung, arm and direction")
+    refused(LANE, lambda d: d["state_counts"].__setitem__("unresolved", 1), "stored state counts")
+    refused(LANE, lambda d: d["family"].__setitem__("directions", [FORWARD]),
+            "exactly the forward and the reverse direction")
+
+
+def test_a_forward_limit_that_is_no_longer_a_share_of_the_rungs_own_level_is_refused(retained):
+    """The table prints a percentage of what the controls reach, so it may not print one otherwise."""
+    top = tables.reader(REPO)(LANE)["family"]["control_sets"][-1]
+
+    def rung(document):
+        return document["forward_bound"]["per_control_set"][top]
+    refused(LANE, lambda d: rung(d).__setitem__("largest_fraction_of_control_performance", 1.4),
+            "no longer a share")
+    refused(LANE, lambda d: rung(d).__setitem__("largest_upper_limit", -0.01), "bounds nothing")
+    refused(LANE, lambda d: rung(d).__setitem__("arms_whose_fraction_exceeds_one", 1),
+            "does not carry a share for each")
+    refused(LANE, lambda d: rung(d).__setitem__("arms_without_a_fraction", 1),
+            "does not carry a share for each")
+    refused(LANE, lambda d: rung(d).__setitem__("roles", ["nuisance", "structure"]),
+            "which this table has no word for")
+
+
+def test_a_lane_support_that_does_not_match_what_the_row_says_about_it_is_refused(retained):
+    refused(LANE, lambda d: d["independence_floor"].__setitem__("n_units", 7),
+            "resampling units")
+    refused(LANE, lambda d: d["independence_floor"].__setitem__("degenerate", True),
+            "degenerate under its own resampling floor")
+    refused(LANE_FULL, lambda d: d.__setitem__("groups", 90),
+            "one of the two panels is not read on the support it names")
+    refused(LANE_FULL, lambda d: d.__setitem__("role", "primary"),
+            "not the full-support sensitivity panel")
+
+
+def test_a_lane_half_width_that_no_longer_exceeds_a_forward_estimate_is_not_rendered(retained):
+    """The summary says the native band cannot see a forward increment of this size; it must stay true."""
+    def narrow(document):
+        document["native"]["joint_critical_max_absolute_deviation"] = 1e-6
+    refused(LANE, narrow, "width argument has changed", tables.WidthClaimError)
+
+
+def test_a_reverse_count_that_disagrees_with_the_panels_own_states_is_refused(retained):
+    top = tables.reader(REPO)(LANE)["family"]["control_sets"][-1]
+    refused(LANE, lambda d: d["reverse_bound"]["per_control_set"][top].__setitem__(
+        "arms_resolved_above_zero", 32), "reverse arms resolved above zero")
 
 
 # --- refusals: the columns stop supporting the form ---------------------------------------------

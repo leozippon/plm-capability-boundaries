@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The forward bound, the resolution counts and the baseline structure behind the reading of
-three archived campaigns, rendered from their stored panels.
+"""The forward bound, the resolution counts, the baseline structure and the lane campaign's
+complete-case primary family, rendered from their stored panels.
 
 The summary says the project's claim rests on the forward bound -- the most a model can add to
 its controls, as a fraction of what the controls achieve -- and not on whether a forward
@@ -8,8 +8,8 @@ increment resolves. The thirteenth pre-registration amendment makes the generate
 authoritative statement of every such quantity, and a table is authoritative only when
 something in the repository regenerates it from the artifacts it names. This module is that
 something. It reads the stored panels of the 2026-11-06 stability, abundance and interaction
-bidirectional campaigns and the stability grid that stood behind the manuscript's stability
-reading, and renders three blocks:
+bidirectional campaigns, the stability grid that stood behind the manuscript's stability
+reading, and the 2026-11-10 lane campaign's complete-case panels, and renders four blocks:
 
     forward-bound                 summary: per panel, what the controls reach, the largest forward
                                   point estimate, the native half-width and bound, and the
@@ -17,6 +17,11 @@ reading, and renders three blocks:
     stability-baseline-structure  summary: the stability grid's counts and estimates against the
                                   baseline that lists no profile (S) and the one that lists
                                   composition and the bounded profile block (S2)
+    lane-complete-case            summary: per lane panel of the declared complete-case primary
+                                  family, the groups the matched support keeps out of the full
+                                  one, the blocks the top rung adds, the forward limit there in
+                                  native units and as a share of that rung's own level, and how
+                                  many columns resolve in each direction
     resolution-counts             run note: per panel, how many of the 33 arms resolve positive,
                                   negative and, in the reverse direction, positive under each band,
                                   and a last row that sums the panels
@@ -35,8 +40,9 @@ native band has one half-width for the whole family; the studentised band has on
 The width claim. The native half-width is set by the widest column of a family that holds both
 directions, and the argument that the native band cannot see a forward increment of the
 observed size rests on it exceeding every forward point estimate in magnitude. That is asserted
-here for every panel, not sampled: if one ever fails, the width argument has changed and the
-module refuses to render (WidthClaimError) rather than render tables that no longer support it.
+here for every panel, campaign and lane alike, not sampled: if one ever fails, the width
+argument has changed and the module refuses to render (WidthClaimError) rather than render
+tables that no longer support it.
 
 Refusals. The module also refuses (PanelLayoutError) when a panel's columns stop supporting
 the rendered form: a column that is not an arm and a direction, a repeated column, an unknown
@@ -46,9 +52,16 @@ native interval that is not its point plus and minus its one critical value, a p
 disagrees with the artifact's own per-column record of it, stored verdict counts that disagree
 with the intervals, a control level that is absent or not positive, and, for the stability grid,
 a baseline whose declared blocks are not the ones the table names, stored resolved lists that
-disagree with its intervals, or point estimates that differ from the campaign's. A marker that
-is missing, repeated or out of order is refused as well (MarkerError). Nothing is written when
-anything is refused.
+disagree with its intervals, or point estimates that differ from the campaign's. For a lane
+panel it refuses a panel that no longer declares itself the complete-case primary family or no
+longer reports itself complete, a family that is not its rungs crossed with its arms and both
+directions, a state this table has no word for, stored state counts that disagree with the
+panel's own states, a group count that is not the resampling unit count the floor was read on,
+a complete case holding more groups than the full support it is drawn from, a top rung adding a
+block the table cannot name, and -- the one that decides whether a share may be printed at all
+-- a forward limit that is not a positive share of the top rung's own level for every arm. A
+marker that is missing, repeated or out of order is refused as well (MarkerError). Nothing is
+written when anything is refused.
 
 Run from the validated ct environment, at the repository root:
 
@@ -78,16 +91,38 @@ ABUNDANCE = CAMPAIGNS + "r2/abundance-bidirectional/panel.json"
 INTERACTION = CAMPAIGNS + "r3-bidirectional/results.json"
 STABILITY_GRID = ("results/external_baseline/20261008095614_7e8ae4b18a4d/"
                   "stability_ranking_error_grid_cpu/panel.json")
-ARTIFACTS = (STABILITY, ABUNDANCE, INTERACTION, STABILITY_GRID)
+
+LANE_CAMPAIGN = "results/extensions/explicit_statistics_lanes_20261110/"
+#: The lane panels of the declared complete-case primary family, in the order the table renders.
+LANE_PANELS = (
+    ("abundance", "ranking", "Abundance, ranking (Spearman)"),
+    ("abundance", "squared_error", "Abundance, squared normalised fitness"),
+    ("stability", "ranking", "Stability, ranking (Spearman)"),
+    ("stability", "transfer_error", "Stability, transfer error (kcal²/mol²)"),
+    ("stability", "calibrated_error", "Stability, calibrated error (kcal²/mol²)"),
+    ("interaction", "cycle_squared_error", "Interaction, cycle squared error (kcal²/mol²)"),
+)
+
+
+def lane_panel(lane: str, stratum: str, support: str) -> str:
+    """Where one lane panel of one support is stored."""
+    return f"{LANE_CAMPAIGN}{lane}/panels/{stratum}-likelihood-{support}.json"
+
+
+LANE_ARTIFACTS = tuple(lane_panel(lane, stratum, support) for lane, stratum, _ in LANE_PANELS
+                       for support in ("complete_case", "full"))
+ARTIFACTS = (STABILITY, ABUNDANCE, INTERACTION, STABILITY_GRID) + LANE_ARTIFACTS
 
 SUMMARY = "docs/summary.md"
 RUN_NOTE = "results/extensions/explicit_statistics_lanes_20261110/run-note.md"
 
 FORWARD_BOUND = "forward-bound"
 BASELINE_STRUCTURE = "stability-baseline-structure"
+LANE_COMPLETE_CASE = "lane-complete-case"
 RESOLUTION_COUNTS = "resolution-counts"
 #: Which blocks each document carries.
-DOCUMENTS = {SUMMARY: (FORWARD_BOUND, BASELINE_STRUCTURE), RUN_NOTE: (RESOLUTION_COUNTS,)}
+DOCUMENTS = {SUMMARY: (FORWARD_BOUND, BASELINE_STRUCTURE, LANE_COMPLETE_CASE),
+             RUN_NOTE: (RESOLUTION_COUNTS,)}
 
 OPENING = "<!-- generated: {name}; " + EMITTER + " -->"
 CLOSING = "<!-- end generated: {name} -->"
@@ -129,6 +164,13 @@ GRID_READOUTS = (("ranking", "Ranking (Spearman)"),
                  ("calibrated_error", "Calibrated error (kcal²/mol²)"),
                  ("transfer_error", "Transfer error (kcal²/mol²)"))
 
+#: The states a lane column may carry, and the two of them that count as a resolution.
+LANE_STATES = ("supported", "bounded_negative", "unresolved", "non_identifiable")
+LANE_RESOLVED = ("supported", "bounded_negative")
+NUISANCE = "nuisance"
+#: How the summary writes each added block, which is the only vocabulary this table may print.
+ROLE_WORDS = {"profile": "profile", "couplings": "couplings", "gemme": "GEMME"}
+
 BOUND_HEADER = (
     "| Panel and control set | Controls reach | Largest forward point estimate | Native half-width | "
     "Native bound (declared primary) | Studentised half-widths, narrowest to widest | "
@@ -144,6 +186,11 @@ STRUCTURE_HEADER = (
     "Mean forward estimate of the arms resolved against S, under S → under S2 | "
     "Largest forward estimate, against S → against S2 |",
     "| --- | --- | --- | --- | --- |")
+LANE_HEADER = (
+    "| Lane and stratum | Groups, full support → complete case | Blocks the top rung adds | "
+    "Forward limit at the top rung | Forward columns resolved, over every rung | "
+    "Reverse columns resolved, top rung → every rung |",
+    "| --- | --- | --- | --- | --- | --- |")
 
 
 class PanelLayoutError(ValueError):
@@ -174,6 +221,22 @@ class Panel:
     level: dict[str, float]
     forward: dict[str, Column]
     reverse: dict[str, Column]
+
+
+@dataclass(frozen=True)
+class Lane:
+    """One lane panel of the complete-case primary family, as the table prints it."""
+
+    label: str
+    full_groups: int
+    groups: int
+    added: str
+    limit: float
+    share: float
+    per_direction: int
+    forward_resolved: int
+    reverse_at_top: int
+    reverse_resolved: int
 
 
 def reader(root: Path):
@@ -371,6 +434,133 @@ def load_panels(read) -> dict[str, Panel]:
     return panels
 
 
+def _lane_states(document, family, rungs, arms, name: str) -> dict[tuple[str, str, str], str]:
+    """Each column of a lane panel keyed by its rung, arm and direction, with its state."""
+    def refuse(why):
+        return PanelLayoutError(f"{name}: {why}")
+
+    columns, states = _get(document, "columns", name), _get(document, "states", name)
+    if not (isinstance(columns, list) and isinstance(states, list) and len(columns) == len(states)):
+        raise refuse("the panel does not carry one state per column")
+    if _get(family, "size", name) != len(columns):
+        raise refuse(f"the family declares {family['size']} columns and the panel carries {len(columns)}")
+    if len(columns) != 2 * len(arms) * len(rungs):
+        raise refuse(f"{len(columns)} columns, not the {2 * len(arms) * len(rungs)} that "
+                     f"{len(rungs)} rungs by {len(arms)} arms by both directions would give")
+    keyed: dict[tuple[str, str, str], str] = {}
+    for column, state in zip(columns, states):
+        key = (_get(column, "control_set", name), _get(column, "arm", name),
+               _get(column, "direction", name))
+        if key[0] not in rungs or key[1] not in arms or key[2] not in (FORWARD, REVERSE):
+            raise refuse(f"the column {key} is not a declared rung, arm and direction")
+        if key in keyed:
+            raise refuse(f"the column {key} is listed twice")
+        if state not in LANE_STATES:
+            raise refuse(f"the column {key} carries the state {state!r}, which this table has no word for")
+        keyed[key] = state
+    counts = {state: sum(value == state for value in states) for state in LANE_STATES}
+    counts["non_identifiable"] = len(_get(document, "non_identifiable", name))
+    stored = _get(document, "state_counts", name)
+    if any(stored.get(state) != value for state, value in counts.items()):
+        raise refuse(f"the stored state counts {stored} disagree with the panel's own states and its "
+                     f"non-identifiable record, which give {counts}")
+    return keyed
+
+
+def _lane(read, lane: str, stratum: str, label: str) -> Lane:
+    """One lane panel, validated against everything the rendered row relies on."""
+    name = lane_panel(lane, stratum, "complete_case")
+    document = read(name)
+
+    def refuse(why):
+        return PanelLayoutError(f"{name}: {why}")
+
+    for key, expected in (("lane", lane), ("stratum", stratum), ("channel", "likelihood"),
+                          ("role", "primary"), ("support", "complete_case"), ("status", "complete")):
+        if document.get(key) != expected:
+            raise refuse(f"its {key} is {document.get(key)!r} and not {expected!r}, so the table's row "
+                         "no longer describes the declared complete-case primary family")
+    family = _get(document, "family", name)
+    rungs = _get(family, "control_sets", name)
+    arms = _get(family, "arms", name)
+    if not (isinstance(rungs, list) and rungs and len(set(rungs)) == len(rungs)):
+        raise refuse("the family's control sets are not a list of distinct rungs")
+    if not (isinstance(arms, list) and len(set(arms)) == len(arms) == ARMS):
+        raise refuse(f"{len(set(arms)) if isinstance(arms, list) else 0} arms, not {ARMS}")
+    if _get(family, "directions", name) != [FORWARD, REVERSE]:
+        raise refuse("the family no longer holds exactly the forward and the reverse direction")
+    keyed = _lane_states(document, family, rungs, arms, name)
+
+    half_width = _number(_get(_get(document, "native", name),
+                              "joint_critical_max_absolute_deviation", name),
+                         f"{name}: the native critical value")
+    points = _get(document, "point", name)
+    if not isinstance(points, list) or len(points) != len(keyed):
+        raise refuse("the panel does not carry one point per column")
+    for column, point in zip(_get(document, "columns", name), points):
+        if column["direction"] == FORWARD and abs(_number(point, f"{name}: a point")) >= half_width:
+            raise WidthClaimError(
+                f"{name}: the native half-width {half_width:.6f} does not exceed the forward point estimate "
+                f"{point:.6f} of {column['arm']} at {column['control_set']!r}, so the width argument has "
+                "changed and nothing is rendered")
+
+    groups = _number(_get(document, "groups", name), f"{name}: the group count")
+    floor = _get(document, "independence_floor", name)
+    if _get(floor, "n_units", name) != groups:
+        raise refuse(f"the panel reports {groups:.0f} groups and its floor was read on "
+                     f"{floor['n_units']} resampling units")
+    if floor.get("degenerate"):
+        raise refuse("the stratum is degenerate under its own resampling floor, so it estimates nothing")
+    full_name = lane_panel(lane, stratum, "full")
+    full = read(full_name)
+    if (full.get("lane"), full.get("stratum"), full.get("role"), full.get("support")) != (
+            lane, stratum, "sensitivity", "full"):
+        raise PanelLayoutError(f"{full_name}: this is not the full-support sensitivity panel of "
+                               f"{lane}/{stratum}, so it cannot give the support the complete case "
+                               "is drawn from")
+    full_groups = _number(_get(full, "groups", full_name), f"{full_name}: the group count")
+    if full_groups < groups:
+        raise refuse(f"the complete case keeps {groups:.0f} groups out of the full support's "
+                     f"{full_groups:.0f}, so one of the two panels is not read on the support it names")
+
+    top = rungs[-1]
+    forward = _get(_get(_get(document, "forward_bound", name), "per_control_set", name), top, name)
+    reverse = _get(_get(_get(document, "reverse_bound", name), "per_control_set", name), top, name)
+    added = [role for role in _get(forward, "roles", name) if role != NUISANCE]
+    unnamed = [role for role in added if role not in ROLE_WORDS]
+    if unnamed:
+        raise refuse(f"the top rung {top!r} adds {unnamed}, which this table has no word for")
+    limit = _number(_get(forward, "largest_upper_limit", name), f"{name}: the forward limit")
+    share = _number(_get(forward, "largest_fraction_of_control_performance", name),
+                    f"{name}: the forward limit as a share of the rung's own level")
+    if limit <= 0:
+        raise refuse("the forward limit at the top rung is not positive, so it bounds nothing")
+    if not 0 < share <= 1:
+        raise refuse(f"the forward limit is {share:.3f} of the top rung's own level, so it is no longer "
+                     "a share of what the controls achieve and this table may not print one")
+    if (forward.get("arms"), forward.get("arms_without_a_fraction"),
+            forward.get("arms_whose_fraction_exceeds_one")) != (ARMS, 0, 0):
+        raise refuse(f"the forward limit at the top rung does not carry a share for each of the {ARMS} arms")
+    if reverse.get("arms") != ARMS:
+        raise refuse(f"the reverse direction at the top rung does not carry all {ARMS} arms")
+    at_top = _get(reverse, "arms_resolved_above_zero", name)
+    supported = sum(state == "supported" for (rung, _, direction), state in keyed.items()
+                    if rung == top and direction == REVERSE)
+    if at_top != supported:
+        raise refuse(f"the top rung records {at_top} reverse arms resolved above zero and carries "
+                     f"{supported} supported reverse columns")
+
+    def resolved(direction):
+        return sum(state in LANE_RESOLVED for (_, _, held), state in keyed.items() if held == direction)
+    return Lane(label, int(full_groups), int(groups), ", ".join(ROLE_WORDS[role] for role in added),
+                limit, share, len(rungs) * ARMS, resolved(FORWARD), at_top, resolved(REVERSE))
+
+
+def load_lanes(read) -> tuple[Lane, ...]:
+    """Every lane panel of the complete-case primary family, validated before anything is rendered."""
+    return tuple(_lane(read, lane, stratum, label) for lane, stratum, label in LANE_PANELS)
+
+
 def sig2(value: float) -> str:
     """Fixed notation with at least four decimals and two significant figures."""
     if value == 0:
@@ -420,6 +610,18 @@ def _count_row(label: str, counts: tuple[int, ...]) -> str:
 
 def render_bound_table(panels: dict[str, Panel]) -> str:
     return "\n".join(BOUND_HEADER + tuple(_bound_row(panels[key]) for key in BOUND_ORDER))
+
+
+def _lane_row(lane: Lane) -> str:
+    cells = [lane.label, f"{lane.full_groups} → {lane.groups}", lane.added,
+             f"{sig2(lane.limit)}, {percent(lane.share)}",
+             f"{lane.forward_resolved} of {lane.per_direction}",
+             f"{lane.reverse_at_top} of {ARMS} → {lane.reverse_resolved} of {lane.per_direction}"]
+    return "| " + " | ".join(cells) + " |"
+
+
+def render_lane_table(lanes: tuple[Lane, ...]) -> str:
+    return "\n".join(LANE_HEADER + tuple(_lane_row(lane) for lane in lanes))
 
 
 def render_count_table(panels: dict[str, Panel]) -> str:
@@ -480,9 +682,10 @@ def render_structure(read, panels: dict[str, Panel]) -> str:
 
 def render(read) -> dict[str, str]:
     """Every block, by name. Raises before returning anything if any panel is refused."""
-    panels = load_panels(read)
+    panels, lanes = load_panels(read), load_lanes(read)
     return {FORWARD_BOUND: render_bound_table(panels),
             BASELINE_STRUCTURE: render_structure(read, panels),
+            LANE_COMPLETE_CASE: render_lane_table(lanes),
             RESOLUTION_COUNTS: render_count_table(panels)}
 
 
