@@ -606,7 +606,8 @@ def scored_by_stratum(scored: dict[int, list[dict[str, Any]]], stratum: str,
 
 def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.ObjectiveTunedPair, ...],
                                 counts: dict[int, np.ndarray],
-                                primary: dict[str, Any]) -> dict[str, Any]:
+                                primary: dict[str, Any],
+                                families: dict[str, str] | None = None) -> dict[str, Any]:
     """The control that carries the claim: what an explicit rule reproduces.
 
     Each base pool is ranked within stream, because the declared four-to-one
@@ -620,12 +621,23 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
     strata, each banded on its own nested resample and never merged with another
     rule or with the primary family.
 
-    ``primary`` is the primary contrast, and it decides whether each cell's share
-    is a quantity at all: a share of a gain the primary endpoint finds not
-    bounded away from zero is undefined rather than imprecise, and is recorded
-    non-identifiable with the primary endpoint named as the reason.
+    ``primary`` is the pLDDT contrast of the same ``pairs``, and it decides
+    whether each cell's share is a quantity at all: a share of a gain that
+    endpoint finds not bounded away from zero is undefined rather than
+    imprecise, and is recorded non-identifiable with it named as the reason.
+
+    ``families`` names the declared control family per rule, and defaults to the
+    registration's own :data:`ota.CONTROL_FAMILIES` over the primary pairs. The
+    amendment of 2026-11-12 declares a second set over the secondary pair,
+    :data:`ota.SECONDARY_CONTROL_FAMILIES`, so that pair can be read under the
+    same three rules; which set is in use is recorded, and the two are never
+    merged. Every rule, statistic, fraction, floor, draw and band below is the
+    same object either way -- only the family a column belongs to differs.
     """
 
+    families = ota.CONTROL_FAMILIES if families is None else families
+    if set(families) != set(ota.FILTER_RULE_NAMES):
+        fail(f"a control family set must name all three declared rules, not {sorted(families)}")
     rules = ota.filter_rules(counts)
     out: dict[str, Any] = {
         "readout": "the share of the tuned-minus-base pLDDT gain that a top-quarter filter of "
@@ -638,10 +650,13 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
         "interval_note": ota.CONTROL_INTERVAL_NOTE,
         "nested_draws": ota.NESTED_DRAW_METHOD,
         "moot_note": ota.CONTROL_MOOT_NOTE,
+        "family_set": {name: families[name] for name in ota.FILTER_RULE_NAMES},
+        "amendment": (ota.SECONDARY_CONTROL_AMENDMENT
+                      if families == ota.SECONDARY_CONTROL_FAMILIES else None),
         "rules": {},
     }
     for rule in rules:
-        family = ota.CONTROL_FAMILIES[rule.name]
+        family = families[rule.name]
         columns: list[dict[str, Any]] = []
         selection: dict[str, Any] = {}
         identity: dict[str, Any] = {}

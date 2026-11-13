@@ -266,3 +266,113 @@ def test_the_builder_refuses_a_duplicate_digest_in_one_arms_scores(tmp_path):
     path.write_text("\n".join(lines + [lines[0]]) + "\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="appears twice"):
         run_builder(tmp_path, paths)
+
+
+# ------------------------------------- the 2026-11-12 amendment and attribution
+
+attribution = _load("run_progen2_attribution")
+
+
+def test_the_seven_finetuning_families_come_from_the_arm_declaration():
+    assert len(attribution.SEVEN) == 7
+    assert all(family in ot.OBJECTIVE_PFAM_SEVEN_FAMILIES for family in attribution.SEVEN)
+
+
+def test_the_amendments_control_families_are_declared_sized_and_seeded_apart():
+    families = set(ota.SECONDARY_CONTROL_FAMILIES.values())
+    assert len(ota.SECONDARY_CONTROL_FAMILIES) == len(ota.FILTER_RULE_NAMES)
+    assert not families & set(ota.CONTROL_FAMILIES.values())
+    for family in families:
+        assert ota.FAMILY_SIZES[family] == len(ota.SECONDARY_PAIRS) * len(ota.STRATA)
+        assert family in ota.FAMILY_SEED_OFFSETS
+    seeds = [ota.FAMILY_SEED_OFFSETS[family] for family in families]
+    assert len(set(seeds)) == len(seeds)
+    assert not set(seeds) & {ota.FAMILY_SEED_OFFSETS[other] for other in
+                             ota.CONTROL_FAMILIES.values()}
+    assert "2026-11-12" in ota.SECONDARY_CONTROL_AMENDMENT
+
+
+def test_the_declared_primary_control_family_still_refuses_a_four_column_realisation():
+    """The amendment was necessary: the old declaration does not absorb this pair."""
+
+    keys = [f"progen2-small-mix7|{stratum}" for stratum in ota.STRATA]
+    with pytest.raises(ValueError, match="declares 12 columns and realises 4"):
+        ota.require_declared_family(keys, ota.CONTROL_FAMILIES["low_complexity_residues"])
+    ota.require_declared_family(keys, ota.SECONDARY_CONTROL_FAMILIES["low_complexity_residues"])
+
+
+def test_a_band_on_the_amendments_family_is_the_same_construction_on_four_columns():
+    import numpy as np
+
+    rng = np.random.default_rng(12)
+    family = ota.SECONDARY_CONTROL_FAMILIES["low_complexity_residues"]
+    columns = []
+    for index, stratum in enumerate(ota.STRATA):
+        members = [{"key": f"m{position:03d}", "plddt": float(60 + 5 * rng.standard_normal()),
+                    "stratum": stratum, "score": float(rng.random())}
+                   for position in range(40)]
+        draws = ota.nested_base_draws(members, retain="highest", family=family,
+                                      column=index, stream_index=0, draws=200)
+        mean = float(np.mean([row["plddt"] for row in members]))
+        columns.append({
+            "key": f"progen2-small-mix7|{stratum}",
+            "primary": {"status": "resolved", "zero_verdict": "positive", "point": 6.0,
+                        "interval": [4.0, 8.0]},
+            "base": {0: draws[stratum]["base"]}, "filtered": {0: draws[stratum]["filtered"]},
+            "valid": {0: draws[stratum]["valid"]},
+            "tuned": {0: [row["plddt"] + 6.0 for row in members]},
+            "base_realised": mean, "filtered_realised": mean + 3.0,
+            "tuned_realised": mean + 6.0,
+        })
+    record = ota.reproduced_fraction_bands(columns, family=family, draws=200)
+    assert record["declared_family_size"] == ota.SECONDARY_FAMILY_SIZE
+    assert record["control_status"] == "readable"
+    assert record["resolved_family_size"] == ota.SECONDARY_FAMILY_SIZE
+    assert record["method"] == ota.NATIVE_BAND_METHOD
+
+
+def test_a_family_set_that_does_not_name_all_three_rules_refuses():
+    with pytest.raises(SystemExit, match="must name all three declared rules"):
+        aot.explicit_statistics_control({"pools": {}}, ota.SECONDARY_PAIRS, {},
+                                        {"bands": {"columns": {}}},
+                                        {"low_complexity_residues": "x"})
+
+
+def _annotated(arm: str, digests: list[str], families: dict[int, list[str]]) -> dict:
+    return {digest: families.get(index, [])
+            for index, digest in enumerate(digests)}
+
+
+def test_removal_drops_exactly_the_in_seven_rows_and_leaves_other_arms_alone(digests):
+    pair = ota.SECONDARY_PAIRS[0]
+    outside = ota.PRIMARY_PAIRS[0].base
+    assert outside not in pair.arms
+    table = pooled_table(pair.tuned, digests)
+    table["pools"][(outside, 0)] = pooled_table(outside, digests)["pools"][(outside, 0)]
+    inside = attribution.SEVEN[0]
+    annotations = _annotated(pair.tuned, digests,
+                             {1: [inside], 4: ["PF99999", inside], 6: ["PF99999"]})
+    corrected = attribution.remove_in_seven(table, set(pair.arms), annotations)
+    kept = {row["digest"] for row in corrected["pools"][(pair.tuned, 0)]["rows"]}
+    assert kept == {digest for index, digest in enumerate(digests) if index not in (1, 4)}
+    # An arm outside the pair is passed through untouched, rows and all.
+    assert (corrected["pools"][(outside, 0)]["rows"]
+            is table["pools"][(outside, 0)]["rows"])
+
+
+def test_removal_refuses_a_row_the_oracle_never_annotated(digests):
+    pair = ota.SECONDARY_PAIRS[0]
+    table = pooled_table(pair.tuned, digests)
+    annotations = _annotated(pair.tuned, digests, {})
+    annotations.pop(digests[2])
+    with pytest.raises(SystemExit, match="carries no oracle annotation"):
+        attribution.remove_in_seven(table, set(pair.arms), annotations)
+
+
+def test_an_unsearched_annotation_refuses_rather_than_counting_as_no_family(tmp_path):
+    path = tmp_path / "family_recognition.jsonl"
+    path.write_text(json.dumps({"arm": ARMS[0], "sequence_sha256": sequence_digest("A"),
+                                "pfam_families": [], "profile_search_status": "skipped"}) + "\n",
+                    encoding="utf-8")
+    with pytest.raises(SystemExit, match="is not measured"):
+        attribution.read_annotations(path, {ARMS[0]})

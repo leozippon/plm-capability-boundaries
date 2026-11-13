@@ -170,6 +170,34 @@ CONTROL_FAMILIES: dict[str, str] = {
 }
 CONTROL_FAMILY_SIZE = PRIMARY_FAMILY_SIZE
 
+#: The same three rules over the secondary pair, as the amendment of 2026-11-12
+#: declares them: three further families, one per rule, each the secondary pair
+#: crossed with the four strata, never merged with the primary pairs' control
+#: families and never with the secondary pair's own pLDDT family.
+SECONDARY_CONTROL_FAMILIES: dict[str, str] = {
+    name: f"explicit_statistics_secondary_{name}" for name in FILTER_RULE_NAMES
+}
+SECONDARY_CONTROL_FAMILY_SIZE = SECONDARY_FAMILY_SIZE
+
+#: Why those three families exist, in the amendment's own terms. Recorded here
+#: rather than in a driver, because the reason a family was declared is part of
+#: the declaration and a reader of one output should not have to find the other.
+SECONDARY_CONTROL_AMENDMENT = (
+    "amendment of 2026-11-12. The control was declared over the primary pairs "
+    "only, because the secondary pair's own pLDDT contrast reached no finding "
+    "that needed explaining. Separating the three generation streams moved that "
+    "pair's novel-stratum finding to supported, and a supported finding with no "
+    "explicit-statistics control against it is not reportable: the control is "
+    "what distinguishes a distributional bias from a statistic an explicit rule "
+    "over the base pool's own samples already carries. So the three rules are "
+    "extended to the secondary pair unchanged -- the same statistics, the same "
+    "top quarter, the same within-(arm, stream) ranking scope, the same "
+    "resampling floor, the same nested draws and the same native band -- in "
+    "three further declared families sized by that pair crossed with the four "
+    "strata. Nothing is tuned to this pair and no existing family, threshold, "
+    "margin or finding state is altered"
+)
+
 #: Largest share of draws a control column may lose to a resample in which one
 #: of its three pools is empty. A filtered stratum subset at the admissibility
 #: floor loses of order ``exp(-8)`` of its draws, so a percent is slack rather
@@ -187,6 +215,8 @@ FAMILY_SEED_OFFSETS: dict[str, int] = {
     RECOGNITION_COMPLETE_FAMILY: 500_000,
     **{CONTROL_FAMILIES[name]: 600_000 + 100_000 * index
        for index, name in enumerate(FILTER_RULE_NAMES)},
+    **{SECONDARY_CONTROL_FAMILIES[name]: 900_000 + 100_000 * index
+       for index, name in enumerate(FILTER_RULE_NAMES)},
 }
 
 #: Declared size per family name, asserted against the realised column keys.
@@ -198,6 +228,8 @@ FAMILY_SIZES: dict[str, int] = {
     RECOGNITION_ANY_FAMILY: RECOGNITION_FAMILY_SIZE,
     RECOGNITION_COMPLETE_FAMILY: RECOGNITION_FAMILY_SIZE,
     **{family: CONTROL_FAMILY_SIZE for family in CONTROL_FAMILIES.values()},
+    **{family: SECONDARY_CONTROL_FAMILY_SIZE
+       for family in SECONDARY_CONTROL_FAMILIES.values()},
 }
 
 
@@ -1279,6 +1311,16 @@ def _check_declarations() -> None:
                            "family each")
     if any(FAMILY_SIZES[family] != PRIMARY_FAMILY_SIZE for family in CONTROL_FAMILIES.values()):
         raise RuntimeError("a control family is not the matched pairs crossed with the strata")
+    if len(SECONDARY_CONTROL_FAMILIES) != len(FILTER_RULE_NAMES):
+        raise RuntimeError("the 2026-11-12 amendment declares one secondary control family per "
+                           "rule, the same three rules")
+    if any(FAMILY_SIZES[family] != len(SECONDARY_PAIRS) * len(STRATA)
+           for family in SECONDARY_CONTROL_FAMILIES.values()):
+        raise RuntimeError("a secondary control family is not the secondary pair crossed with "
+                           "the strata")
+    if set(SECONDARY_CONTROL_FAMILIES.values()) & set(CONTROL_FAMILIES.values()):
+        raise RuntimeError("a secondary control family shares a name with a primary one and "
+                           "their columns would be merged")
     if not 0.0 < NARROWING_COMPOSITION_SHARE < 1.0:
         raise RuntimeError("the narrowing composition share is a fraction of the pooled gain")
     if len(set(GAIN_STATES)) != 3 or NON_IDENTIFIABLE not in FINDING_STATES:
