@@ -123,19 +123,36 @@ def binding_inputs(inputs: dict) -> dict:
             if not key.startswith(RECORDED_PREFIX)}
 
 
-def cell_identity(lane_name: str, support: str, inputs: dict) -> str:
-    """The digest one cell is bound to: its binding inputs and its declared contract.
+def cell_identity(lane_name: str, support: str, inputs: dict, added_blocks: dict) -> str:
+    """The digest one cell is bound to: binding inputs, declared contract, added tables.
 
-    The declared half is conditioned on the support, because no full-support rung carries
-    an added block and so no full-support cell can be moved by the added-block
-    vocabulary, its rendering or its admission rules. The declaration asserts that
-    property at import rather than this script assuming it.
+    All three parts are conditioned on the support, for one reason in two halves. The
+    declared part carries the added-block vocabulary, its rendering and its admission
+    rules, which decide *which rows* a complete-case fit sees. ``added_blocks`` carries
+    the digest of each table those rows are valued from, which decides *what the rows
+    say*: a complete-case rung is fitted on a column of the coupling or GEMME table, so
+    a table whose numbers moved is a different fit even when it refuses exactly the same
+    rows and therefore leaves the retained row set, and with it ``support_sha256``,
+    untouched. Without this part a rerun against a revised table re-reads every cached
+    cell and reports the old numbers as current, which is the one thing a resume rule
+    must never do.
+
+    A full-support cell is deliberately bound to neither table. It reads no added-block
+    value at all -- the declaration asserts at import that no full-support rung carries
+    an added block -- so binding one would make a landing table cost the archive's
+    reproduction gate a refit that could not tell anyone anything.
     """
 
-    return digest_text(json.dumps(
-        {'inputs': binding_inputs(inputs),
-         'declared': lanes.fit_identity(lane_name, support)},
-        sort_keys=True))
+    identity: dict = {'inputs': binding_inputs(inputs),
+                      'declared': lanes.fit_identity(lane_name, support)}
+    if support == 'complete_case':
+        if not added_blocks:
+            raise SystemExit(
+                f'{lane_name}: a complete-case cell is bound to the added-block tables it is '
+                'fitted from, and none was supplied. An empty mapping would digest as a cell '
+                'bound to no table at all, which is exactly the stale reuse this binding closes')
+        identity['added_block_tables'] = dict(added_blocks)
+    return digest_text(json.dumps(identity, sort_keys=True))
 
 
 def write(path: Path, value) -> None:
@@ -201,6 +218,19 @@ def read_wave(lane_name: str, *, couplings: Path | None, gemme: Path | None) -> 
                               if entry['state'] == 'pending'),
             'complete': set(landed) == set(declared.required_blocks()),
             'status': status, 'tables': tables}
+
+
+def added_block_digests(wave: dict) -> dict[str, str]:
+    """The digest of every added-block table that landed, as a complete-case cell binds it.
+
+    Read off the wave this script already assembled rather than hashed a second time, so
+    the digest a cell is bound to is the one ``plan.json`` and every panel's ``wave``
+    block report. Only a role this lane requires can be landed, so this is exactly the
+    set of tables the complete case is fitted from.
+    """
+
+    return {role: entry['sha256'] for role, entry in wave['status'].items()
+            if entry['state'] == 'landed'}
 
 
 def runnable_supports(wave: dict) -> dict[str, dict]:
@@ -274,8 +304,14 @@ def cell_path(out: Path, stratum: str, channel: str, support: str, rung: str, ar
 
 
 def fit_cell(lane_name, instance, state, *, stratum, channel, support, rung, arm, qualified,
-             inputs_sha256, out, refit=False) -> dict:
-    """Fit one cell, or re-read the cached one whose inputs have not changed."""
+             inputs_sha256, added_blocks, out, refit=False) -> dict:
+    """Fit one cell, or re-read the cached one whose inputs have not changed.
+
+    ``added_blocks`` is recorded on the cell so that a reader holding one cell file can
+    see which added-block tables it was fitted against, rather than having to find the
+    run's own records. It is normalised to the support here, so the recorded tables and
+    the tables :func:`cell_identity` bound cannot disagree.
+    """
 
     path = cell_path(out, stratum, channel, support, rung, arm)
     if path.is_file() and not refit:
@@ -297,6 +333,7 @@ def fit_cell(lane_name, instance, state, *, stratum, channel, support, rung, arm
               'support': support, 'rung': rung, 'arm': arm,
               'designs': {name: list(columns) for name, columns in designs.items()},
               'qualified': list(qualified), 'groups': state['group_order'],
+              'added_block_tables': (dict(added_blocks) if support == 'complete_case' else {}),
               'support_sha256': state['support_sha256'], 'inputs_sha256': inputs_sha256,
               'seconds': time.monotonic() - started, 'reused': False, **fitted}
     write(path, record)
@@ -564,11 +601,13 @@ def pilot(args, instance) -> dict:
                     'structure, not a difference between the published numbers and these. The '
                     'gate is not widened to admit it and this stratum is not panelled; the '
                     'lane\'s notes record why')
+            # The archived rung is a full-support rung and reads no added-block value, so
+            # the gate is bound to no table and keeps costing nothing when one lands.
             cell = fit_cell(args.lane, instance, state, stratum=stratum, channel='likelihood',
                             support='full', rung=lanes.ARCHIVED_RUNG, arm=arm,
                             qualified=qualified,
-                            inputs_sha256=cell_identity(args.lane, 'full', inputs),
-                            out=args.out, refit=args.refit)
+                            inputs_sha256=cell_identity(args.lane, 'full', inputs, {}),
+                            added_blocks={}, out=args.out, refit=args.refit)
             compared_cells.append(bool(cell['reused']))
             differences = {}
             for name in (lanes.CONTROL_ARM, lanes.JOINT_ARM):
@@ -625,8 +664,10 @@ def fit(args, instance, wave) -> dict:
     declared = lanes.lane(args.lane)
     inputs = instance.inputs()
     supports = runnable_supports(wave)
+    tables = added_block_digests(wave)
     report = {'lane': args.lane, 'created_utc': datetime.now(timezone.utc).isoformat(),
-              'inputs_sha256': inputs, 'supports': supports, 'fitted': [], 'skipped': []}
+              'inputs_sha256': inputs, 'added_block_tables': tables, 'supports': supports,
+              'fitted': [], 'skipped': []}
     added: dict = {}
     if wave['complete']:
         rows = lanes.read_rows(args.export / lanes.ROWS_FILE)
@@ -655,8 +696,8 @@ def fit(args, instance, wave) -> dict:
                 cell = fit_cell(args.lane, instance, state, stratum=stratum,
                                 channel=entry['channel'], support=support, rung=entry['rung'],
                                 arm=arm, qualified=instance.qualified(stratum, arm),
-                                inputs_sha256=cell_identity(args.lane, support, inputs),
-                                out=args.out, refit=args.refit)
+                                inputs_sha256=cell_identity(args.lane, support, inputs, tables),
+                                added_blocks=tables, out=args.out, refit=args.refit)
                 report['fitted'].append({'stratum': stratum, 'support': support,
                                          'rung': entry['rung'], 'arm': arm,
                                          'reused': cell['reused'], 'seconds': cell['seconds']})

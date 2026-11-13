@@ -664,3 +664,111 @@ def test_the_complete_case_needs_the_exports_refusals_document(workspace):
     arguments = workspace['base'] + workspace['wave'] + ['--support', 'complete_case']
     with pytest.raises(SystemExit, match='enumerates the references it refused'):
         runner.main(['fit'] + arguments)
+
+
+# --------------------------------------------------------------------------- #
+# The added-block tables a complete-case cell is fitted from.
+#
+# A complete-case rung is fitted on a column of the coupling or GEMME table, so the
+# table's values decide the cell's numbers. They do not decide which rows it keeps, and
+# ``support_sha256`` is a digest of the retained row identities only, so a table that
+# refuses exactly the same rows and reports different numbers moves every complete-case
+# number while leaving every other part of a cell's identity alone. These tests pin that
+# such a table is refused for reuse, that the full support -- which reads no added-block
+# value at all -- is deliberately not bound to either table, and that every declared
+# lane carries the binding.
+# --------------------------------------------------------------------------- #
+
+def revalue(path, role, shift):
+    """Rewrite one score table with different values and the identical refusal set."""
+
+    document = json.loads(Path(path).read_text())
+    column = lanes.BLOCK_SOURCE[role]['column']
+    for row in document['samples']:
+        row[column] = float(row[column]) + shift
+    Path(path).write_text(json.dumps(document))
+
+
+def test_a_revalued_table_with_the_same_refusals_is_refused_rather_than_reused(workspace):
+    arguments = workspace['base'] + workspace['wave'] + ['--support', 'complete_case']
+    assert runner.main(['fit'] + arguments) == 0
+    before = json.loads((workspace['out'] / 'support.json').read_text())
+    revalue(workspace['root'] / 'couplings.json', 'couplings', 7.5)
+    StubAdapter.calls = []
+    with pytest.raises(SystemExit, match='fitted from different inputs'):
+        runner.main(['fit'] + arguments)
+    assert StubAdapter.calls == []
+    # Nothing else about the cell moved: the same rows are retained, so the support
+    # digest a cell also carries is unchanged and could not have caught this alone.
+    assert runner.main(['fit'] + arguments + ['--refit']) == 0
+    after = json.loads((workspace['out'] / 'support.json').read_text())
+    assert after['support_sha256'] == before['support_sha256']
+    assert after['rows_retained'] == before['rows_retained']
+    assert len(StubAdapter.calls) == 50
+
+
+def test_the_full_support_is_not_bound_to_a_table_it_never_reads(workspace):
+    arguments = workspace['base'] + workspace['wave']
+    assert runner.main(['fit'] + arguments + ['--support', 'full']) == 0
+    assert runner.main(['pilot'] + workspace['base'] + workspace['wave']) == 0
+    revalue(workspace['root'] / 'gemme.json', 'gemme', -3.25)
+    StubAdapter.calls = []
+    assert runner.main(['fit'] + arguments + ['--support', 'full']) == 0
+    assert json.loads((workspace['out'] / 'fit.json').read_text())['cells_reused'] == 10
+    # The reproduction gate stands on those same full-support cells, so a landing or
+    # revised table costs it nothing.
+    assert runner.main(['pilot'] + workspace['base'] + workspace['wave']) == 0
+    assert StubAdapter.calls == []
+
+
+def test_every_lane_binds_each_of_its_required_tables_on_the_complete_case():
+    inputs = {'stub': 'x' * 64}
+    for name in sorted(lanes.LANES):
+        required = lanes.lane(name).required_blocks()
+        # A lane with no required block would have a runnable complete case and no table
+        # to bind it to, which cell_identity refuses rather than digesting silently.
+        assert required, f'{name}: declares no required added block'
+        landed = {role: 'a' * 64 for role in required}
+        for role in required:
+            moved = {**landed, role: 'c' * 64}
+            assert runner.cell_identity(name, 'complete_case', inputs, moved) != \
+                runner.cell_identity(name, 'complete_case', inputs, landed), \
+                f'{name}: a change to the {role} table alone must invalidate a complete-case cell'
+        assert runner.cell_identity(name, 'full', inputs, landed) == \
+            runner.cell_identity(name, 'full', inputs, {}), \
+            f'{name}: a full-support cell carries no added block and must not bind one'
+
+
+def test_a_complete_case_cell_is_never_digested_without_its_tables():
+    with pytest.raises(SystemExit, match='bound to no table at all'):
+        runner.cell_identity('phenotype', 'complete_case', {'stub': 'x' * 64}, {})
+
+
+def test_a_cell_records_the_tables_it_was_fitted_against(workspace):
+    assert runner.main(['fit'] + workspace['base'] + workspace['wave']) == 0
+    expected = {role: runner.sha256_file(workspace['root'] / f'{role}.json')
+                for role in ('couplings', 'gemme')}
+    arm = lanes.lane('phenotype').arms[0]
+    complete = json.loads(runner.cell_path(workspace['out'], STRATUM, 'likelihood',
+                                           'complete_case', lanes.ARCHIVED_RUNG,
+                                           arm).read_text())
+    assert complete['added_block_tables'] == expected
+    full = json.loads(runner.cell_path(workspace['out'], STRATUM, 'likelihood', 'full',
+                                       'nuisance', arm).read_text())
+    assert full['added_block_tables'] == {}
+    assert json.loads((workspace['out'] / 'fit.json').read_text())['added_block_tables'] == expected
+
+
+def test_the_bound_digests_are_the_ones_the_wave_reports(workspace):
+    wave = runner.read_wave('phenotype', couplings=workspace['root'] / 'couplings.json',
+                            gemme=workspace['root'] / 'gemme.json')
+    assert runner.added_block_digests(wave) == \
+        {role: wave['status'][role]['sha256'] for role in ('couplings', 'gemme')}
+    # A pending role has no digest to bind and must not appear as one.
+    partial = runner.read_wave('phenotype', couplings=workspace['root'] / 'couplings.json',
+                               gemme=None)
+    assert sorted(runner.added_block_digests(partial)) == ['couplings']
+    # A role this lane cannot identify is not part of its wave and so never bound.
+    assert sorted(runner.added_block_digests(
+        runner.read_wave('interaction', couplings=workspace['root'] / 'couplings.json',
+                         gemme=None))) == ['couplings']
