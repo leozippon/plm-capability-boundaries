@@ -38,7 +38,6 @@ def isolated_renderer(tmp_path, monkeypatch):
     monkeypatch.setattr(renderer, 'REPO', tmp_path)
     monkeypatch.setattr(renderer, 'DATA', data)
     monkeypatch.setattr(renderer, 'SUPPLEMENT_DATA', data.parent / 'ncs')
-    monkeypatch.setattr(renderer, 'OUT', tmp_path / publication_paths.PDF_DIRECTORY)
     for name in ['HASHES', 'EXTRACTION_HASHES']:
         monkeypatch.setattr(renderer, name, {})
     for name in ['CHECKS', 'CONTRACTS']:
@@ -54,15 +53,17 @@ def test_full_render_uses_public_tables_without_results_and_routes_supplements(i
     renderer.supplementary_figures()
     assert not (root / 'results').exists()
     assert len(renderer.CHECKS) == 9
+    # Every output is a preview of the retained tables and belongs beside them.
+    # None of these nine figures is one the manuscript includes, so no figure
+    # the renderer draws may land in the submission.
+    assert not (root / publication_paths.PDF_DIRECTORY).exists()
     for check in renderer.CHECKS:
         supplement = not check['figure'].startswith('Fig')
         for kind in ['pdf', 'svg', 'plotted_source']:
             path = root / check[f'{kind}_path']
             assert renderer.digest(path) == check[f'{kind}_sha256']
-            if kind == 'pdf':
-                assert path == root / publication_paths.figure_pdf(check['figure'])
-            else:
-                assert path.parent == (data.parent / 'ncs' if supplement else data)
+            assert path.parent == (data.parent / 'ncs' if supplement else data)
+            if kind != 'pdf':
                 content = path.read_bytes()
                 assert b'\r' not in content
                 assert all(line == line.rstrip() for line in content.splitlines())
@@ -86,6 +87,9 @@ def test_isolated_public_cli_copies_shared_helper_and_binds_auxiliary_outputs(is
     assert not (root / 'data').exists()
     assert not (root / publication_paths.ASSETS).exists()
     assert not (root / 'manuscript/figures').exists()
+    # The one submission file this entry point writes is the checkpoint-name
+    # key the manuscript inputs; no figure goes there.
+    assert not (root / publication_paths.PDF_DIRECTORY).exists()
     assert 'scripts/capability/reporting/publication_paths.py' in report['renderer_sha256']
     assert 'scripts/capability/reporting/checkpoint_labels.py' in report['renderer_sha256']
     assert len(report['auxiliary_outputs_sha256']) == 2

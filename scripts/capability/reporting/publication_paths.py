@@ -9,17 +9,17 @@ FRAMEWORK_SOURCE = ASSETS / 'framework-original.png'
 STRUCTURE_SELECTION = ASSETS / 'selection.json'
 CHECKPOINT_KEY = SUBMISSION / 'checkpoint-name-key.tex'
 
+#: Figures this repository renders into the submission, each mapped to the
+#: filename the manuscript includes it under. Figure 1 is the only one: every
+#: other submitted figure is an author export inserted byte for byte from the
+#: Figma masters the package manifest records, under a numbering nothing here
+#: produces. The nine entries that named the superseded 2026-10-15 set are
+#: retired, because not one of those filenames appears in the manuscript. The
+#: historical IDs themselves stay fixed where they are still carried: in the
+#: retained source and plotted tables under ``figure_data/``, which are the
+#: distributed form of the manuscript's evidence.
 PDF_NAMES = {
     'Fig1_framework': 'figure-1-framework.pdf',
-    'Fig2_mutation': 'figure-2-mutation.pdf',
-    'Fig3_position': 'figure-3-position.pdf',
-    'Fig4_phenotypes_and_interactions': 'figure-4-phenotypes-and-interactions.pdf',
-    'Fig5_context_and_generation': 'figure-5-context-and-generation.pdf',
-    'Fig6_guidance_and_selection': 'figure-6-guidance-and-selection.pdf',
-    'native-comparators': 'supplementary-figure-1-native-comparators.pdf',
-    'conditional-class-yield': 'supplementary-figure-2-conditional-class-yield.pdf',
-    'generation-yield': 'supplementary-figure-3-generation-yield.pdf',
-    'matched-generators': 'supplementary-figure-4-matched-generators.pdf',
 }
 
 

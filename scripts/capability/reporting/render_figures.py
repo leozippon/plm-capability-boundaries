@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Draw the six-result manuscript from retained estimates, without new inference.
+"""Draw the retained quantitative figures from retained estimates, without new inference.
 
-Fig. 1 is assembled separately from authenticated illustration assets. This renderer
-never opens or overwrites the author's framework-original.png. It draws Figs. 2–6 and
-four supplementary figures. Editable PDF/SVG text uses embedded TrueType fonts.
+It draws the five historical main figures Fig2-Fig6 and four supplementary figures,
+and writes every output -- PDF, SVG, PNG and plotted table -- beside the source
+tables under ``figure_data/``. None of those nine figures is one the manuscript
+includes: the submitted figures are author exports from the Figma masters the
+package manifest records, under a later numbering this renderer does not produce.
+So these are previews of the distributed evidence tables and the receipt that binds
+them, not submission artwork, and no figure drawn here reaches the submission. The
+one submission file this entry point writes is the checkpoint-name key, which the
+manuscript inputs as a supplementary table.
+Fig. 1 is assembled separately, by ``render_framework.py``, from authenticated
+illustration assets; this renderer never opens or overwrites the author's
+framework-original.png. Editable PDF/SVG text uses embedded TrueType fonts.
 The 7 pt body / 8 pt panel policy follows Nature's official figure specifications;
 this explicitly supersedes the previous project-only 8 pt minimum for all text.
 """
@@ -33,7 +42,6 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 DATA = HERE / 'figure_data' / 'main'
 SUPPLEMENT_DATA = HERE / 'figure_data' / 'ncs'
-OUT = REPO / publication_paths.PDF_DIRECTORY
 WIDTH = 5.14
 BASE = 7.0
 LETTER = 8.0
@@ -169,9 +177,7 @@ def interval(a, y, row, color=BLUE, offset: float = 0):
 
 
 def save(fig, name, frames, unit, uncertainty, supplement=False):
-    destination = OUT
     previews = SUPPLEMENT_DATA if supplement else DATA
-    destination.mkdir(parents=True, exist_ok=True)
     previews.mkdir(parents=True, exist_ok=True)
     fig.canvas.draw()
     for a in fig.axes:
@@ -190,7 +196,7 @@ def save(fig, name, frames, unit, uncertainty, supplement=False):
             clipped.append(text.get_text())
     if clipped:
         raise ValueError(('text outside figure', name, clipped))
-    paths = {'pdf': destination / publication_paths.PDF_NAMES[name], 'svg': previews / f'{name}.svg',
+    paths = {'pdf': previews / f'{name}.pdf', 'svg': previews / f'{name}.svg',
              'plotted_source': previews / f'{name}-plotted.csv'}
     fig.savefig(paths['pdf'], metadata={'CreationDate': None})
     fig.savefig(paths['svg'], metadata={'Date': None})

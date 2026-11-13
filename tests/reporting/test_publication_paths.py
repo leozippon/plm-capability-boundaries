@@ -1,5 +1,6 @@
 """Submission filenames never change the historical figure/source identifiers."""
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -7,22 +8,51 @@ import pytest
 
 from scripts.capability.reporting import build_derived_numbers as builder
 from scripts.capability.reporting import publication_paths as paths
+from scripts.capability.reporting.validate_manuscript import read_document
 from src.capability.core.evidence_ledger import Artifacts, digest
 
 ROOT = Path(__file__).resolve().parents[2]
+INCLUDED = re.compile(r'\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}')
 
 
-def test_pdf_names_and_current_asset_locations():
-    assert len(paths.PDF_NAMES) == len(set(paths.PDF_NAMES.values())) == 10
-    assert paths.figure_pdf('Fig1_framework') == Path('manuscript/submission/figures/figure-1-framework.pdf')
-    assert paths.figure_pdf('matched-generators').name == 'supplementary-figure-4-matched-generators.pdf'
-    assert paths.FRAMEWORK_SOURCE == Path('manuscript/assets/framework-original.png')
-    assert paths.STRUCTURE_SELECTION == Path('manuscript/assets/selection.json')
+def submitted_figures():
+    """The figures the manuscript includes, read as LaTeX reads its sources."""
+    root = ROOT / paths.SUBMISSION
+    assembled = ''.join(read_document((root / name).read_text(), root)[0]
+                        for name in ('main.tex', 'supplementary-information.tex'))
+    return set(INCLUDED.findall(assembled))
+
+
+def test_every_declared_figure_is_one_the_manuscript_includes():
+    # What has to hold is not how many figures this repository renders but that
+    # each one it declares is a figure of the submission, present where the
+    # declaration says. A name the manuscript stopped including is a renderer
+    # output with nowhere to go.
+    included = submitted_figures()
+    assert len(set(paths.PDF_NAMES.values())) == len(paths.PDF_NAMES)
+    for figure in paths.PDF_NAMES:
+        destination = paths.figure_pdf(figure)
+        assert destination.parent == paths.PDF_DIRECTORY
+        assert f'figures/{destination.name}' in included
+        assert (ROOT / destination).is_file()
     with pytest.raises(KeyError):
         paths.figure_pdf('unknown-figure')
 
 
+def test_current_asset_locations():
+    assert paths.figure_pdf('Fig1_framework') == Path('manuscript/submission/figures/figure-1-framework.pdf')
+    assert paths.FRAMEWORK_SOURCE == Path('manuscript/assets/framework-original.png')
+    assert paths.STRUCTURE_SELECTION == Path('manuscript/assets/selection.json')
+
+
 def test_pdf_contract_keeps_main_and_supplement_table_identifiers(tmp_path, monkeypatch):
+    # The retained tables keep the identifiers they were extracted under, and
+    # the map routes a main identifier to ``main/`` and any other to ``ncs/``.
+    # The two declared here are historical, which is the case the routing is
+    # for; what it must not do is read a figure the map does not name.
+    monkeypatch.setattr(paths, 'PDF_NAMES', {
+        'Fig2_mutation': 'figure-2-mutation.pdf',
+        'native-comparators': 'supplementary-figure-1-native-comparators.pdf'})
     docs = tmp_path / paths.SUBMISSION
     docs.mkdir(parents=True)
     (docs / 'main.tex').write_text(r'\includegraphics{figures/figure-2-mutation.pdf}')
