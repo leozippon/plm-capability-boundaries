@@ -26,9 +26,10 @@ controls* weaker than the phrase suggests. A contract that accepted a control
 without an interval would hide exactly that.
 
 **A representation verdict is not available while the readout reassessment is
-open.** Every representation-level verdict is provisional until the reassessment
-completes, so an element at that step may be provisional, not applicable or
-absent, and a gate declaring it reported diverges from the contract.
+open.** Every representation-level verdict is provisional while that flag stands
+-- see :data:`READOUT_REASSESSMENT_OPEN` for what holds it open -- so an element
+at that step may be provisional, not applicable or absent, and a gate declaring
+it reported diverges from the contract.
 
 **A likelihood element is not deferred.** A native likelihood enters as one
 scalar column, so a linear readout of it is close to the full function space over
@@ -84,11 +85,20 @@ UNMEASURED_STATUSES = ('not_applicable', 'absent')
 #: variation a census does not have or answer a question the control need not pass.
 QUALIFICATION_FORMS = ('interval', 'exactness', 'order_statistic')
 
-#: True while the readout-class sweep and the depth sweep are open. It gates one
-#: rule -- a representation element may not be ``reported`` -- and is a single
-#: switch rather than a per-gate declaration, because the sequencing rule is
-#: programme-level. When the reassessment lands this becomes False and the gates
-#: whose representation elements are provisional are the ones to recompute.
+#: True while the readout reassessment is open. Both of its sweeps have closed --
+#: the class sweep at 132 admitted cells of 132, the depth sweep at 54 of 54 --
+#: and what stands open is one reading and one measurement. Whether that closure
+#: lets the declared increments be read as settled rather than provisional is a
+#: programme-level decision no gate record takes; each record states the closure
+#: and keeps the label. And the depth axis has no capacity-matched refit: its one
+#: recomputation ran at 512 projection coordinates, ``mean`` and ``last`` at 256
+#: each, against the published 1,024 pooled over four summaries, and carries
+#: ``is_admitted_pipeline: false``, so it moved depth and capacity together. The
+#: class axis is discharged for the crossed-controls gate and reproduced the
+#: published increments exactly -- 1,080 summary nodes, largest point movement
+#: 0.0, zero resolved sign changes. The flag gates one rule -- a representation
+#: element may not be ``reported`` -- and is a single switch rather than a
+#: per-gate declaration, because the sequencing rule is programme-level.
 READOUT_REASSESSMENT_OPEN = True
 
 
