@@ -70,7 +70,7 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.capability.reporting import publication_paths  # noqa: E402
+from scripts.capability.reporting import validate_manuscript  # noqa: E402
 
 PACKAGE = REPO_ROOT / "manuscript"
 MANIFEST_NAME = "package-manifest.json"
@@ -359,11 +359,31 @@ def pdf_output(command: list[str]) -> str:
         raise SystemExit(f"{command[0]} is needed to read the compiled layout: {error}")
 
 
+def included_figures(package: Path = PACKAGE) -> dict[str, int]:
+    """How many figures each document includes, read from its own assembled TeX.
+
+    The manuscript is the authority on what it includes. ``PDF_NAMES`` names
+    the figures this repository renders into the submission, which is one of
+    the sixteen the submission includes, so counting there compared each
+    compiled PDF against a document nobody submitted. Each root file is read
+    as LaTeX reads it, because the main document holds its figures in the
+    section files it inputs.
+    """
+    counts = {}
+    for name, relative in DOCUMENTS.items():
+        source = (package / relative).with_suffix(".tex")
+        assembled, _ = validate_manuscript.read_document(source.read_text(), source.parent)
+        counts[name] = len(re.findall(r"\\includegraphics(?:\[[^]]*\])?\{", assembled))
+        if not counts[name]:
+            # Finding none means the sources were not read, not that a submitted
+            # document carries no figure; that is the defect this replaced.
+            raise SystemExit(f"{source.relative_to(package)}: no included figure found")
+    return counts
+
+
 def compiled_layout(package: Path = PACKAGE) -> dict:
     """Page counts, figure pages and reference pages, read out of the PDFs."""
-    main_figures = sum(1 for key in publication_paths.PDF_NAMES if key.startswith("Fig"))
-    expected = {"main": main_figures,
-                "supplementary-information": len(publication_paths.PDF_NAMES) - main_figures}
+    expected = included_figures(package)
     record = {}
     for name, relative in DOCUMENTS.items():
         pdf = package / relative
@@ -371,7 +391,10 @@ def compiled_layout(package: Path = PACKAGE) -> dict:
         if count is None:
             raise SystemExit(f"{relative}: pdfinfo reports no page count")
         total = int(count[1])
-        pages = pdf_output(["pdftotext", "-layout", str(pdf), "-"]).split("\f")[:total]
+        # Reading order, not page layout: a figure whose own text sits beside
+        # its caption makes the column pass interleave the two, and one such
+        # page hid Supplementary Fig. 10's caption from this search entirely.
+        pages = pdf_output(["pdftotext", "-raw", str(pdf), "-"]).split("\f")[:total]
         figures: dict[str, int] = {}
         for number, text in enumerate(pages, 1):
             for figure in CAPTIONS[name].findall(text):
@@ -379,7 +402,7 @@ def compiled_layout(package: Path = PACKAGE) -> dict:
         if sorted(int(key) for key in figures) != list(range(1, expected[name] + 1)):
             raise SystemExit(
                 f"{relative}: captions found for figures {sorted(figures, key=int)}, "
-                f"against {expected[name]} declared in publication_paths")
+                f"against the {expected[name]} its sources include")
         record[name] = {
             "pages": total,
             "figure_pages": {key: figures[key] for key in sorted(figures, key=int)},

@@ -97,6 +97,26 @@ def test_a_module_the_package_lacks_or_has_moved_on_from_is_named(tmp_path):
     assert 'differs from' in next(fault for fault in faults if fault.startswith(stale))
 
 
+def test_submitted_figure_count_comes_from_the_document_including_its_sections(tmp_path):
+    # The compiled PDFs are checked against the figures the manuscript includes,
+    # which only the assembled sources say. A count taken from a code constant
+    # described whichever figures some renderer happened to name.
+    submission = tmp_path / 'submission'
+    (submission / 'sections').mkdir(parents=True)
+    (submission / 'main.tex').write_text('\\input{sections/results}\n')
+    (submission / 'sections/results.tex').write_text(
+        r'\includegraphics[width=\linewidth]{figures/one.pdf}' '\n'
+        r'% \includegraphics{figures/commented-out.pdf}' '\n'
+        r'\includegraphics{figures/two.pdf}' '\n')
+    (submission / 'supplementary-information.tex').write_text(
+        r'\includegraphics{figures/three.pdf}')
+    assert packager.included_figures(tmp_path) == {'main': 2, 'supplementary-information': 1}
+
+    (submission / 'main.tex').write_text('\\section{Results}\n')
+    with pytest.raises(SystemExit, match='no included figure found'):
+        packager.included_figures(tmp_path)
+
+
 def test_library_dependency_surface_is_a_recorded_decision():
     _, library = packager.derived_code()
     assert library == set(packager.LIBRARY_CARRIED) | set(packager.LIBRARY_REFERENCED)
