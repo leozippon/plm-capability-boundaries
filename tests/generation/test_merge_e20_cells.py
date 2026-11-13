@@ -91,7 +91,8 @@ def test_parent_directory_discovery_and_strength_pair(tmp_path):
     assert len(json.loads((tmp_path / "out" / "component_scale.json").read_text())) == 3
     # the explicit-list form still works, and evaluation refuses several strengths of one arm
     assert m.merge_records([parent / "a", parent / "b"], tmp_path / "o2", WILD, None, None)["cells"] == 2
-    pair = lambda f, n=1: {"lambda_fields": f, "lambda_coupling": 0.0, "pool_size": n}
+    def pair(f, n=1):
+        return {"lambda_fields": f, "lambda_coupling": 0.0, "pool_size": n}
     declared = [{"model": "x", "arm": "N", "frozen_strength": pair(0.0)},
                 {"model": "x", "arm": "M", "frozen_strength": pair(0.5)}]
     with pytest.raises(ValueError, match="no declared pool_size"):  # 0.25 was not pre-declared

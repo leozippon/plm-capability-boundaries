@@ -253,7 +253,8 @@ def test_two_strengths_of_one_arm_validate_and_cells_are_keyed_by_pair():
 
 
 def _decl(arm, frozen, doses=None, model="m"):
-    pair = lambda p: {"lambda_fields": p[0], "lambda_coupling": p[1]}
+    def pair(p):
+        return {"lambda_fields": p[0], "lambda_coupling": p[1]}
     entry = {"model": model, "arm": arm, "frozen_strength": pair(frozen)}
     if doses is not None:
         entry["dose_response_strengths"] = [pair(d) for d in doses]
@@ -331,8 +332,9 @@ def test_development_selects_a_strength_without_contrasts():
 
 
 def test_reference_arms_take_null_language_model_fields_and_no_other_arm_does():
-    ref = lambda arm, **kw: _rec(1, arm=arm, model=fr.MODEL_FREE_ARMS[arm], native_loglik=None,
-                                 mean_step_entropy=None, guidance_score=None, **kw)
+    def ref(arm, **kw):
+        return _rec(1, arm=arm, model=fr.MODEL_FREE_ARMS[arm], native_loglik=None,
+                    mean_step_entropy=None, guidance_score=None, **kw)
     for arm in ("P", "H"):
         assert fr.validate_records([ref(arm, lambda_fields=None, lambda_coupling=None)], WT)
     with pytest.raises(fr.ContractError, match="native_loglik is null for arm C"):

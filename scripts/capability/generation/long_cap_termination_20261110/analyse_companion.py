@@ -1,8 +1,11 @@
 """Companion-cohort analysis. Primary reading: naturally terminated sequences in the shared 16-512 strata,
 tuned minus base, with the length shift carried (regression and bin matching), then the identity adjustment, then
 the capped populations. Rows are resampled within arm; B=2000; seed fixed. pLDDT is 0-100, pTM raw 0-1."""
-import json, sys, zlib
-import numpy as np, pandas as pd
+import json
+import sys
+import zlib
+import numpy as np
+import pandas as pd
 from scipy import stats
 sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
 from src.capability.context import homology as hm
@@ -13,8 +16,8 @@ lab = pd.read_csv(H + "fold/attempt_labels.tsv", sep="\t")
 import glob
 fold = pd.concat([pd.read_csv(f, sep="\t", comment="#") for f in sorted(glob.glob(H + "fold_table_*.tsv"))], ignore_index=True)
 assert fold.sequence_sha256.is_unique and fold.evaluation_signature.nunique() == 1
-seq = {json.loads(l)["id"]: json.loads(l)["sequence"] for l in open(H + "fold/fold_cohort.jsonl")}
-nov = pd.DataFrame([json.loads(l) for l in open(H + "novelty/search/generated_novelty.jsonl")])
+seq = {json.loads(line)["id"]: json.loads(line)["sequence"] for line in open(H + "fold/fold_cohort.jsonl")}
+nov = pd.DataFrame([json.loads(line) for line in open(H + "novelty/search/generated_novelty.jsonl")])
 nov = nov.rename(columns={"nearest_corpus_identity": "identity"})[["id", "identity", "had_any_hit"]]
 nov["identity"] = nov.identity.fillna(0.0)
 t = lab.merge(fold.rename(columns={"length_residues": "Lf", "mean_ca_plddt_0_100": "plddt", "ptm_0_1": "ptm"}), on="sequence_sha256", how="left", validate="1:1")
@@ -37,7 +40,8 @@ ZLIB_THRESHOLD = 0.4361   # fixed by the original cohort's capped-degeneracy spl
 t["degenerate"] = t.zlib9 < ZLIB_THRESHOLD
 ORDER = list(hm.STRATUM_NAMES)
 STR = {"16-128": (16, 128), "129-256": (129, 256), "257-512": (257, 512)}
-ci = lambda x: np.percentile(np.asarray(x)[np.isfinite(x)], [2.5, 97.5])
+def ci(x):
+    return np.percentile(np.asarray(x)[np.isfinite(x)], [2.5, 97.5])
 out = {}
 
 def basis(L, kn, flex):
@@ -92,7 +96,8 @@ print(pd.DataFrame(rows).round(3).to_string())
 rows = []
 for ep in ("plddt", "ptm"):
     kn = np.percentile(prim.L / 100., [25, 50, 75])
-    f = lambda x, ex, st: reg(x, ep, kn, True, ex, st)
+    def f(x, ex, st):
+        return reg(x, ep, kn, True, ex, st)
     for lab_, ex, st in (("length spline only", (), False), ("length spline + identity (linear)", ("identity",), False),
                          ("length spline + identity stratum dummies (4 declared strata)", (), True),
                          ("length spline + identity stratum dummies + composition (zlib9, d3)", ("zlib9", "d3"), True)):

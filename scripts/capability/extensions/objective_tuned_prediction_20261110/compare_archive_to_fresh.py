@@ -1,9 +1,9 @@
-import sys, json, argparse
+import sys
+import json
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, '.')
 from scripts.capability.extensions import score_objective_tuned_prediction as S
-from src.capability.extensions import objective_tuned_prediction as E
 from src.capability.context.profile_increment import standardized_rank
 D = Path('results/extensions/objective_tuned_prediction_20261110'); A = D / 'archive-rescore'
 table, data = S.load_table(), S.controls()

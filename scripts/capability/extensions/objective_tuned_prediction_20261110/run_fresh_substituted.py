@@ -1,4 +1,5 @@
-import sys, argparse
+import sys
+import argparse
 from pathlib import Path
 sys.path.insert(0, '.')
 from scripts.capability.extensions import score_objective_tuned_prediction as S

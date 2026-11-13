@@ -1,4 +1,8 @@
-import numpy as np, pandas as pd, json, zlib, hashlib
+import numpy as np
+import pandas as pd
+import json
+import zlib
+import hashlib
 from collections import Counter
 from scipy import stats
 rng=np.random.default_rng(20261112); B=2000
@@ -19,7 +23,8 @@ t[['top_frac','entropy_bits','max_run','zlib_ratio','distinct_4mer_frac']]=np.ar
 t=t.drop(columns='seq'); t['capped']=(t.L==400)
 t.drop(columns=['fold_seed','fold_seed_rule','evaluation_signature']).to_csv('per_structure_composition.tsv',sep='\t',index=False,float_format='%.5f')
 PAIRS=[('112m','protgpt3-112m','protgpt3-112m-dpo'),('1.3b','protgpt3-1.3b','protgpt3-1.3b-dpo'),('10b','protgpt3-10b','protgpt3-10b-dpo'),('mix7','progen2-small-hugohrban','progen2-small-mix7')]
-ci=lambda x:np.nanpercentile(x,[2.5,97.5])
+def ci(x):
+    return np.nanpercentile(x,[2.5,97.5])
 # ---- 2. levels
 rows=[]
 for a,g in t.groupby('arm'):
@@ -47,7 +52,8 @@ for ep in ['plddt','ptm']:
     u=t[~t.capped]; sb=u[u.arm==b]; st=u[u.arm==tu]
     Lb,yb,Lt,yt=sb.L.values.astype(float),sb[ep].values,st.L.values.astype(float),st[ep].values
     kn=np.percentile(np.r_[Lb,Lt]/100.,[20,40,60,80])
-    est=lambda Lb,yb,Lt,yt:(yt.mean()-yb.mean(),reg(Lb,yb,Lt,yt,kn,False),reg(Lb,yb,Lt,yt,kn,True),binm(Lb,yb,Lt,yt)[0])
+    def est(Lb, yb, Lt, yt):
+        return (yt.mean()-yb.mean(),reg(Lb,yb,Lt,yt,kn,False),reg(Lb,yb,Lt,yt,kn,True),binm(Lb,yb,Lt,yt)[0])
     pt=est(Lb,yb,Lt,yt); _,kt,kb=binm(Lb,yb,Lt,yt)
     bs=np.array([est(Lb[i],yb[i],Lt[j],yt[j]) for i,j in ((rng.integers(0,len(Lb),len(Lb)),rng.integers(0,len(Lt),len(Lt))) for _ in range(B))])
     r=dict(endpoint=ep,pair=name,n_base=len(Lb),n_tuned=len(Lt),gap_L_base_minus_tuned=Lb.mean()-Lt.mean(),bin_tuned_kept=kt,bin_base_kept=kb)

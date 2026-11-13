@@ -1,4 +1,5 @@
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 rng=np.random.default_rng(20261111)
 d=pd.read_csv(__import__('os').environ.get('TABLE','input/checkpoint_structures_12of68.tsv'),sep='\t',comment='#').rename(columns={'length_residues':'L','mean_ca_plddt_0_100':'plddt','ptm_0_1':'ptm'})
 PAIRS=[('112m','protgpt3-112m','protgpt3-112m-dpo'),('1.3b','protgpt3-1.3b','protgpt3-1.3b-dpo'),('10b','protgpt3-10b','protgpt3-10b-dpo'),('mix7','progen2-small-hugohrban','progen2-small-mix7')]

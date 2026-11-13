@@ -2,7 +2,8 @@
 were folded as two chunks of 16 samples; both arms are affected alike. B=5000 within-arm bootstrap."""
 import sys
 sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 H = "/Data/lzp/plm-capability-boundaries/results/long_cap_termination_20261110/"
 t = pd.read_csv(H + "analysis/per_structure_joined.tsv", sep="\t"); rng = np.random.default_rng(20261113)
 m = t[(~t.capped) & (t.L >= 513) & (t.L <= 767)]; rows = []

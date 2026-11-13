@@ -22,7 +22,8 @@ thin-cell-free band that both producers label a post-hoc sensitivity. Both are i
 outputs here (`identity_shift_secondary.tsv`, `identity_stratum_levels_all_arms.tsv`) are by-products of that reuse
 and are not this directory's subject; this cohort's own identity-shift and level tables sit one level up.
 """
-import hashlib, pathlib
+import hashlib
+import pathlib
 import pandas as pd
 
 ROOT = pathlib.Path("/Data/lzp/plm-capability-boundaries")
@@ -31,7 +32,8 @@ OUT = ROOT / "results/long_cap_termination_20261110/analysis/declared_simultaneo
 PRODUCERS = ["scripts/capability/generation/length_adjusted_contrasts_20261110/identity_stratified_contrast.py",
              "scripts/capability/generation/length_adjusted_contrasts_20261110/identity_family_a_without_thin_cells.py"]
 
-sha = lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+def sha(p):
+    return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 t = pd.read_csv(SRC, sep="\t")
 prim = t[(~t.capped) & (t.L >= 16) & (t.L <= 512)]
 assert len(prim) == 1518, len(prim)

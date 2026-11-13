@@ -1,5 +1,11 @@
 """Read-only numerical acceptance; no fits, bootstrap draws, model inference or GPU access."""
-import hashlib, json, os, platform, resource, shutil, time
+import hashlib
+import json
+import os
+import platform
+import resource
+import shutil
+import time
 from pathlib import Path
 import numpy as np
 from scipy.stats import rankdata
@@ -90,7 +96,8 @@ for a in selected_assays:
         full_samples.append(dict(assay=a,cluster=row['cluster'],mutation=m,variant_index=j,original_index=len(full_samples),sample_id=sid))
 check(load(PROD/'full/samples.json')==full_samples,'full sample identities reconstructed from cohort')
 # Independently reconstruct structural support from exact-site criteria.
-import gzip, re
+import gzip
+import re
 with gzip.open(sites,'rt') as f: site_rows=json.load(f)
 coverage_sources={r['sha256']:r for r in load(sites.parent/'coverage.json')['sources']}
 site_map={(r['assay_id'],r['wt_position']):r for r in site_rows}

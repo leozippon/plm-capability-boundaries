@@ -1,6 +1,8 @@
 """Identity adjustment of the capped contrast: tuned capped (31) against the declared base-capped subsample (69).
 Same rows, strata and composition measures as analyse_companion.py; rows resampled within arm, B=5000."""
-import numpy as np, pandas as pd, sys
+import numpy as np
+import pandas as pd
+import sys
 sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
 from src.capability.context import homology as hm
 H = "/Data/lzp/plm-capability-boundaries/results/long_cap_termination_20261110/"

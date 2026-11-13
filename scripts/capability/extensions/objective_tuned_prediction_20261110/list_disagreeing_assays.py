@@ -1,4 +1,5 @@
-import sys, json
+import sys
+import json
 sys.path.insert(0, '.')
 import numpy as np
 from pathlib import Path

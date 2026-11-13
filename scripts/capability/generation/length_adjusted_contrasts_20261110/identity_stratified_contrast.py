@@ -1,7 +1,8 @@
 """Declared primary contrast: tuned-minus-base mean pLDDT within each identity stratum (docs/objective-alignment.md),
 with the sixteenth amendment's termination split. Boundaries are the frozen ones (src/capability/context/homology.py):
 [0,30) [30,70) [70,95) [95,100]; a query with no hit carries identity 0.0 as the search script assigns it."""
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 from src.capability.context import homology as hm
 B=10000; rng=np.random.default_rng(20261114)
 D=__import__('os').environ.get('RESDIR','results/external_baseline_analysis/length_adjusted_contrasts_20261110/')

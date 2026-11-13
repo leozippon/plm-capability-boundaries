@@ -8,7 +8,8 @@ a table that travels to another reader is exactly where that slip would recur.
 Fails loudly rather than silently collapsing if any digest maps to more than one arm,
 since the one-row-per-structure shape depends on that being 1:1.
 """
-import json, sys
+import json
+import sys
 from pathlib import Path
 
 V = Path("/gpfs/jiaotongdamoxing/zhk_zip/InterpretabilityTransfer/results/external_baseline/20261110074842_20277c6a196f")

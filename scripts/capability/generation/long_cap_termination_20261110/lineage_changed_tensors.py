@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Per-tensor relative change between base and tuned, by tensor class (CPU, all common tensors)."""
-import json, os, re, sys
+import json
+import os
+import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 import torch

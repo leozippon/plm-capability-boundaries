@@ -376,7 +376,6 @@ def novelty_products(targets=12, conditions=("a", "b", "c", "d"), per_cell=8):
 def chunk_groups(rows, *, chunk_size, order):
     """The groups each chunk would carry, using the stage's own ordering rules."""
 
-    import argparse
 
     measurable = sorted(rows, key=lambda row: str(row["attempt_id"]))
     if order == "stratified":

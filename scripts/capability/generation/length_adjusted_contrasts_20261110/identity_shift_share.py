@@ -1,6 +1,6 @@
 """Shift-share split of the pooled pLDDT gain via the project's own function, per pair and termination cell,
 plus a sensitivity band for the declared family with thin cells (either arm <30) removed."""
-import numpy as np, pandas as pd
+import pandas as pd
 from src.capability.context import homology as hm
 from src.capability.generation import objective_tuned_analysis as ota
 D=__import__('os').environ.get('RESDIR','results/external_baseline_analysis/length_adjusted_contrasts_20261110/')

@@ -71,7 +71,8 @@ def determinism(dev_records, pool_records) -> dict:
             tms[(r["domain"], r["sequence"])][source].append(r["tm_score"])
     across = {k: v["dev"] + v["pool"] for k, v in tms.items() if v["dev"] and v["pool"]}
     within = {k: v[s] for k, v in tms.items() for s in ("dev", "pool") if len(v[s]) > 1}
-    differing = lambda groups: sorted(float(np.ptp(v)) for v in groups.values() if np.ptp(v) > 0.0)
+    def differing(groups):
+        return sorted(float(np.ptp(v)) for v in groups.values() if np.ptp(v) > 0.0)
     spreads, within_spreads = differing(across), differing(within)
     return {"note": DETERMINISM_NOTE, "n_records": len(dev_records) + len(pool_records),
             "n_distinct_domain_sequence_pairs": len(tms),

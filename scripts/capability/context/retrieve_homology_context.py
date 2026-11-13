@@ -891,7 +891,6 @@ def novelty(args: argparse.Namespace) -> None:
     measurement made on this one.
     """
 
-    import subprocess
     from concurrent.futures import ThreadPoolExecutor
 
     products = [

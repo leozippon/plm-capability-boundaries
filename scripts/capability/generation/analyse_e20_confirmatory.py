@@ -21,7 +21,6 @@ sequences and native_loglik and nothing else, and plddt_mean, ptm and tm_score a
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import warnings
 from collections import defaultdict
@@ -856,9 +855,10 @@ def render(result: dict) -> str:
                 lines.append(f"{name}: UNESTIMABLE ({t['reason']})")
                 continue
             sp, pt = t["spearman"], t["partial_spearman_controlling_length_and_native_baseline"]
-            fmt = lambda c: "n/a" if c["estimate"] is None else (
-                f"{c['estimate']:+.3f}" + ("" if c["interval95_percentile"] is None else
-                                           f" [{c['interval95_percentile'][0]:+.3f}, {c['interval95_percentile'][1]:+.3f}]"))
+            def fmt(c):
+                return "n/a" if c["estimate"] is None else (
+                    f"{c['estimate']:+.3f}" + ("" if c["interval95_percentile"] is None else
+                                               f" [{c['interval95_percentile'][0]:+.3f}, {c['interval95_percentile'][1]:+.3f}]"))
             lines.append(f"{name}: spearman {fmt(sp)}  partial(length, baseline) {fmt(pt)}")
         lines.append(depth["caveat"])
     eq = result["equivalence"]

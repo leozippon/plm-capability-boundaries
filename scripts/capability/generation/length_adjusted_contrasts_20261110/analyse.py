@@ -1,4 +1,5 @@
-import numpy as np, pandas as pd, json
+import numpy as np
+import pandas as pd
 rng=np.random.default_rng(20261110)
 d=pd.read_csv(__import__('os').environ.get('TABLE','input/checkpoint_structures_12of68.tsv'),sep='\t',comment='#')
 d=d.rename(columns={'length_residues':'L','mean_ca_plddt_0_100':'plddt','ptm_0_1':'ptm'})
@@ -29,10 +30,10 @@ def bin_match(Lb,yb,Lt,yt,w=16):
 def nn_match(Lb,yb,Lt,yt,cal=5):
     # each tuned matched to nearest base length (with replacement); drop if gap>caliper
     o=np.argsort(Lb); Ls=Lb[o]; ys=yb[o]; diffs=[]
-    for l,y in zip(Lt,yt):
-        i=np.searchsorted(Ls,l); c=[j for j in (i-1,i) if 0<=j<len(Ls)]
-        best=min(c,key=lambda j:abs(Ls[j]-l)); lo=np.searchsorted(Ls,Ls[best],'left'); hi=np.searchsorted(Ls,Ls[best],'right')
-        if abs(Ls[best]-l)<=cal: diffs.append(y-ys[lo:hi].mean())
+    for lt,y in zip(Lt,yt):
+        i=np.searchsorted(Ls,lt); c=[j for j in (i-1,i) if 0<=j<len(Ls)]
+        best=min(c,key=lambda j:abs(Ls[j]-lt)); lo=np.searchsorted(Ls,Ls[best],'left'); hi=np.searchsorted(Ls,Ls[best],'right')
+        if abs(Ls[best]-lt)<=cal: diffs.append(y-ys[lo:hi].mean())
     return (np.mean(diffs) if diffs else np.nan), len(diffs)
 out=[]; slopes=[]
 def fmt(v,c): return f"{v:+.3f} [{c[0]:+.3f}, {c[1]:+.3f}]"
@@ -42,7 +43,7 @@ for ep in ['plddt','ptm']:
   for name,base,tun in PAIRS:
     for role,a in (('base',base),('tuned',tun)):
         s=sub(a,lo,hi); L=s.L.values.astype(float); y=s[ep].values
-        bs=[]; 
+        bs=[]
         for _ in range(B):
             i=rng.integers(0,len(L),len(L)); bs.append(slope(L[i],y[i]))
         slopes.append(dict(endpoint=ep,pair=name,role=role,arm=a,n=len(L),per100=slope(L,y)*100,lo=ci(bs)[0]*100,hi=ci(bs)[1]*100,

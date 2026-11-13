@@ -324,7 +324,8 @@ def test_tokenizer_only_export_uses_original_packer_without_forward(tmp_path,mon
         loads.append(device); return arm
     monkeypatch.setattr(extraction,'load_readout_arm',load)
     from scripts.capability.position import analyse_position_terms as original
-    pack=lambda a,s: ([0,*map(ord,s)],(1,4),(1,4))
+    def pack(a, s):
+        return ([0,*map(ord,s)],(1,4),(1,4))
     monkeypatch.setattr(extraction,'pack_sequence',pack)
     monkeypatch.setattr(original,'pack_sequence',pack)
     nll=np.ones(3,dtype=np.float32)

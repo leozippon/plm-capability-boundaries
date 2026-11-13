@@ -2,7 +2,8 @@
 fixed from composition alone before any score is read. Primary: zlib compressed-bytes-per-residue below the minimum of finished
 rows with L>=257 (length-comparable reference), one pooled threshold for all arms. Sensitivities: 1st percentile of the same
 reference, and distinct-4-mer fraction below its finished-L>=257 minimum."""
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 rng=np.random.default_rng(20261116); B=4000
 D=''
 c0=pd.read_csv('per_structure_composition.tsv',sep='\t'); nn=pd.read_csv('natural_neighbour/per_structure_nearest_neighbour.tsv',sep='\t')[['sequence_sha256','identity_over_query']]
@@ -12,7 +13,8 @@ CRIT={'primary: zlib below finished-L>=257 minimum':('zlib_ratio',ref.zlib_ratio
       'sensitivity: zlib below finished-L>=257 1st percentile':('zlib_ratio',ref.zlib_ratio.quantile(.01)),
       'sensitivity: distinct-4mer below finished-L>=257 minimum':('distinct_4mer_frac',ref.distinct_4mer_frac.min())}
 PAIRS=[('112m','protgpt3-112m','protgpt3-112m-dpo'),('1.3b','protgpt3-1.3b','protgpt3-1.3b-dpo'),('10b','protgpt3-10b','protgpt3-10b-dpo'),('mix7','progen2-small-hugohrban','progen2-small-mix7')]
-THIN=30; cap=t[t.capped].copy(); ci=lambda x:np.percentile(x,[2.5,97.5])
+THIN=30; cap=t[t.capped].copy()
+def ci(x): return np.percentile(x,[2.5,97.5])
 M=['top_frac','entropy_bits','max_run','zlib_ratio','distinct_4mer_frac']
 def design(df,tu,cov,ident):
     X=[np.ones(len(df)),(df.arm==tu).values.astype(float)]

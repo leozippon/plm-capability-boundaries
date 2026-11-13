@@ -263,7 +263,6 @@ def test_feature_hash_and_state_checks(tmp_path):
 def test_mixed_seed_mismatch_and_failure_are_retained(tmp_path):
     from contextlib import ExitStack
     import torch
-    from scripts.capability.gates import fit_nested_singles as loader
     torch.set_num_threads(4)
     cohort, paths = fixture_inputs(tmp_path)
     records, panel, toy_blocks = small_panel('abundance')

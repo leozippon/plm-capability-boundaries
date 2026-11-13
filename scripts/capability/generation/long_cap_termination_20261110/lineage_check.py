@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """CPU-only lineage check of the four base/tuned pairs: config diff, tensor inventory,
 and weight similarity against a same-shape unrelated baseline (other layers of the base)."""
-import json, os, re, sys
+import json
+import os
+import re
 from pathlib import Path
-import numpy as np, torch
+import numpy as np
+import torch
 from safetensors import safe_open
 
 ROOT = Path(os.environ["MODEL_ROOT"])
@@ -38,7 +41,8 @@ for name, (b, t) in PAIRS.items():
     ib, it = index(ROOT / b), index(ROOT / t)
     only_b, only_t = sorted(set(ib) - set(it)), sorted(set(it) - set(ib))
     shape_mis = [k for k in set(ib) & set(it) if ib[k][1] != it[k][1]]
-    count = lambda i: sum(int(np.prod(v[1])) for v in i.values())
+    def count(i):
+        return sum(int(np.prod(v[1])) for v in i.values())
     common = sorted(set(ib) & set(it) - set(shape_mis))
     big = sorted(common, key=lambda k: -int(np.prod(ib[k][1])))[:6]
     # plus a spread of mid-size matrices from different depths

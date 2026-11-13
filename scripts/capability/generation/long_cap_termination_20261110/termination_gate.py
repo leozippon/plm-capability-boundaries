@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Termination gate for one or two attempt ledgers: python termination_gate.py LEDGER [LEDGER ...]"""
-import json, sys
+import json
+import sys
 from collections import Counter
 import numpy as np
 CAP = 768
@@ -8,7 +9,7 @@ def q(a, ps=(5, 25, 50, 75, 95, 99)):
     return {f"p{p}": float(np.percentile(a, p)) for p in ps} if len(a) else {}
 out = {}
 for path in sys.argv[1:]:
-    rows = [json.loads(l) for l in open(path)]
+    rows = [json.loads(line) for line in open(path)]
     n = len(rows); L = np.array([r["length"] for r in rows]); st = np.array([r["stop_status"] for r in rows])
     nat = L[st == "native_terminal"]; cen = L[st == "budget_censored"]; emp = int((st == "empty_or_noncanonical").sum())
     bins = [0, 16, 64, 128, 200, 300, 400, 500, 600, 700, 750, 767, 768, 10**6]

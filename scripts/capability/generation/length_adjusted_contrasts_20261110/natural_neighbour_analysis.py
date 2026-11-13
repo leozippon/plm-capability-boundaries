@@ -1,4 +1,5 @@
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 from scipy import stats
 rng=np.random.default_rng(20261113); B=2000
 t=pd.read_csv('per_structure_composition.tsv',sep='\t').sort_values('sequence_sha256').reset_index(drop=True)
@@ -13,7 +14,8 @@ t['query_coverage']=((t.qend-t.qstart+1)/t.qlen).where(t.had_hit)
 t['subject_longer_than_query']=(t.slen>t.L).where(t.had_hit)
 assert (t.qlen.dropna()==t.L[t.qlen.notna()]).all()
 t.drop(columns=['q','id_over_q']).to_csv('natural_neighbour/per_structure_nearest_neighbour.tsv',sep='\t',index=False,float_format='%.5g')
-ci=lambda x:np.nanpercentile(x,[2.5,97.5])
+def ci(x):
+    return np.nanpercentile(x,[2.5,97.5])
 def grp(df,a,cap): return df[(df.arm==a)&(df.capped==cap)]
 # group summaries, all arms
 rows=[]

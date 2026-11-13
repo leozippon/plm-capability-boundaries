@@ -1,6 +1,7 @@
 """Run in the pod (stdlib only): one row per folded structure of the companion tree. No analysis.
 pLDDT column is the stored mean CA-pLDDT on 0-100; pTM is raw 0-1."""
-import json, sys
+import json
+import sys
 from pathlib import Path
 T = Path(sys.argv[1]); out = []
 sigs = set()

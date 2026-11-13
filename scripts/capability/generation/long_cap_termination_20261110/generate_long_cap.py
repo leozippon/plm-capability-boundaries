@@ -7,7 +7,9 @@ of ``unconditional_generation.POLICY`` in memory: ``max_new_tokens``. Nothing un
 ``src`` is modified. It writes the attempt ledger and nothing else (no structure subset,
 no fold input).
 """
-import argparse, json, sys
+import argparse
+import json
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
