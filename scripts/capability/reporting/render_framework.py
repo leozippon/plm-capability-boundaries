@@ -153,8 +153,16 @@ def summary_rows() -> tuple[list[dict], list[Path]]:
     return rows, list(dict.fromkeys(sources))
 
 
-def main() -> None:
-    argparse.ArgumentParser(description=__doc__).parse_args()  # --help performs no reads/writes
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)  # --help performs no reads/writes
+    parser.add_argument('--out', type=Path, default=ROOT / publication_paths.figure_pdf('Fig1_framework'),
+                        help=f'figure PDF destination (default {publication_paths.figure_pdf("Fig1_framework")})')
+    parser.add_argument('--force', action='store_true', help='replace an existing --out instead of refusing')
+    args = parser.parse_args(argv)
+    # The destination is outside git and the file there may be an author export
+    # this script did not produce, so replacing one has to be asked for.
+    if args.out.exists() and not args.force:
+        parser.error(f'refusing to overwrite {args.out}; pass --force to replace it or --out to write elsewhere')
     # Deliberate rerenders bind the author's current canonical bytes; subsequent
     # source edits invalidate the receipt rather than enforcing an obsolete hash.
     source_sha = sha(REFERENCE)
@@ -201,7 +209,7 @@ def main() -> None:
         measured.append(bb)
         extents.append(dict(text=text.get_text(), font_points=text.get_fontsize(),
                             bbox_points=[float(v) / fig.dpi * 72 for v in bb.extents]))
-    pdf = ROOT / publication_paths.figure_pdf('Fig1_framework')
+    pdf = args.out
     pdf.parent.mkdir(parents=True, exist_ok=True)
     svg, png, plotted = [OUT / ('Fig1_framework' + suffix) for suffix in ['.svg', '.png', '-plotted.csv']]
     fig.savefig(pdf, metadata={'CreationDate': None, 'ModDate': None})

@@ -128,7 +128,7 @@ def test_changed_author_source_requires_deliberate_rerender(composite):
     failures = []
     assert validator.load_render_manifest(path, failures) == []
     assert failures
-    assembler.main()
+    assembler.main(['--force'])
     failures = []
     assert validator.load_render_manifest(path, failures)
     assert not failures
@@ -146,6 +146,33 @@ def test_optional_auxiliary_outputs_are_digest_bound(composite):
     auxiliary.write_text('changed key\n')
     validator.load_render_manifest(path, failures)
     assert any('auxiliary_outputs_sha256' in failure for failure in failures)
+
+
+def test_existing_figure_pdf_survives_a_rerun_unless_forced(composite):
+    """The destination is outside git, so an overwrite must be asked for."""
+    root, _, report = composite
+    pdf = root / report['checks'][0]['pdf_path']
+    supplied = b'%PDF-1.7 author-built export\n'
+    pdf.write_bytes(supplied)
+    with pytest.raises(SystemExit) as refusal:
+        assembler.main([])
+    assert refusal.value.code == 2
+    assert pdf.read_bytes() == supplied
+    assembler.main(['--force'])
+    assert pdf.read_bytes() != supplied
+
+
+def test_out_writes_the_figure_beside_the_untouched_destination(composite):
+    root, _, report = composite
+    pdf = root / report['checks'][0]['pdf_path']
+    supplied = b'%PDF-1.7 author-built export\n'
+    pdf.write_bytes(supplied)
+    elsewhere = root / 'scratch/figure-1-framework.pdf'
+    assembler.main(['--out', str(elsewhere)])
+    assert elsewhere.is_file()
+    assert pdf.read_bytes() == supplied
+    receipt = json.loads((assembler.OUT / 'framework_validation.json').read_text())
+    assert receipt['checks'][0]['pdf_path'] == 'scratch/figure-1-framework.pdf'
 
 
 def test_separate_structure_output_location():
