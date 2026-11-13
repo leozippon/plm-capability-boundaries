@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +25,7 @@ if str(REPO_ROOT / "scripts/capability") not in sys.path:
 
 from src.capability.models import proteinglm as pglm  # noqa: E402
 from src.capability.core.arms import (  # noqa: E402
+    MODEL_BASE_DIR,
     PANEL,
     STAGED_ARMS,
     STAGED_CANDIDATE_ARMS,
@@ -48,7 +48,6 @@ from src.capability.core.scoring import sequence_target_mask, target_rule  # noq
 
 NAME = "proteinglm-7b-clm"
 LOGIT_ATOL = 1e-4
-MODEL_BASE_DIR = Path(os.environ.get("MODEL_BASE_DIR", ""))
 _FROZEN_SOURCE = MODEL_BASE_DIR / "models_R2/proteinglm-7b-clm"
 
 

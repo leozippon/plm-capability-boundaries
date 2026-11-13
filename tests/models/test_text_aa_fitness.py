@@ -11,7 +11,6 @@ unbounded remote-code weight load.
 from __future__ import annotations
 
 import gc
-import os
 import sys
 import weakref
 from pathlib import Path
@@ -37,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.capability.core.arms import MODEL_BASE_DIR  # noqa: E402
 from src.capability.core.precision_policy import FP32_PER_TARGET_ABS  # noqa: E402
 from src.capability.models.scale_comparison import STRATUM_N_TO_C  # noqa: E402
 from src.capability.models.text_aa_fitness import (  # noqa: E402
@@ -55,7 +55,6 @@ from src.capability.models.text_aa_fitness import (  # noqa: E402
 )
 
 PROBE = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ"
-MODEL_BASE_DIR = Path(os.environ.get("MODEL_BASE_DIR", ""))
 GPT2_DIR = MODEL_BASE_DIR / "gpt2"
 QWEN2_DIR = MODEL_BASE_DIR / "Qwen2.5-0.5B"
 QWEN3_DIR = MODEL_BASE_DIR / "Qwen3-8B-Base"

@@ -10,7 +10,6 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 import pytest
@@ -21,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.capability.core.amino_acids import AA20  # noqa: E402
-from src.capability.core.arms import arm_spec  # noqa: E402
+from src.capability.core.arms import MODEL_BASE_DIR, arm_spec  # noqa: E402
 from src.capability.models.fitness import load_assay  # noqa: E402
 from src.capability.core.precision_policy import TEXT_AA_FP32_V1  # noqa: E402
 from src.capability.models.text_aa_cohort import (  # noqa: E402
@@ -48,7 +47,6 @@ from src.capability.models.text_aa_fitness import (  # noqa: E402
     resolve_text_aa_boundary,
 )
 
-MODEL_BASE_DIR = Path(os.environ.get("MODEL_BASE_DIR", ""))
 GPT2_DIR = MODEL_BASE_DIR / "gpt2"
 BYGPT5_DIR = MODEL_BASE_DIR / "bygpt5-small-en"
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
 import sys
 from contextlib import contextmanager
 from dataclasses import replace
@@ -24,7 +23,7 @@ if str(REPO_ROOT / "scripts/capability") not in sys.path:
 
 from src.capability.models import proteinglm as pglm  # noqa: E402
 from src.capability.core.amino_acids import AA20  # noqa: E402
-from src.capability.core.arms import STAGED_ARMS, Arm  # noqa: E402
+from src.capability.core.arms import MODEL_BASE_DIR, STAGED_ARMS, Arm  # noqa: E402
 from src.capability.core.budget import ScoredTokens  # noqa: E402
 from src.capability.core.io import write_json as real_write_json  # noqa: E402
 from src.capability.core.precision_policy import (  # noqa: E402
@@ -33,7 +32,6 @@ from src.capability.core.precision_policy import (  # noqa: E402
 )
 
 NAME = "proteinglm-7b-clm"
-MODEL_BASE_DIR = Path(os.environ.get("MODEL_BASE_DIR", ""))
 _FROZEN_SOURCE = MODEL_BASE_DIR / "models_R2/proteinglm-7b-clm"
 
 

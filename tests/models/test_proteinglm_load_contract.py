@@ -7,7 +7,6 @@ a 2L/32d, seq_length=1024 checkpoint under ``/tmp``.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from dataclasses import replace
@@ -25,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.capability.core import arms as A  # noqa: E402
 from src.capability.models import proteinglm as pglm  # noqa: E402
 from src.capability.core.arms import (  # noqa: E402
+    MODEL_BASE_DIR,
     STAGED_ARMS,
     Arm,
     ArmSpec,
@@ -33,7 +33,6 @@ from src.capability.core.arms import (  # noqa: E402
 )
 
 NAME = "proteinglm-7b-clm"
-MODEL_BASE_DIR = Path(os.environ.get("MODEL_BASE_DIR", ""))
 _FROZEN_SOURCE = MODEL_BASE_DIR / "models_R2/proteinglm-7b-clm"
 _TOKENIZER_FILES = (
     "tokenization_proteinglm.py",
