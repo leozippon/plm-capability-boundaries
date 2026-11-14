@@ -846,3 +846,42 @@ def test_the_likelihood_families_are_declared_distinct_and_sized():
     with pytest.raises(SystemExit):
         aot.explicit_statistics_control({"pools": {}}, ota.PRIMARY_PAIRS, {}, {},
                                         ota.LIKELIHOOD_CONTROL_FAMILIES)
+
+
+# ------------------------------------- the selection curve and repetitiveness (2026-11-14)
+
+def _driver(name):
+    import importlib.util
+    path = SCRIPTS / "objective_tuned_base_likelihood_20261114" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_match_point_is_the_smallest_k_not_wholly_below_one():
+    curve = _driver("run_selection_curve")
+    cell = lambda status, finding: {"status": status, "finding": finding}  # noqa: E731
+    below = ota.BOUNDED_NEGATIVE
+    assert curve.match_point({2: cell("resolved", below), 4: cell("resolved", ota.UNRESOLVED),
+                              8: cell("resolved", ota.SUPPORTED)}) == 4
+    assert curve.match_point({2: cell("resolved", below), 4: cell("resolved", below),
+                              8: cell("unresolved", None)}) is None
+    # An unresolved cell is not a match, whatever its finding field holds.
+    assert curve.match_point({2: cell("unresolved", ota.UNRESOLVED)}) is None
+
+
+def test_the_retained_count_follows_the_selection_fraction():
+    members = [{"key": f"m{i:03d}", "sequence": "A", "score": float(i)} for i in range(80)]
+    rule = ota.filter_rules(_counts())[0]
+    assert [ota.rank_and_retain(members, rule, fraction=f)["n_retained"]
+            for f in (0.5, 0.25, 0.125)] == [40, 20, 10]
+
+
+def test_the_repetitiveness_statistics_and_rank_correlation():
+    repeat = _driver("run_likelihood_repetitiveness")
+    assert repeat.longest_run("AAKKKKLM") == 4 and repeat.longest_run("") == 0
+    x = np.arange(50.0)
+    assert repeat.spearman(x, x ** 3) == pytest.approx(1.0)
+    assert repeat.spearman(x, -x) == pytest.approx(-1.0)
+    assert np.isnan(repeat.spearman(x, np.ones(50)))

@@ -609,6 +609,7 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
                                 primary: dict[str, Any],
                                 families: dict[str, str] | None = None,
                                 likelihood: dict[str, tuple[int, float]] | None = None,
+                                fraction: float = ota.TOP_FRACTION,
                                 ) -> dict[str, Any]:
     """The control that carries the claim: what an explicit rule reproduces.
 
@@ -638,6 +639,10 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
     naming them needs ``likelihood``, the base arms' own-model scores. Every
     rule, statistic, fraction, floor, draw and band below is the same object
     either way -- only the family a column belongs to differs.
+
+    ``fraction`` is the retained share of each base pool and defaults to the
+    declared top quarter; the amendment of 2026-11-14 reads two more points of
+    the same families (one half and one eighth) as a curve around it.
     """
 
     families = ota.CONTROL_FAMILIES if families is None else families
@@ -657,7 +662,7 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
         "at_or_above_one": "an explicit statistical filter over the model's own unaligned samples "
                            "does everything the alignment did on this endpoint",
         "ranking_scope": "within (arm, stream), over the scorable folded attempts of the base pool",
-        "top_fraction": ota.TOP_FRACTION,
+        "top_fraction": fraction,
         "interval_note": ota.CONTROL_INTERVAL_NOTE,
         "nested_draws": ota.NESTED_DRAW_METHOD,
         "moot_note": ota.CONTROL_MOOT_NOTE,
@@ -686,12 +691,12 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
                 folded = [row for row in base[stream]["rows"] if row["plddt"] is not None]
                 scoring = ota.score_pool(folded, rule)
                 scored[stream] = scoring["scored"]
-                retention = ota.rank_and_retain(scored[stream], rule)
+                retention = ota.rank_and_retain(scored[stream], rule, fraction=fraction)
                 retained[stream] = set(retention.pop("retained_keys"))
                 try:
                     draws[stream] = ota.nested_base_draws(
                         scored[stream], retain=rule.retain, family=family, column=index,
-                        stream_index=position)
+                        stream_index=position, fraction=fraction)
                 except ValueError as error:
                     fail(f"{pair.base} stream {stream} under {rule.name}: {error}")
                     raise
