@@ -128,6 +128,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         sensitivity=args.sensitivity,
         evalue=args.evalue,
         max_target_seqs=args.max_target_seqs,
+        progress_log=args.progress_log,
     )
     hits = hm.parse_hits(work / "hits.tsv")
 
@@ -195,6 +196,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "workspace": str(work),
             "command": list(command),
             "log_tail": log,
+            "progress_log": None if args.progress_log is None else str(args.progress_log),
             "sensitivity": args.sensitivity,
             "evalue": args.evalue,
             "max_target_seqs": int(args.max_target_seqs),
@@ -244,6 +246,16 @@ def main() -> None:
         type=Path,
         default=None,
         help="scan workspace; defaults to <out>/work and is never a data directory",
+    )
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        default=None,
+        help=(
+            "stream DIAMOND's reference-block progress here line by line, so a search "
+            "that scans the corpus for hours can be told from a stalled one; omitted, "
+            "the output is held in memory until the search ends"
+        ),
     )
     parser.add_argument("--device", default="cpu", help="accepted because the campaign queue injects it")
     parser.add_argument("--out", type=Path, required=True)
