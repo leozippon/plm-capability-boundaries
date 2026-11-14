@@ -174,6 +174,15 @@ def group_record(records: list[dict[str, Any]]) -> dict[str, Any]:
         "longest_single_residue_run_mean": mean("longest_single_residue_run"),
         "composition_entropy_bits_mean": mean("composition_entropy_bits"),
         "empty_completions": int(sum(1 for record in records if record["length"] == 0)),
+        # The means hide the tail, and the tail is where a structural reward can be
+        # paid on something that is not a structure. These three make the thing the
+        # structural-support rule exists for visible per step instead of inferable
+        # only from a crash.
+        "length_min": int(min(record["length"] for record in records)),
+        "length_max": int(max(record["length"] for record in records)),
+        "below_structure_support": int(sum(
+            1 for record in records
+            if 0 < record["length"] < sr.STRUCTURE_SUPPORT[0])),
         "term_means": {key: float(np.mean([record["terms"][key] for record in records
                                            if key in record["terms"]]))
                        for key in term_keys},

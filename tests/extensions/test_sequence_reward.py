@@ -299,3 +299,62 @@ class TestRewards:
         assert hits["low_complexity_ok"] and hits["environment_conjunction"]
         assert hits["plddt_criterion"] and hits["memory_conjunction"]
         assert sr.meets_declared_objective(stats, mean_ca_plddt=60.0)["plddt_criterion"] is False
+
+
+class TestStructuralSupport:
+    """Where a structural reward is defined, and why it stops short of a peptide.
+
+    Measured on the staged instrument: mean CA-pLDDT 85.3 at two residues and
+    87.8 at four, against about 47 on the base pool's own samples, and an
+    IndexError at one. A structural reward paid there would let a policy outscore
+    every natural-length sequence by emitting peptides, and the gain would be the
+    instrument describing its input rather than a bias anyone installed.
+    """
+
+    def test_it_is_the_project_s_own_declared_structural_support(self):
+        from src.capability.generation import unconditional_generation as ug
+
+        assert list(sr.STRUCTURE_SUPPORT) == list(ug.POLICY["structure_support"])
+
+    def test_a_structural_reward_outside_the_support_is_the_empty_value(self):
+        for length in (1, 2, 4, 8, sr.STRUCTURE_SUPPORT[0] - 1):
+            stats = sr.statistics(("ACDEFGHIKLMNPQRSTVWY" * 2)[:length])
+            assert stats.length == length
+            assert sr.within_structure_support(stats) is False
+            for name in (sr.REWARD_MEMORY, sr.REWARD_BOTH):
+                assert sr.reward(name, stats, mean_ca_plddt=95.0) == \
+                    sr.EMPTY_COMPLETION_REWARD, (name, length)
+
+    def test_the_closed_form_rewards_are_unaffected_by_it(self):
+        """The environment arm has no structural term, so its support is the sequence."""
+
+        stats = sr.statistics("ACDEFGHI")
+        assert sr.within_structure_support(stats) is False
+        assert sr.reward(sr.REWARD_ENVIRONMENT, stats) > 0.0
+
+    def test_inside_the_support_a_structural_reward_is_paid(self):
+        low = sr.STRUCTURE_SUPPORT[0]
+        stats = sr.statistics(("ACDEFGHIKLMNPQRSTVWY" * 2)[:low])
+        assert sr.within_structure_support(stats) is True
+        assert sr.reward(sr.REWARD_MEMORY, stats, mean_ca_plddt=80.0) > 0.0
+
+    def test_inside_the_support_a_missing_fold_is_still_refused(self):
+        """The refusal is kept for the case it was written for."""
+
+        stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY" * 3)
+        with pytest.raises(ValueError, match="inside the declared structural support"):
+            sr.reward(sr.REWARD_MEMORY, stats)
+
+    def test_rewards_omits_a_structural_reward_only_when_it_could_be_measured(self):
+        inside = sr.statistics("ACDEFGHIKLMNPQRSTVWY" * 3)
+        assert sr.REWARD_MEMORY not in sr.rewards(inside)
+        outside = sr.statistics("ACDEFGHI")
+        # outside the support it is a measured zero, not an absent measurement
+        assert sr.rewards(outside)[sr.REWARD_MEMORY] == sr.EMPTY_COMPLETION_REWARD
+
+    def test_the_upper_end_of_the_support_is_honoured_too(self):
+        stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY" * 60)
+        assert stats.length > sr.STRUCTURE_SUPPORT[1]
+        assert sr.within_structure_support(stats) is False
+        assert sr.reward(sr.REWARD_MEMORY, stats, mean_ca_plddt=90.0) == \
+            sr.EMPTY_COMPLETION_REWARD

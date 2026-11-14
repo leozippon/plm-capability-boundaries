@@ -279,10 +279,11 @@ def collect(args: argparse.Namespace) -> int:
         entry: dict[str, Any] = {"id": row["id"], "stream": row["stream"],
                                  "sequence_sha256": row["sequence_sha256"],
                                  "stop_status": row["stop_status"], **stats.as_record()}
+        foldable = sr.within_structure_support(stats)
         for name, realisation in realisations.items():
-            plddt = (None if not sequence
+            plddt = (None if not foldable
                      else realisation["table"].get(row["sequence_sha256"]))
-            if sequence and plddt is None:
+            if foldable and plddt is None:
                 missing += 1
                 continue
             entry[f"mean_ca_plddt_{name}"] = plddt
@@ -313,9 +314,12 @@ def collect(args: argparse.Namespace) -> int:
         per_sequence.append(entry)
     if missing:
         raise SystemExit(
-            f"{missing} attempts of pool {args.pool!r} have no folded structure in the "
-            "evidence index; a pool is collected when its fold is complete, and a "
-            "partial pool is not reported as a pool"
+            f"{missing} attempts of pool {args.pool!r} are inside the declared "
+            f"structural support {sr.STRUCTURE_SUPPORT} and have no folded structure "
+            "in the evidence index; a pool is collected when its fold is complete, "
+            "and a partial pool is not reported as a pool. Completions outside that "
+            "support are not counted here: they are paid the empty-completion reward "
+            "by declaration and were never folded"
         )
 
     joined = out / f"{args.pool}_per_sequence.jsonl"

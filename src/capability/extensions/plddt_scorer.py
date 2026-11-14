@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..generation import structure_evidence as se
+from . import sequence_reward as sr
 
 #: The declared diffusion-sample count. This is the staged checkpoint's own
 #: published default and the count every tree in this project folded at, kept
@@ -149,6 +150,17 @@ class PlddtScorer:
 
         if not sequence:
             raise ValueError("an empty sequence has no structure to fold")
+        low, high = sr.STRUCTURE_SUPPORT
+        if not low <= len(sequence) <= high:
+            raise ValueError(
+                f"a {len(sequence)}-residue sequence is outside the declared "
+                f"structural support {sr.STRUCTURE_SUPPORT}, where a predicted "
+                "confidence describes the input rather than a structure; the reward "
+                "declaration pays the empty-completion value there and this "
+                "instrument declines to fold it. At one residue the model raises an "
+                "IndexError, so this is also the guard that keeps a tail outlier "
+                "from ending a run"
+            )
         cached = self._cache.get(sequence)
         if cached is not None:
             self.cache_hits += 1
@@ -180,12 +192,17 @@ class PlddtScorer:
     def read_many(self, sequences: Sequence[str]) -> list[FoldReading | None]:
         """One reading per sequence, ``None`` where the sequence is empty.
 
-        An empty completion is a measured outcome of the sampler rather than a
-        missing measurement, and the reward declaration decides what it is paid;
-        this instrument declines to invent a structure for it.
+        ``None`` for a sequence outside the declared structural support, empty
+        sequences included. Those are measured outcomes of the sampler rather than
+        missing measurements, the reward declaration decides what they are paid,
+        and this instrument declines to invent a structure for them -- which is
+        also what stops a single one-residue completion from ending a run of
+        thousands of folds.
         """
 
-        return [self.read(sequence) if sequence else None for sequence in sequences]
+        low, high = sr.STRUCTURE_SUPPORT
+        return [self.read(sequence) if low <= len(sequence) <= high else None
+                for sequence in sequences]
 
     def usage(self) -> dict[str, Any]:
         return {

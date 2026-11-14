@@ -266,6 +266,45 @@ HARD_CHARGE_PROVENANCE = (
 #: share of its own attainable maximum and the arms' rewards are commensurable.
 PLDDT_SCALE = 100.0
 
+#: Residue counts on which a structural statement is defined at all. This is the
+#: project's own declared structural support, ``unconditional_generation.POLICY``
+#: ``["structure_support"]``, adopted rather than reinvented; a test asserts the
+#: two have not drifted.
+#:
+#: It is a reward rule and not an engineering guard, and the measurement that
+#: forces it is this: the folding instrument returns a mean CA-pLDDT of 85.3 on a
+#: two-residue sequence and 87.8 on a four-residue one, against about 47 for the
+#: base pool's own samples. A predicted-confidence number on a tetrapeptide is not
+#: a structural statement, it is the instrument's behaviour on an input outside
+#: what it describes -- which is why the project does not fold below sixteen
+#: residues anywhere else either. Paying a structural reward there would open a
+#: channel on which the policy could score above every natural-length sequence by
+#: emitting peptides, and a gain earned that way would be an instrument artifact
+#: wearing the shape of an installed bias.
+#:
+#: A completion outside the support is therefore paid the empty-completion reward,
+#: which is a true statement under the objective rather than a missing
+#: measurement: the policy emitted something the objective is not about. The
+#: refusal in :func:`reward` is kept for the case it was written for, an
+#: in-support completion whose fold is absent.
+STRUCTURE_SUPPORT: tuple[int, int] = (16, 1024)
+
+STRUCTURE_SUPPORT_PROVENANCE = (
+    "unconditional_generation.POLICY['structure_support'], the residue range this "
+    "project folds in every lane. Outside it a structural reward is paid the "
+    "empty-completion value, because the instrument's output there describes the "
+    "input rather than a structure: measured mean CA-pLDDT is 85.3 at two residues "
+    "and 87.8 at four, against about 47 on the base pool's own samples, and it "
+    "raises an IndexError at one residue"
+)
+
+
+def within_structure_support(stats: SequenceStatistics) -> bool:
+    """Whether a structural statement is defined for this completion at all."""
+
+    low, high = STRUCTURE_SUPPORT
+    return low <= stats.length <= high
+
 
 @dataclass(frozen=True)
 class SequenceStatistics:
@@ -516,13 +555,19 @@ def reward(name: str, stats: SequenceStatistics, *, mean_ca_plddt: float | None 
 
     if name not in REWARD_NAMES:
         raise KeyError(f"unknown reward {name!r}; declared: {list(REWARD_NAMES)}")
-    if REWARD_NEEDS_STRUCTURE[name] and mean_ca_plddt is None and stats.length > 0:
-        raise ValueError(
-            f"reward {name!r} needs a mean CA-pLDDT and was given none for a "
-            f"{stats.length}-residue completion; refusing to score it as zero"
-        )
     if stats.length == 0:
         return EMPTY_COMPLETION_REWARD
+    if REWARD_NEEDS_STRUCTURE[name] and not within_structure_support(stats):
+        # Outside the declared structural support there is no structure to be
+        # confident about, so this is a measured outcome of the sampler and not a
+        # missing measurement. See STRUCTURE_SUPPORT.
+        return EMPTY_COMPLETION_REWARD
+    if REWARD_NEEDS_STRUCTURE[name] and mean_ca_plddt is None:
+        raise ValueError(
+            f"reward {name!r} needs a mean CA-pLDDT and was given none for a "
+            f"{stats.length}-residue completion, which is inside the declared "
+            f"structural support {STRUCTURE_SUPPORT}; refusing to score it as zero"
+        )
     if name == REWARD_ENVIRONMENT_HARD:
         return environment_reward_at(stats, charge_window=require_hard_window())
     scored = terms(stats, mean_ca_plddt=mean_ca_plddt)
@@ -547,7 +592,8 @@ def rewards(stats: SequenceStatistics, *, mean_ca_plddt: float | None = None) ->
 
     out: dict[str, float] = {}
     for name in REWARD_NAMES:
-        if REWARD_NEEDS_STRUCTURE[name] and mean_ca_plddt is None and stats.length > 0:
+        if (REWARD_NEEDS_STRUCTURE[name] and mean_ca_plddt is None
+                and stats.length > 0 and within_structure_support(stats)):
             continue
         if REWARD_NEEDS_DECLARED_WINDOW[name] and not hard_window_declared():
             continue
