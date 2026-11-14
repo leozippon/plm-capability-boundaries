@@ -266,6 +266,45 @@ def base_quantiles(values: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def reachability(pools: Path) -> dict[str, Any]:
+    """The base pool's declared reachability ladder, from its closed-form statistics.
+
+    Declared before any evaluation pool existed. It is the half of the
+    positive-control question the data in hand can answer: whether the declared
+    charge target was reachable by selection from the base at all, and how much
+    selection pressure each harder rung would need. The other half -- whether
+    reinforcement learning installs a bias against a target selection cannot reach
+    -- needs a policy trained against a harder rung and is not an analysis.
+    """
+
+    from src.capability.extensions import sequence_reward as sr
+
+    path = Path(pools) / f"{rp.POOL_BASE}_closed_form_statistics.jsonl"
+    if not path.is_file():
+        return {"diagnostic": "base_pool_reachability_ladder", "status": "not_measured",
+                "reason": f"no closed-form statistics for the base pool at {path}",
+                "note": rp.LADDER_NOTE}
+    streams: dict[int, list[Any]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if int(row["length"]) == 0:
+            continue
+        streams.setdefault(int(row["stream"]), []).append(
+            sr.SequenceStatistics(
+                sequence="", length=int(row["length"]),
+                net_charge=float(row["net_charge_ph7"]),
+                low_complexity_fraction=float(row["low_complexity_fraction"]),
+                composition_entropy_bits=float(row["composition_entropy_bits"]),
+                longest_single_residue_run=int(row["longest_single_residue_run"]),
+                distinct_5mer_fraction=float(row["distinct_5mer_fraction"]),
+                non_canonical_residues=int(row["non_canonical_residues"]),
+            )
+        )
+    return ra.reachability_curve(streams)
+
+
 def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, Any],
               support: Mapping[str, Any] | None) -> dict[str, Any]:
     """One pool's reading, by the decision rules declared before anything was trained."""
@@ -317,15 +356,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pools", type=Path, required=True,
                         help="directory holding the pools' value tables")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--supplied", type=Path, default=None,
-                        help="JSON of already-banded external families, keyed by family name")
+    parser.add_argument("--supplied", type=Path, action="append", default=None,
+                        help="JSON of already-banded external families, keyed by family "
+                             "name; repeatable, one per instrument that produced some")
     parser.add_argument("--support", type=Path, default=None,
                         help="JSON of each pool's support-tail share, keyed by pool")
     args = parser.parse_args(argv)
 
     values = read_values(args.pools)
-    supplied = (json.loads(args.supplied.read_text(encoding="utf-8"))
-                if args.supplied else {})
+    supplied: dict[str, Any] = {}
+    for path in args.supplied or ():
+        for family, record in json.loads(Path(path).read_text(encoding="utf-8")).items():
+            if family in supplied:
+                raise SystemExit(
+                    f"family {family!r} is supplied twice, by {path} and by an earlier "
+                    "file; one family has one instrument and one banding"
+                )
+            if family not in EXTERNAL_FAMILIES:
+                raise SystemExit(
+                    f"{path} supplies {family!r}, which this producer forms itself from "
+                    "the pool value tables; a family has one source"
+                )
+            supplied[family] = record
     support = (json.loads(args.support.read_text(encoding="utf-8"))
                if args.support else {})
 
@@ -345,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     reference = base_quantiles(values)
+    ladder = reachability(args.pools)
     readings = {pool: read_pool(pool, families, reference, support.get(pool))
                 for pool in rp.CONTRAST_POOLS}
     record = {
@@ -355,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         "pools_present": sorted(values),
         "pools_absent": [pool for pool in rp.EVALUATED_POOLS if pool not in values],
         "base_reference": reference,
+        "base_reachability_ladder": ladder,
         "families": families,
         "readings": readings,
         "decision_rules": rp.DECISION_RULES,

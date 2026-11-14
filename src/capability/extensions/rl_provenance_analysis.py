@@ -86,6 +86,41 @@ def pool_shortfall(streams: Mapping[int, Sequence[float]]) -> list[str]:
             if len(streams[stream]) < MIN_UNITS_PER_POOL]
 
 
+def streams_by_digest(rows: Sequence[Mapping[str, Any]],
+                      scores: Mapping[str, float], *, pool: str,
+                      quantity: str) -> dict[int, list[float]]:
+    """One pool's values laid out by stream, joined to its attempts on sequence digest.
+
+    Three instruments -- the fold, the likelihood and the homology search -- all
+    measure a *distinct sequence* and all have to be read back onto *attempts*,
+    because the attempt is the declared resampling unit and the stream is its
+    stratum. This is that join, in one place, so the three cannot drift into three
+    spellings of it. An empty attempt carries no measurement of any of the three
+    and is skipped; an attempt with a sequence and no score is a refusal, because a
+    family assembled from a partial pool is not a family over that pool.
+    """
+
+    out: dict[int, list[float]] = {}
+    missing: list[str] = []
+    for row in rows:
+        if int(row["length"]) == 0:
+            continue
+        value = scores.get(str(row["sequence_sha256"]))
+        if value is None:
+            missing.append(str(row["sequence_sha256"]))
+            continue
+        out.setdefault(int(row["stream"]), []).append(float(value))
+    if missing:
+        raise ValueError(
+            f"{len(missing)} attempts of pool {pool!r} have no {quantity} in the "
+            f"supplied table, the first being {missing[0]}; a family is assembled "
+            "from a complete pool and a partial one is not reported as a pool"
+        )
+    if not out:
+        raise ValueError(f"pool {pool!r} carries no attempt with a {quantity}")
+    return out
+
+
 def pool_mean(streams: Mapping[int, Sequence[float]]) -> float:
     """The stream-equal mean of one pool.
 
@@ -404,6 +439,105 @@ def k_star(columns: Mapping[str, Mapping[str, Any]], *, pool: str,
     else:
         out["redistribution"] = value <= rp.K_REDISTRIBUTION
     return out
+
+
+def reachability_curve(statistics: Mapping[int, Sequence[Any]], *,
+                       ladder: Sequence[tuple[float, float]] = rp.CHARGE_LADDER,
+                       ks: Sequence[int] = rp.K_GRID,
+                       draws: int = rp.BAND_DRAWS,
+                       confidence: float = rp.BAND_CONFIDENCE) -> dict[str, Any]:
+    """The base pool's expected best-of-k environment reward at each declared rung.
+
+    ``statistics`` maps a stream to that stream's
+    :class:`~.sequence_reward.SequenceStatistics`, in attempt order. Each rung's
+    reward is recomputed from those same measured statistics against that rung's
+    charge window, so the whole curve costs one pass over numbers already in hand
+    and no generation and no fold.
+
+    The curve is read off the base pool alone, so it is not a contrast and carries
+    no simultaneous contrast band. Each rung and each ``k`` gets a percentile
+    interval from the declared draws, which is stated as its construction rather
+    than borrowed from the families' statistic. The environment reward is exactly
+    computable, so no cross-fit applies and selection and evaluation are the same
+    numbers.
+
+    What it decides is declared in :data:`..rl_environment_provenance.LADDER_NOTE`:
+    whether the declared target was base-reachable, which is one half of what a
+    small ``k*`` leaves ambiguous. It does not decide the other half.
+    """
+
+    from . import sequence_reward as sr
+
+    streams = sorted(statistics)
+    rungs = []
+    for index, window in enumerate(ladder):
+        per_stream = {
+            stream: [sr.environment_reward_at(stats, charge_window=window)
+                     for stats in statistics[stream]]
+            for stream in streams
+        }
+        short = pool_shortfall(per_stream)
+        if short:
+            rungs.append({"window": list(window), "status": "unresolved",
+                          "reason": f"below the resampling floor on stream(s) {short}"})
+            continue
+        # The shaped reward is the mean of a charge term and a length term, and the
+        # length term is the easy one, so a best-of-k curve on the shaped reward
+        # stays high at every rung for reasons that have nothing to do with charge.
+        # The conjunction indicator is where target difficulty actually bites, and
+        # a rejection sampler's own hit probability is read off it directly. Both
+        # are reported; the conjunction is the one that answers the question.
+        hit = {
+            stream: [1.0 if (window[0] <= stats.net_charge <= window[1]
+                             and sr.LENGTH_WINDOW[0] <= stats.length <= sr.LENGTH_WINDOW[1]
+                             and stats.low_complexity_fraction < sr.LOW_COMPLEXITY_LIMIT)
+                     else 0.0
+                     for stats in statistics[stream]]
+            for stream in streams
+        }
+        pooled = np.concatenate([np.asarray(per_stream[stream], dtype=float)
+                                 for stream in streams])
+        pooled_hit = np.concatenate([np.asarray(hit[stream], dtype=float)
+                                     for stream in streams])
+        point = best_of_k(pooled, pooled, ks)
+        hit_point = best_of_k(pooled_hit, pooled_hit, ks)
+        drawn = best_of_k_draws(per_stream, per_stream, family=rp.FAMILY_BEST_OF_K
+                                + "__environment", column=50 + index, ks=ks, draws=draws)
+        drawn_hit = best_of_k_draws(hit, hit, family=rp.FAMILY_BEST_OF_K
+                                    + "__environment", column=70 + index, ks=ks,
+                                    draws=draws)
+        low = (1.0 - confidence) / 2.0
+
+        def banded(points, draw_matrix):
+            return {str(k): {"point": float(points[position]),
+                             "interval": [
+                                 float(np.quantile(draw_matrix[:, position], low)),
+                                 float(np.quantile(draw_matrix[:, position], 1.0 - low))]}
+                    for position, k in enumerate(ks)}
+
+        rungs.append({
+            "window": list(window),
+            "status": "resolved",
+            # the share of the base pool that satisfies this rung's conjunction, which
+            # is the probability a single base draw hits the target
+            "conjunction_rate": float(pooled_hit.mean()),
+            "mean_reward": float(pooled.mean()),
+            "r_at_k": banded(point, drawn),
+            "conjunction_r_at_k": banded(hit_point, drawn_hit),
+        })
+    return {
+        "diagnostic": "base_pool_reachability_ladder",
+        "note": rp.LADDER_NOTE,
+        "method": ("expected best-of-k environment reward over the base pool's own "
+                   "order statistics at each declared charge window, with percentile "
+                   "intervals from the declared resample of the base pool; a level "
+                   "curve on one pool, not a contrast, and not read under the "
+                   "families' simultaneous band"),
+        "k_grid": [int(k) for k in ks],
+        "draws": int(draws),
+        "confidence": float(confidence),
+        "rungs": rungs,
+    }
 
 
 def support_tail_share(pool_nll: Sequence[float], base_pool_nll: Sequence[float], *,

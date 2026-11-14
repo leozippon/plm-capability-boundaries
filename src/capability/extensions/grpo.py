@@ -355,12 +355,13 @@ def token_log_probs(model, input_ids, attention_mask, *, prompt_length: int):
     return torch.log_softmax(span, dim=-1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
 
 
-def sequence_entropy(model, input_ids, attention_mask, action_mask, *, prompt_length: int) -> float:
-    """Token-mean predictive entropy over the action span, in nats.
+def token_entropies(model, input_ids, attention_mask, *, prompt_length: int):
+    """Predictive entropy of each generated position, in nats, as a (batch, tokens) tensor.
 
-    Reported rather than optimised. The entropy change between base and policy is
-    one of this experiment's declared endpoints, so an entropy bonus in the loss
-    would be optimising an endpoint and there is none.
+    The entropy of the policy's own next-token distribution at each step of the
+    completion, which is a property of the model and not of the token it happened
+    to sample. One forward pass, log-softmax in float32 for the same reason
+    :func:`token_log_probs` takes it there.
     """
 
     import torch
@@ -370,9 +371,36 @@ def sequence_entropy(model, input_ids, attention_mask, action_mask, *, prompt_le
         logits = output.logits if hasattr(output, "logits") else output[0]
         span = logits[:, prompt_length - 1 : -1, :].float()
         logp = torch.log_softmax(span, dim=-1)
-        per_token = -(logp.exp() * logp).sum(dim=-1)
-        mask = action_mask.to(per_token.dtype)
-        return float((per_token * mask).sum().item() / max(float(mask.sum().item()), 1.0))
+        return -(logp.exp() * logp).sum(dim=-1)
+
+
+def sequence_entropy(model, input_ids, attention_mask, action_mask, *, prompt_length: int) -> float:
+    """Token-mean predictive entropy over a group's whole action span, in nats.
+
+    Reported rather than optimised. The entropy change between base and policy is
+    one of this experiment's declared endpoints, so an entropy bonus in the loss
+    would be optimising an endpoint and there is none.
+    """
+
+    per_token = token_entropies(model, input_ids, attention_mask, prompt_length=prompt_length)
+    mask = action_mask.to(per_token.dtype)
+    return float((per_token * mask).sum().item() / max(float(mask.sum().item()), 1.0))
+
+
+def per_sequence_entropy(model, input_ids, attention_mask, action_mask, *,
+                         prompt_length: int) -> list[float]:
+    """Each completion's own token-mean predictive entropy, in nats.
+
+    The group-level mean cannot serve a resampling family: the declared
+    resampling unit is the sequence, so the entropy endpoint needs one value per
+    sequence rather than one per group.
+    """
+
+    per_token = token_entropies(model, input_ids, attention_mask, prompt_length=prompt_length)
+    mask = action_mask.to(per_token.dtype)
+    totals = (per_token * mask).sum(dim=1)
+    counts = mask.sum(dim=1).clamp(min=1)
+    return [float(value) for value in (totals / counts)]
 
 
 # ------------------------------------------------------------- checkpointing

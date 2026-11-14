@@ -346,8 +346,18 @@ def complexity_term(stats: SequenceStatistics) -> float:
     )
 
 
-def charge_term(stats: SequenceStatistics) -> float:
-    low, high = CHARGE_WINDOW
+def charge_term(stats: SequenceStatistics,
+                window: tuple[float, float] = CHARGE_WINDOW) -> float:
+    """The charge term, at the declared window or at another one.
+
+    The window is a parameter because the base pool's *reachability* at harder
+    targets is a question the closed-form statistics can answer for nothing: the
+    same measured net charge, read against a window further into the base's tail,
+    says how much selection pressure a harder target would need. The default is
+    the declared window and is the only one any reward is paid at.
+    """
+
+    low, high = window
     return plateau(stats.net_charge, low=low, high=high, half_width=CHARGE_HALF_WIDTH)
 
 
@@ -393,6 +403,29 @@ def terms(stats: SequenceStatistics, *, mean_ca_plddt: float | None) -> dict[str
 #: the denominator at this reward, which is the lane's existing rule for an
 #: empty continuation.
 EMPTY_COMPLETION_REWARD = 0.0
+
+
+def environment_objective(stats: SequenceStatistics, *,
+                          charge_window: tuple[float, float] = CHARGE_WINDOW) -> float:
+    """The environment arm's objective term: the mean of its charge and length terms."""
+
+    return 0.5 * (charge_term(stats, charge_window) + length_term(stats))
+
+
+def environment_reward_at(stats: SequenceStatistics, *,
+                          charge_window: tuple[float, float]) -> float:
+    """The environment reward at an arbitrary charge window, constraint included.
+
+    Used only by the declared reachability ladder, which asks what the *base* pool
+    scores at harder targets. No policy is ever paid at a window other than the
+    declared one, and a reward read at another window is labelled as a diagnostic
+    wherever it appears.
+    """
+
+    if stats.length == 0:
+        return EMPTY_COMPLETION_REWARD
+    return float(complexity_term(stats)
+                 * environment_objective(stats, charge_window=charge_window))
 
 
 def reward(name: str, stats: SequenceStatistics, *, mean_ca_plddt: float | None = None) -> float:

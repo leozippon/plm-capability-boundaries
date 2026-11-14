@@ -511,3 +511,47 @@ class TestTrajectory:
         moved = grpo.optimisation_moved(trajectory, window=3)
         assert moved["measurable"] is True
         assert moved["change"] == pytest.approx(0.7, abs=1e-9)
+
+
+class TestEntropy:
+    """Per-sequence entropy, which the declared entropy family resamples."""
+
+    def _batch(self):
+        ids = torch.tensor([[1, 4, 6, 7, 8, 0], [1, 4, 9, 10, 0, 0]])
+        mask = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 0, 0]])
+        action = mask[:, 2:].bool()
+        return ids, mask, action
+
+    def test_each_sequence_carries_its_own_value(self):
+        model = _tiny_policy()
+        ids, mask, action = self._batch()
+        values = grpo.per_sequence_entropy(model, ids, mask, action, prompt_length=2)
+        assert len(values) == 2
+        assert all(0.0 < value <= float(np.log(31)) for value in values)
+
+    def test_the_group_mean_is_the_token_weighted_mean_of_the_per_sequence_values(self):
+        """A per-sequence family and a group diagnostic must not disagree."""
+
+        model = _tiny_policy()
+        ids, mask, action = self._batch()
+        values = grpo.per_sequence_entropy(model, ids, mask, action, prompt_length=2)
+        counts = action.sum(dim=1).tolist()
+        weighted = sum(v * c for v, c in zip(values, counts)) / sum(counts)
+        group = grpo.sequence_entropy(model, ids, mask, action, prompt_length=2)
+        assert group == pytest.approx(weighted, abs=1e-5)
+
+    def test_padded_positions_do_not_enter_a_sequence_value(self):
+        model = _tiny_policy()
+        ids, mask, action = self._batch()
+        padded = grpo.per_sequence_entropy(model, ids, mask, action, prompt_length=2)
+        short_ids = torch.tensor([[1, 4, 9, 10]])
+        short_mask = torch.ones_like(short_ids)
+        alone = grpo.per_sequence_entropy(model, short_ids, short_mask,
+                                          short_mask[:, 2:].bool(), prompt_length=2)
+        assert padded[1] == pytest.approx(alone[0], abs=1e-5)
+
+    def test_token_entropies_has_one_value_per_generated_position(self):
+        model = _tiny_policy()
+        ids, mask, _ = self._batch()
+        per_token = grpo.token_entropies(model, ids, mask, prompt_length=2)
+        assert tuple(per_token.shape) == (2, ids.shape[1] - 2)

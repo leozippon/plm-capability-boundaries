@@ -481,3 +481,115 @@ class TestDeclaration:
         assert contract["declared_in"] == "docs/rl-environment-provenance.md"
         assert json.loads(json.dumps(contract))["campaign"] == rp.CAMPAIGN
         assert set(contract["families"]) == set(rp.FAMILY_SIZES)
+
+
+class TestDigestJoin:
+    """The one join from distinct-sequence measurements back onto attempts."""
+
+    def _rows(self):
+        return [
+            {"stream": 0, "length": 100, "sequence_sha256": "aa"},
+            {"stream": 0, "length": 100, "sequence_sha256": "aa"},
+            {"stream": 1, "length": 90, "sequence_sha256": "bb"},
+            {"stream": 2, "length": 0, "sequence_sha256": "cc"},
+        ]
+
+    def test_a_shared_sequence_is_counted_once_per_attempt(self):
+        """The attempt is the resampling unit, so a duplicate sequence is two units."""
+
+        streams = ra.streams_by_digest(self._rows(), {"aa": 1.0, "bb": 2.0},
+                                       pool="base", quantity="likelihood")
+        assert streams == {0: [1.0, 1.0], 1: [2.0]}
+
+    def test_an_empty_attempt_carries_no_measurement_and_is_skipped(self):
+        streams = ra.streams_by_digest(self._rows(), {"aa": 1.0, "bb": 2.0},
+                                       pool="base", quantity="likelihood")
+        assert 2 not in streams
+
+    def test_a_scored_table_missing_a_sequence_is_refused(self):
+        with pytest.raises(ValueError, match="have no likelihood in the supplied table"):
+            ra.streams_by_digest(self._rows(), {"aa": 1.0}, pool="base",
+                                 quantity="likelihood")
+
+    def test_a_pool_with_nothing_scorable_is_refused(self):
+        with pytest.raises(ValueError, match="no attempt with a likelihood"):
+            ra.streams_by_digest([{"stream": 0, "length": 0, "sequence_sha256": "cc"}],
+                                 {}, pool="base", quantity="likelihood")
+
+    def test_the_join_feeds_the_band_machinery_directly(self):
+        rng = np.random.default_rng(42)
+        rows = [{"stream": s, "length": 100, "sequence_sha256": f"{s}-{i}"}
+                for s in range(rp.STREAMS) for i in range(32)]
+        scores = {row["sequence_sha256"]: float(rng.normal(1.0, 0.2)) for row in rows}
+        streams = ra.streams_by_digest(rows, scores, pool="base", quantity="likelihood")
+        assert sorted(streams) == list(range(rp.STREAMS))
+        assert ra.pool_mean(streams) == pytest.approx(1.0, abs=0.15)
+
+
+class TestReachabilityLadder:
+    """The base pool's own reachability at harder targets, declared before the pools."""
+
+    def _statistics(self, n, *, charge_mean, length_mean, seed):
+        from src.capability.extensions import sequence_reward as sr
+
+        rng = np.random.default_rng(seed)
+        return [sr.SequenceStatistics(
+            sequence="", length=int(max(1, rng.normal(length_mean, 25))),
+            net_charge=float(rng.normal(charge_mean, 10.0)),
+            low_complexity_fraction=0.1, composition_entropy_bits=3.3,
+            longest_single_residue_run=4, distinct_5mer_fraction=0.9,
+            non_canonical_residues=0) for _ in range(n)]
+
+    def test_the_ladder_is_strictly_harder_and_starts_at_the_declared_window(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        assert rp.CHARGE_LADDER[0] == sr.CHARGE_WINDOW
+        lows = [low for low, _ in rp.CHARGE_LADDER]
+        assert lows == sorted(lows) and len(set(lows)) == len(lows)
+        assert len({high - low for low, high in rp.CHARGE_LADDER}) == 1
+
+    def test_the_conjunction_rate_falls_as_the_target_hardens(self):
+        statistics = {stream: self._statistics(400, charge_mean=0.0, length_mean=95,
+                                               seed=stream)
+                      for stream in range(rp.STREAMS)}
+        curve = ra.reachability_curve(statistics, ks=[1, 8, 64], draws=200)
+        rates = [rung["conjunction_rate"] for rung in curve["rungs"]]
+        assert all(rung["status"] == "resolved" for rung in curve["rungs"])
+        assert rates[0] > rates[-1]
+
+    def test_the_conjunction_curve_is_the_rejection_sampler_s_own_hit_probability(self):
+        """R@k on a 0/1 indicator with base rate p is 1 - (1 - p)^k."""
+
+        statistics = {stream: self._statistics(600, charge_mean=0.0, length_mean=95,
+                                               seed=10 + stream)
+                      for stream in range(rp.STREAMS)}
+        curve = ra.reachability_curve(statistics, ks=[1, 2, 8, 64], draws=200)
+        rung = curve["rungs"][0]
+        p = rung["conjunction_rate"]
+        assert p > 0.0
+        for k in (1, 2, 8, 64):
+            expected = 1.0 - (1.0 - p) ** k
+            assert rung["conjunction_r_at_k"][str(k)]["point"] == pytest.approx(
+                expected, abs=2e-3)
+
+    def test_it_carries_percentile_intervals_and_says_they_are_not_the_families_band(self):
+        statistics = {stream: self._statistics(200, charge_mean=0.0, length_mean=95,
+                                               seed=20 + stream)
+                      for stream in range(rp.STREAMS)}
+        curve = ra.reachability_curve(statistics, ks=[1, 8], draws=200)
+        assert "not a contrast" in curve["method"]
+        rung = curve["rungs"][0]
+        low, high = rung["r_at_k"]["8"]["interval"]
+        assert low <= rung["r_at_k"]["8"]["point"] <= high
+
+    def test_a_stream_below_the_resampling_floor_leaves_a_rung_unresolved(self):
+        statistics = {0: self._statistics(200, charge_mean=0.0, length_mean=95, seed=1),
+                      1: self._statistics(3, charge_mean=0.0, length_mean=95, seed=2),
+                      2: self._statistics(200, charge_mean=0.0, length_mean=95, seed=3)}
+        curve = ra.reachability_curve(statistics, ks=[1, 8], draws=100)
+        assert all(rung["status"] == "unresolved" for rung in curve["rungs"])
+        assert "resampling floor" in curve["rungs"][0]["reason"]
+
+    def test_it_states_the_half_of_the_question_it_cannot_answer(self):
+        assert "cannot answer the other half" in rp.LADDER_NOTE
+        assert "trained against a higher rung" in rp.LADDER_NOTE

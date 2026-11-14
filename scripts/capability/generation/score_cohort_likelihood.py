@@ -55,20 +55,36 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-def load_scorer(arm: str, device: str, dtype: str = "float32"):
+def load_scorer(arm: str, device: str, dtype: str = "float32", checkpoint=None):
     """Model, tokenizer, prompt ids and residue ids, all under the generation contract.
 
     Weights load directly in ``dtype`` (default float32, not the bfloat16 the sampler
     used): the likelihood is a ranking statistic and bf16 forward noise (about 5e-3
     in mean NLL between batch compositions) is not needed here.
+
+    ``checkpoint`` scores weights other than the arm's declared ones under that arm's
+    declaration -- a fine-tuned or reinforcement-trained checkpoint of a declared
+    base. It is honoured or refused, never ignored: ``load_arm_spec`` verifies the
+    declared depth and width against the live config of the directory it is actually
+    given, so a checkpoint that is not that architecture fails the load instead of
+    producing a number. ``None`` keeps the declared path, which is every existing
+    caller's behaviour unchanged. This is the same rule ``load_generator`` applies,
+    and for the same reason: a likelihood attributed to a base while a tuned
+    checkpoint produced it is the exact failure a paired contrast is made of.
     """
+
+    import dataclasses
+    from pathlib import Path as _Path
 
     from src.capability.core.arms import load_arm_spec
     from src.capability.generation import objective_tuned_arms as ot
     from src.capability.generation import unconditional_generation as ug
 
     spec = ug.generation_point(arm)
-    handle = load_arm_spec(ot.spec_for(arm), device=device, dtype=dtype)
+    declared = ot.spec_for(arm)
+    if checkpoint is not None:
+        declared = dataclasses.replace(declared, path=_Path(checkpoint))
+    handle = load_arm_spec(declared, device=device, dtype=dtype)
     model, tokenizer = handle.model, handle.tokenizer
     model.eval()
     ot.prompt_contract(arm, tokenizer, spec.prompt)
@@ -91,6 +107,7 @@ def load_scorer(arm: str, device: str, dtype: str = "float32"):
         "close_token": spec.close_token,
         "close_id": int(close_id),
         "dtype": dtype,
+        "checkpoint": None if checkpoint is None else str(checkpoint),
     }
 
 

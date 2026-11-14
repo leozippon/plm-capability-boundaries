@@ -417,6 +417,36 @@ K_STAR_RULE = (
     "infinite"
 )
 
+#: The reachability ladder: charge windows further into the base's tail than the
+#: declared one, at the same width and the same half-width, declared here before
+#: any arm's evaluation pool existed.
+#:
+#: It exists because of an asymmetry the declared design cannot otherwise resolve.
+#: If the environment arm's gain turns out reachable by selection from the base --
+#: a small ``k*`` -- two readings fit: the method installs nothing at this scale
+#: even against a closed-form reward, or the declared target was simply
+#: base-reachable all along and the experiment had no real positive control. Those
+#: predict the same ``k*``. What separates them is how ``k*`` behaves as the target
+#: gets harder, and the base pool's half of that costs nothing: the charge of every
+#: sampled sequence is already measured, so reading it against a harder window says
+#: how much selection pressure that target would need. The ladder is therefore a
+#: property of the *base* pool and is read as a diagnostic, never as a reward: no
+#: policy is paid at any window but the declared one.
+CHARGE_LADDER: tuple[tuple[float, float], ...] = (
+    (8.0, 12.0), (14.0, 18.0), (20.0, 24.0), (26.0, 30.0), (32.0, 36.0),
+)
+
+LADDER_NOTE = (
+    "the base pool's expected best-of-k reward at each rung of the declared charge "
+    "ladder, with the first rung the declared target itself. It answers one half of "
+    "the ambiguity a small k* leaves: whether the declared target was base-reachable. "
+    "It cannot answer the other half -- whether reinforcement learning installs a bias "
+    "against a target selection cannot reach -- because the trained policies were "
+    "optimised against the declared window and are off-objective at every higher rung. "
+    "That half needs a policy trained against a higher rung, which is a design change "
+    "and not an analysis"
+)
+
 #: The quantile of the base pool's own base-model NLL above which a policy sample
 #: counts as outside the base's observed support. Its null value is one minus the
 #: quantile, which is what the containment reading is tested against.
@@ -668,6 +698,20 @@ def _check_declarations() -> None:
         raise AssertionError("the base pool is the control and carries no contrast column")
     if sorted(K_GRID) != list(K_GRID) or K_GRID[0] != 1:
         raise AssertionError("the k grid is increasing and starts at one")
+    if CHARGE_LADDER[0] != sr.CHARGE_WINDOW:
+        raise AssertionError(
+            f"the ladder's first rung is the declared charge window; got "
+            f"{CHARGE_LADDER[0]} against {sr.CHARGE_WINDOW}"
+        )
+    widths = {high - low for low, high in CHARGE_LADDER}
+    if len(widths) != 1:
+        raise AssertionError(
+            f"every rung of the ladder has the declared window's width, or a rung is "
+            f"harder for two reasons at once; got widths {sorted(widths)}"
+        )
+    lows = [low for low, _ in CHARGE_LADDER]
+    if lows != sorted(lows) or len(set(lows)) != len(lows):
+        raise AssertionError("the ladder is strictly increasing in difficulty")
     if K_REDISTRIBUTION not in K_GRID:
         raise AssertionError(
             f"the redistribution threshold {K_REDISTRIBUTION} is a point of the declared "
