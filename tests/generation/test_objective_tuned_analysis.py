@@ -257,6 +257,28 @@ def test_the_margin_and_the_decision_rule_are_the_declared_ones():
     assert ota.margin_finding([0.5, 4.0], 2.0)["finding"] == ota.UNRESOLVED
 
 
+def test_an_interval_beyond_the_negative_margin_is_not_described_as_spanning_it():
+    """The unresolved state is one word for two situations; the reason is not.
+
+    The campaign's primary cell is the below-30%-identity 10B contrast, whose
+    interval lies wholly past the negative margin. Reporting that as an interval
+    that "spans" its margin describes the opposite of the measurement, in a
+    column that feeds the write-up, so the two situations carry different
+    sentences while keeping the one finding state the vocabulary has for them.
+    """
+
+    beyond = ota.margin_finding([-12.193416721734723, -4.31528250734277], 2.8896638248068243)
+    straddling = ota.margin_finding([-5.0, 9.0], 2.0)
+    assert beyond["finding"] == straddling["finding"] == ota.UNRESOLVED
+    assert "spans" not in beyond["reason"]
+    assert "at or below the -2.890-point margin" in beyond["reason"]
+    assert "excluded rather than unmeasured" in beyond["reason"]
+    assert "spans the 2.000-point margin" in straddling["reason"]
+    # The boundary case belongs with the interval that does not reach past it.
+    assert "spans" not in ota.margin_finding([-9.0, -2.0], 2.0)["reason"]
+    assert "spans" in ota.margin_finding([-9.0, -1.0], 2.0)["reason"]
+
+
 # ---------------------------------------------------------------- end to end
 
 def test_primary_contrast_on_real_measurements(analysis):

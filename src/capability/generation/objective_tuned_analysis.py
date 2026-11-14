@@ -333,6 +333,18 @@ def margin_finding(interval: Sequence[float], margin: float) -> dict[str, Any]:
     is a bounded negative at the stated size whichever sign it carries. Anything
     else -- including a resolved positive smaller than the margin -- is
     unresolved with respect to the margin, and is not evidence of absence.
+
+    The unresolved state covers two situations that are not the same, so it does
+    not describe them with one sentence. An interval straddling a margin boundary
+    is unresolved because it is too wide to place. An interval lying wholly past
+    the *negative* margin is unresolved only in the narrow sense that this
+    vocabulary has no state for it: it is a resolved effect of more than the
+    margin's size in the opposite direction, and it excludes a design-relevant
+    bias rather than failing to measure one. Saying it "spans" the margin is
+    false, and it was false about exactly the cell this lane reads as primary --
+    the below-30%-identity 10B contrast at [-12.193, -4.315] against a 2.890
+    margin, which reaches nowhere near its margin from below. The finding state
+    is unchanged by this distinction; only the sentence that explains it is.
     """
 
     low, high = (float(interval[0]), float(interval[1]))
@@ -345,6 +357,11 @@ def margin_finding(interval: Sequence[float], margin: float) -> dict[str, Any]:
     if -size < low and high < size:
         return {"finding": BOUNDED_NEGATIVE,
                 "reason": f"the whole interval lies inside +-{size:.3f} points"}
+    if high <= -size:
+        return {"finding": UNRESOLVED,
+                "reason": (f"the whole interval lies at or below the -{size:.3f}-point margin: "
+                           f"the margin is exceeded in the opposite direction, so a "
+                           f"design-relevant bias is excluded rather than unmeasured")}
     return {"finding": UNRESOLVED,
             "reason": f"the interval spans the {size:.3f}-point margin; the margin is not resolved"}
 
