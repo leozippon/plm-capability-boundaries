@@ -171,11 +171,17 @@ def best_of_k_families(values: Mapping[str, Any]) -> dict[str, Any]:
         if selection is not None and evaluation is not None:
             curve = ra.best_of_k_draws(selection, evaluation, family=family, column=0,
                                        ks=rp.K_GRID)
+            order = sorted(selection)
             pooled_selection = np.concatenate([np.asarray(selection[stream], dtype=float)
-                                               for stream in sorted(selection)])
+                                               for stream in order])
             pooled_evaluation = np.concatenate([np.asarray(evaluation[stream], dtype=float)
-                                                for stream in sorted(evaluation)])
-            point = ra.best_of_k(pooled_selection, pooled_evaluation, rp.K_GRID)
+                                                for stream in order])
+            # Stream-equal, so that the k = 1 column is exactly minus the reward
+            # gain and k = 1 is the no-selection baseline it is meant to be.
+            probability = ra.stream_equal_member_probability(
+                [len(selection[stream]) for stream in order])
+            point = ra.best_of_k(pooled_selection, pooled_evaluation, rp.K_GRID,
+                                 probability)
         for pool in rp.CONTRAST_POOLS:
             side = _streams(values, pool, reward, "A")
             for index, k in enumerate(rp.K_GRID):

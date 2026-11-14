@@ -161,6 +161,10 @@ def best_of_k_weights(n: int, k: int) -> np.ndarray:
     ``k`` draws lands at rank ``i`` or worse, minus the chance that every one
     lands strictly worse. At ``k = 1`` this is uniform, and as ``k`` grows the
     mass moves onto rank one, which is what selection does.
+
+    :func:`rank_weights` is the same statement for a pool whose members are not
+    equally likely to be drawn, which is the case this experiment's declared
+    stream-equal weighting puts it in.
     """
 
     if n < 1 or k < 1:
@@ -168,6 +172,49 @@ def best_of_k_weights(n: int, k: int) -> np.ndarray:
     tail = np.arange(n, -1, -1, dtype=float) / float(n)
     powers = tail ** float(k)
     return powers[:-1] - powers[1:]
+
+
+def rank_weights(ranked_probability: np.ndarray, k: int) -> np.ndarray:
+    """The same weights for a pool whose members carry unequal draw probabilities.
+
+    ``ranked_probability`` is each member's probability of being the one drawn,
+    in rank order, best first, summing to one along the last axis. The weight on
+    a rank is the chance that all ``k`` draws land at that rank or worse minus
+    the chance that all land strictly worse, which for unequal probabilities is a
+    difference of powers of the *cumulative tail* rather than of ``(n - i)/n``.
+
+    This exists because the declared pool mean is stream-equal and the best-of-k
+    side was pooling sequence-equally. The two sides of one contrast have to be
+    the same estimator, and the invariant that makes that checkable is ``R@1``
+    equalling the pool mean exactly, so that the ``k = 1`` column is precisely
+    minus the reward gain and ``k = 1`` is the no-selection baseline it is
+    supposed to be.
+    """
+
+    if k < 1:
+        raise ValueError("a best-of-k weight needs a positive k")
+    tail = np.concatenate(
+        [np.cumsum(ranked_probability[..., ::-1], axis=-1)[..., ::-1],
+         np.zeros(ranked_probability.shape[:-1] + (1,))], axis=-1
+    )
+    powers = tail ** float(k)
+    return powers[..., :-1] - powers[..., 1:]
+
+
+def stream_equal_member_probability(sizes: Sequence[int]) -> np.ndarray:
+    """Each member's draw probability under the declared stream-equal weighting.
+
+    A draw picks one of the declared streams with equal probability and then one
+    of that stream's members with equal probability, which is exactly what a
+    stream-equal pool mean is the expectation of. Streams of equal size give the
+    uniform weights back.
+    """
+
+    counts = [int(size) for size in sizes]
+    if not counts or any(size < 1 for size in counts):
+        raise ValueError("a stream-equal weighting needs a non-empty size per stream")
+    share = 1.0 / len(counts)
+    return np.concatenate([np.full(size, share / size, dtype=float) for size in counts])
 
 
 def _tie_averaged(selection: np.ndarray, evaluation: np.ndarray) -> np.ndarray:
@@ -196,22 +243,30 @@ def _tie_averaged(selection: np.ndarray, evaluation: np.ndarray) -> np.ndarray:
 
 
 def best_of_k(selection: Sequence[float], evaluation: Sequence[float],
-              ks: Sequence[int] = rp.K_GRID) -> np.ndarray:
+              ks: Sequence[int] = rp.K_GRID,
+              member_probability: Sequence[float] | None = None) -> np.ndarray:
     """``R@k`` for each ``k``: the expected evaluation value of the selected sample.
 
     ``selection`` is the score the selector ranks by and ``evaluation`` the score
     the selected sample is credited with. They are the same vector for an exactly
     computable reward and two independent folded realisations for a reward that
     contains the pLDDT term.
+
+    ``member_probability`` is each member's chance of being the one drawn, which
+    the declared stream-equal weighting makes non-uniform whenever the streams
+    retained different numbers of non-empty attempts. ``None`` is the uniform
+    case and is what the closed-form checks use.
     """
 
     rows = _best_of_k_rows(np.asarray([selection], dtype=float),
-                           np.asarray([evaluation], dtype=float), ks)
+                           np.asarray([evaluation], dtype=float), ks,
+                           member_probability=member_probability)
     return rows[0]
 
 
 def _best_of_k_rows(selection: np.ndarray, evaluation: np.ndarray,
-                    ks: Sequence[int]) -> np.ndarray:
+                    ks: Sequence[int],
+                    member_probability: Sequence[float] | None = None) -> np.ndarray:
     """``R@k`` per row of a (rows, pool) pair of score matrices."""
 
     if selection.shape != evaluation.shape or selection.ndim != 2:
@@ -225,8 +280,22 @@ def _best_of_k_rows(selection: np.ndarray, evaluation: np.ndarray,
     index = np.arange(selection.shape[0])[:, None]
     ranked_selection = selection[index, order]
     ranked_evaluation = _tie_averaged(ranked_selection, evaluation[index, order])
-    weights = np.stack([best_of_k_weights(pool, int(k)) for k in ks], axis=1)
-    return ranked_evaluation @ weights
+    if member_probability is None:
+        weights = np.stack([best_of_k_weights(pool, int(k)) for k in ks], axis=1)
+        return ranked_evaluation @ weights
+    probability = np.asarray(member_probability, dtype=float)
+    if probability.shape != (pool,):
+        raise ValueError(
+            f"one draw probability per pool member; got {probability.shape} for {pool}"
+        )
+    if not math.isclose(float(probability.sum()), 1.0, rel_tol=0, abs_tol=1e-9):
+        raise ValueError("the member draw probabilities sum to one")
+    ranked_probability = probability[order]
+    out = np.empty((selection.shape[0], len(ks)), dtype=float)
+    for position, k in enumerate(ks):
+        out[:, position] = (ranked_evaluation
+                            * rank_weights(ranked_probability, int(k))).sum(axis=1)
+    return out
 
 
 def best_of_k_draws(selection: Mapping[int, Sequence[float]],
@@ -259,6 +328,14 @@ def best_of_k_draws(selection: Mapping[int, Sequence[float]],
         blocks_selection.append(chosen)
         blocks_evaluation.append(scored)
         generators.append(np.random.default_rng(rp.pool_draw_seed(family, column, 0, index)))
+    # The declared pool mean is stream-equal, so the draw probability a best-of-k
+    # curve is taken under has to be stream-equal too. Pooling sequence-equally --
+    # which this did until the k = 1 column was checked against the reward gain it
+    # is supposed to be the negative of -- gives the two sides of one contrast two
+    # different estimators whenever the streams retained different numbers of
+    # non-empty attempts.
+    probability = stream_equal_member_probability([block.size for block in
+                                                   blocks_selection])
     out = np.empty((draws, len(ks)), dtype=float)
     for start in range(0, draws, bd.DRAW_CHUNK):
         stop = min(start + bd.DRAW_CHUNK, draws)
@@ -274,7 +351,8 @@ def best_of_k_draws(selection: Mapping[int, Sequence[float]],
         scored = np.concatenate(
             [block[index] for block, index in zip(blocks_evaluation, indices)], axis=1
         )
-        out[start:stop] = _best_of_k_rows(chosen, scored, ks)
+        out[start:stop] = _best_of_k_rows(chosen, scored, ks,
+                                          member_probability=probability)
     return out
 
 
@@ -499,8 +577,10 @@ def reachability_curve(statistics: Mapping[int, Sequence[Any]], *,
                                  for stream in streams])
         pooled_hit = np.concatenate([np.asarray(hit[stream], dtype=float)
                                      for stream in streams])
-        point = best_of_k(pooled, pooled, ks)
-        hit_point = best_of_k(pooled_hit, pooled_hit, ks)
+        probability = stream_equal_member_probability(
+            [len(per_stream[stream]) for stream in streams])
+        point = best_of_k(pooled, pooled, ks, probability)
+        hit_point = best_of_k(pooled_hit, pooled_hit, ks, probability)
         drawn = best_of_k_draws(per_stream, per_stream, family=rp.FAMILY_BEST_OF_K
                                 + "__environment", column=50 + index, ks=ks, draws=draws)
         drawn_hit = best_of_k_draws(hit, hit, family=rp.FAMILY_BEST_OF_K
@@ -520,8 +600,9 @@ def reachability_curve(statistics: Mapping[int, Sequence[Any]], *,
             "status": "resolved",
             # the share of the base pool that satisfies this rung's conjunction, which
             # is the probability a single base draw hits the target
-            "conjunction_rate": float(pooled_hit.mean()),
-            "mean_reward": float(pooled.mean()),
+            # stream-equal, as every mean in this experiment is
+            "conjunction_rate": float(pooled_hit @ probability),
+            "mean_reward": float(pooled @ probability),
             "r_at_k": banded(point, drawn),
             "conjunction_r_at_k": banded(hit_point, drawn_hit),
         })

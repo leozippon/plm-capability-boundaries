@@ -765,3 +765,78 @@ class TestNotMeasuredIsNotANull:
         got = self._reading(ra.optimisation_finding([-0.3, -0.1]))
         assert got["reading"] == rp.READING_NO_OPTIMISATION
         assert "wrong way" in got["reason"]
+
+
+class TestBestOfKUsesTheDeclaredWeighting:
+    """R@1 must be the declared pool mean, or k = 1 is not the no-selection baseline."""
+
+    def _streams(self):
+        # unequal realised sizes, which unequal empty-continuation counts give
+        return {0: [0.2] * 100, 1: [0.9] * 10, 2: [0.5] * 40}
+
+    def test_stream_equal_probabilities_sum_to_one_and_equalise_the_streams(self):
+        probability = ra.stream_equal_member_probability([100, 10, 40])
+        assert float(probability.sum()) == pytest.approx(1.0, abs=1e-12)
+        assert float(probability[:100].sum()) == pytest.approx(1 / 3, abs=1e-12)
+        assert float(probability[100:110].sum()) == pytest.approx(1 / 3, abs=1e-12)
+
+    def test_equal_stream_sizes_give_the_uniform_weighting_back(self):
+        probability = ra.stream_equal_member_probability([32, 32, 32])
+        assert np.allclose(probability, 1 / 96)
+
+    def test_r_at_one_equals_the_declared_stream_equal_pool_mean(self):
+        streams = self._streams()
+        order = sorted(streams)
+        pooled = np.concatenate([np.asarray(streams[s], dtype=float) for s in order])
+        probability = ra.stream_equal_member_probability([len(streams[s]) for s in order])
+        assert ra.best_of_k(pooled, pooled, [1], probability)[0] == pytest.approx(
+            ra.pool_mean(streams), abs=1e-12)
+
+    def test_the_unweighted_pooling_it_replaced_does_not_satisfy_that(self):
+        """Recording the defect, so a future change back would fail here."""
+
+        streams = self._streams()
+        pooled = np.concatenate([np.asarray(streams[s], dtype=float)
+                                 for s in sorted(streams)])
+        assert ra.best_of_k(pooled, pooled, [1])[0] != pytest.approx(
+            ra.pool_mean(streams), abs=1e-6)
+
+    def test_the_weighted_curve_still_rises_to_the_pool_maximum(self):
+        streams = self._streams()
+        order = sorted(streams)
+        pooled = np.concatenate([np.asarray(streams[s], dtype=float) for s in order])
+        probability = ra.stream_equal_member_probability([len(streams[s]) for s in order])
+        curve = ra.best_of_k(pooled, pooled, [1, 2, 8, 64, 512], probability)
+        assert list(curve) == sorted(curve)
+        assert curve[-1] == pytest.approx(float(pooled.max()), abs=1e-3)
+
+    def test_the_weighted_formula_matches_brute_force(self):
+        """Enumerated over every k-tuple, with the draw probabilities applied."""
+
+        import itertools
+
+        values = np.array([0.0, 1.0, 2.0, 3.0])
+        probability = ra.stream_equal_member_probability([1, 3])
+        for k in (1, 2, 3):
+            total = 0.0
+            for combination in itertools.product(range(4), repeat=k):
+                weight = float(np.prod([probability[i] for i in combination]))
+                total += weight * max(values[i] for i in combination)
+            assert ra.best_of_k(values, values, [k], probability)[0] == pytest.approx(
+                total, abs=1e-12)
+
+    def test_a_malformed_probability_vector_is_refused(self):
+        values = np.array([0.1, 0.2, 0.3])
+        with pytest.raises(ValueError, match="one draw probability per pool member"):
+            ra.best_of_k(values, values, [1], np.array([0.5, 0.5]))
+        with pytest.raises(ValueError, match="sum to one"):
+            ra.best_of_k(values, values, [1], np.array([0.2, 0.2, 0.2]))
+        with pytest.raises(ValueError, match="non-empty size per stream"):
+            ra.stream_equal_member_probability([10, 0])
+
+    def test_the_draws_carry_the_same_weighting_as_the_point(self):
+        streams = self._streams()
+        family = rp.family_name(rp.FAMILY_BEST_OF_K, rp.ARM_ENVIRONMENT)
+        drawn = ra.best_of_k_draws(streams, streams, family=family, column=9,
+                                   ks=[1], draws=500)
+        assert float(drawn[:, 0].mean()) == pytest.approx(ra.pool_mean(streams), abs=0.01)
