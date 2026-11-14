@@ -753,3 +753,96 @@ def test_the_control_names_the_primary_endpoint_for_every_cell(analysis):
                 assert cell["status"] == ota.UNRESOLVED
             else:
                 assert cell["primary_gain"]["gain"] == ota.GAIN_IDENTIFIED
+
+
+# --------------------------------------------- the base-likelihood rule (2026-11-14)
+
+def _likelihood_fixture(tmp_path, sequences, mean_nll):
+    """A score file in the scorer's own row shape, plus the table read from it."""
+
+    path = tmp_path / "own.jsonl"
+    path.write_text("".join(json.dumps({
+        "sequence_sha256": sequence_digest(sequence), "n_tokens": len(sequence),
+        "sum_nll": mean_nll[index] * len(sequence), "mean_nll": mean_nll[index]}) + "\n"
+        for index, sequence in enumerate(sequences)), encoding="utf-8")
+    return path
+
+
+def test_the_likelihood_rule_ranks_by_mean_loglikelihood_per_token(tmp_path):
+    sequences = ["ACDEFGHIKL", "ACDEFGHIKLMNPQRSTVWY" * 2, "MKV"]
+    # Mean NLL falls as the sequence gets more probable; the longest has the
+    # largest *summed* NLL and the lowest *mean*.
+    table = ota.read_own_likelihood(_likelihood_fixture(tmp_path, sequences, [2.0, 1.0, 3.0]))
+    rules = {rule.name: rule for rule in ota.filter_rules(_counts(), table)}
+    declared, summed = rules[ota.LIKELIHOOD_RULE_NAME], rules[ota.LIKELIHOOD_SENSITIVITY_NAME]
+    assert declared.retain == summed.retain == "highest"
+    assert [declared.statistic(s) for s in sequences] == pytest.approx([-2.0, -1.0, -3.0])
+    assert [summed.statistic(s) for s in sequences] == pytest.approx([-20.0, -40.0, -9.0])
+    scored = [{"key": s, "sequence": s, "score": declared.statistic(s)} for s in sequences]
+    assert ota.rank_and_retain(scored, declared, fraction=0.34)["retained_keys"] == {sequences[1]}
+    scored = [{"key": s, "sequence": s, "score": summed.statistic(s)} for s in sequences]
+    assert ota.rank_and_retain(scored, summed, fraction=0.34)["retained_keys"] == {"MKV"}
+
+
+def _counts():
+    from src.capability.generation import generative_control as gc
+    return gc.load_kmer_counts(KMERS, aot.KMER_ORDERS)
+
+
+def test_the_three_declared_rules_are_unchanged_without_a_likelihood_table():
+    assert tuple(rule.name for rule in ota.filter_rules(_counts())) == ota.FILTER_RULE_NAMES
+
+
+def test_a_sequence_without_a_score_refuses_rather_than_dropping(tmp_path):
+    table = ota.read_own_likelihood(_likelihood_fixture(tmp_path, ["ACDEFGHIKL"], [2.0]))
+    rule = ota.filter_rules(_counts(), table)[3]
+    with pytest.raises(ValueError, match="partial pool"):
+        ota.score_pool([{"key": "a", "sequence": "ACDEFGHIKL"},
+                        {"key": "b", "sequence": "WWWWWWWWWW"}], rule)
+
+
+def test_a_score_over_the_wrong_token_count_refuses():
+    digest = sequence_digest("ACDEFGHIKL")
+    rule = ota.filter_rules(_counts(), {digest: (9, 18.0)})[3]
+    with pytest.raises(ValueError, match="tokens"):
+        rule.statistic("ACDEFGHIKL")
+
+
+def test_a_malformed_score_file_refuses(tmp_path):
+    good = {"sequence_sha256": "a" * 64, "n_tokens": 4, "sum_nll": 8.0, "mean_nll": 2.0}
+    def write(*rows):
+        path = tmp_path / "bad.jsonl"
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        return path
+    with pytest.raises(ValueError, match="twice"):
+        ota.read_own_likelihood(write(good, good))
+    with pytest.raises(ValueError, match="tokens, sum"):
+        ota.read_own_likelihood(write({**good, "sum_nll": float("inf"), "mean_nll": float("inf")}))
+    with pytest.raises(ValueError, match="sum_nll / n_tokens"):
+        ota.read_own_likelihood(write({**good, "mean_nll": 3.0}))
+    with pytest.raises(ValueError, match="another arm"):
+        ota.merge_likelihood({"x": {"a" * 64: (4, 8.0)}, "y": {"a" * 64: (4, 8.0)}})
+
+
+def test_a_pool_too_small_for_a_retained_quarter_refuses():
+    members = [{"key": f"m{i}", "plddt": 60.0, "stratum": ota.STRATA[0], "score": float(i)}
+               for i in range(ota.MIN_UNITS_PER_POOL - 1)]
+    with pytest.raises(ValueError, match="at least"):
+        ota.nested_base_draws(members, retain="highest", draws=10,
+                              family=ota.LIKELIHOOD_CONTROL_FAMILIES[ota.LIKELIHOOD_RULE_NAME],
+                              column=0, stream_index=0)
+
+
+def test_the_likelihood_families_are_declared_distinct_and_sized():
+    primary = ota.LIKELIHOOD_CONTROL_FAMILIES[ota.LIKELIHOOD_RULE_NAME]
+    secondary = ota.SECONDARY_LIKELIHOOD_CONTROL_FAMILIES[ota.LIKELIHOOD_RULE_NAME]
+    assert ota.FAMILY_SIZES[primary] == ota.PRIMARY_FAMILY_SIZE
+    assert ota.FAMILY_SIZES[secondary] == ota.SECONDARY_FAMILY_SIZE
+    others = set(ota.CONTROL_FAMILIES.values()) | set(ota.SECONDARY_CONTROL_FAMILIES.values())
+    assert len({primary, secondary} | others) == len(others) + 2
+    assert len({ota.FAMILY_SEED_OFFSETS[f] for f in {primary, secondary} | others}) == len(others) + 2
+    # The sensitivity reads the declared family's draws, so it needs no family of its own.
+    assert (ota.LIKELIHOOD_CONTROL_FAMILIES[ota.LIKELIHOOD_SENSITIVITY_NAME] == primary)
+    with pytest.raises(SystemExit):
+        aot.explicit_statistics_control({"pools": {}}, ota.PRIMARY_PAIRS, {}, {},
+                                        ota.LIKELIHOOD_CONTROL_FAMILIES)

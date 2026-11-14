@@ -607,7 +607,9 @@ def scored_by_stratum(scored: dict[int, list[dict[str, Any]]], stratum: str,
 def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.ObjectiveTunedPair, ...],
                                 counts: dict[int, np.ndarray],
                                 primary: dict[str, Any],
-                                families: dict[str, str] | None = None) -> dict[str, Any]:
+                                families: dict[str, str] | None = None,
+                                likelihood: dict[str, tuple[int, float]] | None = None,
+                                ) -> dict[str, Any]:
     """The control that carries the claim: what an explicit rule reproduces.
 
     Each base pool is ranked within stream, because the declared four-to-one
@@ -631,14 +633,23 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
     amendment of 2026-11-12 declares a second set over the secondary pair,
     :data:`ota.SECONDARY_CONTROL_FAMILIES`, so that pair can be read under the
     same three rules; which set is in use is recorded, and the two are never
-    merged. Every rule, statistic, fraction, floor, draw and band below is the
-    same object either way -- only the family a column belongs to differs.
+    merged. The amendment of 2026-11-14 adds the base-likelihood rule in its own
+    families, :data:`ota.LIKELIHOOD_CONTROL_FAMILIES` and its secondary twin;
+    naming them needs ``likelihood``, the base arms' own-model scores. Every
+    rule, statistic, fraction, floor, draw and band below is the same object
+    either way -- only the family a column belongs to differs.
     """
 
     families = ota.CONTROL_FAMILIES if families is None else families
-    if set(families) != set(ota.FILTER_RULE_NAMES):
-        fail(f"a control family set must name all three declared rules, not {sorted(families)}")
-    rules = ota.filter_rules(counts)
+    names = set(families)
+    drawn_from_likelihood = bool(names) and names <= set(ota.LIKELIHOOD_RULE_NAMES)
+    if names != set(ota.FILTER_RULE_NAMES) and not drawn_from_likelihood:
+        fail(f"a control family set must name all three declared rules or the base-likelihood "
+             f"rule, not {sorted(families)}")
+    if drawn_from_likelihood and likelihood is None:
+        fail("the base-likelihood rule needs the base arms' own-model scores")
+    rules = [rule for rule in ota.filter_rules(counts, likelihood if drawn_from_likelihood else None)
+             if rule.name in families]
     out: dict[str, Any] = {
         "readout": "the share of the tuned-minus-base pLDDT gain that a top-quarter filter of "
                    "the base pool reproduces, per stratum and per rule",
@@ -650,11 +661,16 @@ def explicit_statistics_control(table: dict[str, Any], pairs: tuple[ot.Objective
         "interval_note": ota.CONTROL_INTERVAL_NOTE,
         "nested_draws": ota.NESTED_DRAW_METHOD,
         "moot_note": ota.CONTROL_MOOT_NOTE,
-        "family_set": {name: families[name] for name in ota.FILTER_RULE_NAMES},
+        "family_set": dict(families),
         "amendment": (ota.SECONDARY_CONTROL_AMENDMENT
-                      if families == ota.SECONDARY_CONTROL_FAMILIES else None),
+                      if families == ota.SECONDARY_CONTROL_FAMILIES else
+                      ota.LIKELIHOOD_CONTROL_AMENDMENT if drawn_from_likelihood else None),
         "rules": {},
     }
+    if drawn_from_likelihood:
+        out["at_or_above_one"] = ("the base model's own likelihood, used as a selector over its "
+                                  "own samples, does everything the alignment did on this "
+                                  "endpoint")
     for rule in rules:
         family = families[rule.name]
         columns: list[dict[str, Any]] = []

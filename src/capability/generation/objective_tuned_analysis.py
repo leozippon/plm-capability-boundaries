@@ -71,9 +71,11 @@ is a separate declared endpoint, reported in its own family and never merged.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -85,7 +87,7 @@ from ..extensions import bidirectional as bd
 from ..forcing.backbone_cohort import distinct_shingle_fraction
 from . import generative_control as gc
 from . import objective_tuned_arms as ot
-from .structure_evidence import PREDICTED_CONFIDENCE_PLDDT
+from .structure_evidence import PREDICTED_CONFIDENCE_PLDDT, sequence_digest
 
 #: The stable identity of every record this module's readouts are written into.
 SCHEMA = "objective_tuned_analysis"
@@ -198,6 +200,37 @@ SECONDARY_CONTROL_AMENDMENT = (
     "margin or finding state is altered"
 )
 
+#: The base-likelihood control, declared by the amendment of 2026-11-14. It ranks
+#: the base pool by the base model's own likelihood of its own samples. Unlike
+#: the three rules above it is a learned-model statistic, so it is a fourth rule
+#: in its own declared families and is never merged with the explicit-statistics
+#: ones. ``base_model_likelihood`` is the declared reading, in nats per residue
+#: token; ``base_model_likelihood_summed`` ranks by the raw summed log-likelihood
+#: and is a stated sensitivity that reads the declared family's draws and carries
+#: no decision of its own.
+LIKELIHOOD_RULE_NAME = "base_model_likelihood"
+LIKELIHOOD_SENSITIVITY_NAME = "base_model_likelihood_summed"
+LIKELIHOOD_RULE_NAMES: tuple[str, ...] = (LIKELIHOOD_RULE_NAME, LIKELIHOOD_SENSITIVITY_NAME)
+LIKELIHOOD_CONTROL_FAMILIES: dict[str, str] = {
+    LIKELIHOOD_RULE_NAME: "base_likelihood_control",
+    LIKELIHOOD_SENSITIVITY_NAME: "base_likelihood_control",
+}
+SECONDARY_LIKELIHOOD_CONTROL_FAMILIES: dict[str, str] = {
+    LIKELIHOOD_RULE_NAME: "base_likelihood_control_secondary",
+    LIKELIHOOD_SENSITIVITY_NAME: "base_likelihood_control_secondary",
+}
+
+LIKELIHOOD_CONTROL_AMENDMENT = (
+    "amendment of 2026-11-14, added post hoc after the three statistical filters' "
+    "results were known and declared before its own result was computed. The base "
+    "pool is ranked by the base model's own mean log-likelihood per residue token "
+    "(nats, stop token excluded), the top quarter is kept, and the same within "
+    "(arm, stream) ranking scope, resampling floor, nested draws and native band "
+    "are read in two further declared families, one for the primary pairs and one "
+    "for the secondary pair. No existing estimand, margin, family or decision rule "
+    "is changed"
+)
+
 #: Largest share of draws a control column may lose to a resample in which one
 #: of its three pools is empty. A filtered stratum subset at the admissibility
 #: floor loses of order ``exp(-8)`` of its draws, so a percent is slack rather
@@ -217,6 +250,8 @@ FAMILY_SEED_OFFSETS: dict[str, int] = {
        for index, name in enumerate(FILTER_RULE_NAMES)},
     **{SECONDARY_CONTROL_FAMILIES[name]: 900_000 + 100_000 * index
        for index, name in enumerate(FILTER_RULE_NAMES)},
+    LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]: 1_200_000,
+    SECONDARY_LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]: 1_300_000,
 }
 
 #: Declared size per family name, asserted against the realised column keys.
@@ -230,6 +265,8 @@ FAMILY_SIZES: dict[str, int] = {
     **{family: CONTROL_FAMILY_SIZE for family in CONTROL_FAMILIES.values()},
     **{family: SECONDARY_CONTROL_FAMILY_SIZE
        for family in SECONDARY_CONTROL_FAMILIES.values()},
+    LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]: CONTROL_FAMILY_SIZE,
+    SECONDARY_LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]: SECONDARY_CONTROL_FAMILY_SIZE,
 }
 
 
@@ -633,8 +670,91 @@ LOW_COMPLEXITY_PROVENANCE = (
 )
 
 
-def filter_rules(counts: Mapping[int, np.ndarray]) -> tuple[FilterRule, ...]:
-    """The three declared rules, in the registration's order of richness.
+LIKELIHOOD_PROVENANCE = (
+    "score_cohort_likelihood.py own-model cells: the base checkpoint's likelihood of its own "
+    "samples, float32, temperature 1, residue tokens only (the stop token is not scored), "
+    "under the arm's own prompt contract and residue alphabet. A sequence the table does not "
+    "hold, or whose scored token count is not its length, refuses rather than drops"
+)
+
+
+def read_own_likelihood(path: Path) -> dict[str, tuple[int, float]]:
+    """One arm's own-model score file as ``{sequence digest: (n_tokens, sum_nll)}``.
+
+    Refuses a duplicate digest (the scorer's unit is the distinct sequence), a
+    non-finite or non-positive-count row, and a ``mean_nll`` that is not
+    ``sum_nll / n_tokens``, so the per-token convention is checked on the file
+    rather than assumed.
+    """
+
+    rows: dict[str, tuple[int, float]] = {}
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        digest = row.get("sequence_sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ValueError(f"{path} line {number}: no sequence_sha256")
+        if digest in rows:
+            raise ValueError(f"{path}: {digest} appears twice")
+        count, total, mean = int(row["n_tokens"]), float(row["sum_nll"]), float(row["mean_nll"])
+        if count < 1 or not math.isfinite(total) or not math.isfinite(mean):
+            raise ValueError(f"{path} line {number}: {count} tokens, sum {total}, mean {mean}")
+        if abs(mean - total / count) > 1e-9:
+            raise ValueError(f"{path} line {number}: mean_nll is not sum_nll / n_tokens")
+        rows[digest] = (count, total)
+    return rows
+
+
+def merge_likelihood(per_arm: Mapping[str, Mapping[str, tuple[int, float]]]
+                     ) -> dict[str, tuple[int, float]]:
+    """Join several arms' tables, refusing a digest scored under two models."""
+
+    merged: dict[str, tuple[int, float]] = {}
+    for arm, rows in per_arm.items():
+        for digest, value in rows.items():
+            if digest in merged:
+                raise ValueError(f"{arm}: {digest} is also scored under another arm's model")
+            merged[digest] = value
+    return merged
+
+
+def _likelihood_scorer(table: Mapping[str, tuple[int, float]], *,
+                       per_token: bool) -> Callable[[str], float]:
+    """Log-likelihood of a sequence, in nats per residue token or summed.
+
+    Returns the *negative* NLL so that a higher score is a more likely sequence,
+    matching every other rule's ``retain='highest'``. It never returns ``None``:
+    a sequence with no score raises, because a pool silently shrunk to its
+    scored members would no longer be the pool the tuned arm is compared with.
+    """
+
+    def score(sequence: str) -> float:
+        entry = table.get(sequence_digest(sequence))
+        if entry is None:
+            raise ValueError(f"no base-model likelihood for a sequence of {len(sequence)} "
+                             f"residues ({sequence_digest(sequence)}); the control refuses a "
+                             "partial pool")
+        count, total = entry
+        if count != len(sequence):
+            raise ValueError(f"{sequence_digest(sequence)}: scored over {count} tokens but the "
+                             f"sequence has {len(sequence)} residues")
+        value = -total / count if per_token else -total
+        if not math.isfinite(value):
+            raise ValueError(f"{sequence_digest(sequence)}: non-finite likelihood")
+        return float(value)
+
+    return score
+
+
+def filter_rules(counts: Mapping[int, np.ndarray],
+                 likelihood: Mapping[str, tuple[int, float]] | None = None,
+                 ) -> tuple[FilterRule, ...]:
+    """The declared rules, in the registration's order of richness.
+
+    With ``likelihood`` (the base arms' own-model scores, keyed by sequence
+    digest) the base-likelihood rule and its summed sensitivity follow the three
+    explicit statistics. Without it only the three exist.
 
     ``counts`` are corpus k-mer counts from
     ``generative_control.load_kmer_counts``; order 0 reads ``k = 1`` and order 2
@@ -670,8 +790,17 @@ def filter_rules(counts: Mapping[int, np.ndarray]) -> tuple[FilterRule, ...]:
             statistic=_corpus_scorer(2, second),
         ),
     )
-    if tuple(rule.name for rule in rules) != FILTER_RULE_NAMES:
-        raise RuntimeError("the realised filter rules are not the declared FILTER_RULE_NAMES, "
+    expected = FILTER_RULE_NAMES
+    if likelihood is not None:
+        expected = FILTER_RULE_NAMES + LIKELIHOOD_RULE_NAMES
+        rules += tuple(
+            FilterRule(name=name, retain="highest", units=units, provenance=LIKELIHOOD_PROVENANCE,
+                       statistic=_likelihood_scorer(likelihood, per_token=per_token))
+            for name, units, per_token in (
+                (LIKELIHOOD_RULE_NAME, "nats per residue token (mean log-likelihood)", True),
+                (LIKELIHOOD_SENSITIVITY_NAME, "nats summed over residue tokens", False)))
+    if tuple(rule.name for rule in rules) != expected:
+        raise RuntimeError("the realised filter rules are not the declared rule names, "
                            "so their families are not the ones sized and seeded above")
     return rules
 
@@ -1321,6 +1450,16 @@ def _check_declarations() -> None:
     if set(SECONDARY_CONTROL_FAMILIES.values()) & set(CONTROL_FAMILIES.values()):
         raise RuntimeError("a secondary control family shares a name with a primary one and "
                            "their columns would be merged")
+    if len(set(LIKELIHOOD_CONTROL_FAMILIES.values())) != 1 \
+            or len(set(SECONDARY_LIKELIHOOD_CONTROL_FAMILIES.values())) != 1 \
+            or set(LIKELIHOOD_CONTROL_FAMILIES) != set(LIKELIHOOD_RULE_NAMES) \
+            or set(SECONDARY_LIKELIHOOD_CONTROL_FAMILIES) != set(LIKELIHOOD_RULE_NAMES):
+        raise RuntimeError("the base-likelihood control is one declared family per pair set, "
+                           "read by the declared rule and its sensitivity alike")
+    if FAMILY_SIZES[LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]] != PRIMARY_FAMILY_SIZE \
+            or FAMILY_SIZES[SECONDARY_LIKELIHOOD_CONTROL_FAMILIES[LIKELIHOOD_RULE_NAME]] \
+            != len(SECONDARY_PAIRS) * len(STRATA):
+        raise RuntimeError("a base-likelihood family is not its pairs crossed with the strata")
     if not 0.0 < NARROWING_COMPOSITION_SHARE < 1.0:
         raise RuntimeError("the narrowing composition share is a fraction of the pooled gain")
     if len(set(GAIN_STATES)) != 3 or NON_IDENTIFIABLE not in FINDING_STATES:
