@@ -907,3 +907,16 @@ def test_the_repetitiveness_statistics_and_rank_correlation():
     assert repeat.spearman(x, x ** 3) == pytest.approx(1.0)
     assert repeat.spearman(x, -x) == pytest.approx(-1.0)
     assert np.isnan(repeat.spearman(x, np.ones(50)))
+
+
+def test_the_outside_fraction_counts_both_sides_and_reads_against_the_declared_thresholds():
+    support = _driver("run_support_containment")
+    rng = np.random.default_rng(0)
+    base = np.linspace(1.0, 2.0, 1000)
+    inside = support.outside(base, np.linspace(1.2, 1.8, 400), rng)
+    assert inside["n_below_range"] == inside["n_above_range"] == 0 and inside["reading"] == "inside"
+    tuned = np.concatenate([np.linspace(1.2, 1.8, 300), np.full(60, 0.5), np.full(40, 2.5)])
+    split = support.outside(base, tuned, rng)
+    assert (split["n_below_range"], split["n_above_range"]) == (60, 40)
+    assert split["fraction"] == pytest.approx(0.25) and split["reading"] == "outside"
+    assert split["exchangeable_expectation"] == pytest.approx(2 / 1001)
