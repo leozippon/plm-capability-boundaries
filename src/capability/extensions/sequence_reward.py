@@ -236,6 +236,22 @@ LENGTH_WINDOW: tuple[int, int] = (60, 120)
 #: Residues beyond the window at which the length term reaches zero.
 LENGTH_HALF_WIDTH = 120.0
 
+#: The positive control's charge window: a target a rejection sampler of the
+#: declared budget cannot reach from the base pool. ``None`` until it is chosen,
+#: and chosen by one rule applied once to the base pool's measured conjunction
+#: rates -- see ``rl_environment_provenance.RUNG_RULE``. Everything that would
+#: pay or score this reward refuses while it is ``None``, because a positive
+#: control whose target was picked after its arm's result is not a control.
+HARD_CHARGE_WINDOW: tuple[float, float] | None = None
+
+HARD_CHARGE_PROVENANCE = (
+    "the first rung of the declared charge ladder whose one-sided 0.95 upper bound "
+    "on a 512-sample rejection sampler's hit probability falls below 0.5, read off "
+    "the base pool's own measured conjunction rates exactly once and written here "
+    "before the arm trained. The bound is exact-binomial rather than a bootstrap "
+    "because the rate it bounds is sometimes zero by observation"
+)
+
 #: CA-pLDDT scale the memory-derived term is divided by, so every term is a
 #: share of its own attainable maximum and the arms' rewards are commensurable.
 PLDDT_SCALE = 100.0
@@ -300,7 +316,15 @@ REWARD_ENVIRONMENT = "environment"
 #: without destroying the memory-derived score.
 REWARD_BOTH = "memory_and_environment"
 
-REWARD_NAMES: tuple[str, ...] = (REWARD_MEMORY, REWARD_ENVIRONMENT, REWARD_BOTH)
+#: The same environment objective at a harder charge window: the positive
+#: control. It exists because a small ``k*`` on the declared target admits two
+#: readings that predict the same number -- the method installs nothing, or the
+#: target was base-reachable all along -- and only a target selection cannot
+#: reach separates them.
+REWARD_ENVIRONMENT_HARD = "environment_hard"
+
+REWARD_NAMES: tuple[str, ...] = (REWARD_MEMORY, REWARD_ENVIRONMENT,
+                                 REWARD_BOTH, REWARD_ENVIRONMENT_HARD)
 
 #: Which rewards need a folded structure. The others are computable from the
 #: residue string alone, which is what makes the environment arm a miniature
@@ -309,7 +333,36 @@ REWARD_NEEDS_STRUCTURE: Mapping[str, bool] = {
     REWARD_MEMORY: True,
     REWARD_ENVIRONMENT: False,
     REWARD_BOTH: True,
+    REWARD_ENVIRONMENT_HARD: False,
 }
+
+#: Rewards that cannot be computed until a declared constant is chosen. Named
+#: here so that a caller can tell "not yet declared" from "not applicable".
+REWARD_NEEDS_DECLARED_WINDOW: Mapping[str, bool] = {
+    REWARD_MEMORY: False,
+    REWARD_ENVIRONMENT: False,
+    REWARD_BOTH: False,
+    REWARD_ENVIRONMENT_HARD: True,
+}
+
+
+def hard_window_declared() -> bool:
+    """Whether the positive control's target has been chosen yet."""
+
+    return HARD_CHARGE_WINDOW is not None
+
+
+def require_hard_window() -> tuple[float, float]:
+    """The positive control's window, refusing while it is undeclared."""
+
+    if HARD_CHARGE_WINDOW is None:
+        raise ValueError(
+            "the positive control's charge window has not been chosen. It is read "
+            "off the base pool's measured conjunction rates by one declared rule "
+            "and written into sequence_reward before the arm trains; refusing to "
+            "pay or score a reward whose target does not exist yet"
+        )
+    return HARD_CHARGE_WINDOW
 
 REWARD_PROVENANCE: Mapping[str, str] = {
     REWARD_MEMORY: (
@@ -325,6 +378,13 @@ REWARD_PROVENANCE: Mapping[str, str] = {
     REWARD_BOTH: (
         "the equal-weight mean of the memory-derived and environment-supplied "
         "objectives, under the one shared constraint"
+    ),
+    REWARD_ENVIRONMENT_HARD: (
+        "the same arithmetic as the environment reward at a charge window a "
+        "rejection sampler of the declared budget cannot reach from the base "
+        "pool. Identical in provenance to that reward and harder only in where "
+        "its window sits, so a difference between the two arms is a difference in "
+        "target difficulty and not in instrument"
     ),
 }
 
@@ -447,6 +507,8 @@ def reward(name: str, stats: SequenceStatistics, *, mean_ca_plddt: float | None 
         )
     if stats.length == 0:
         return EMPTY_COMPLETION_REWARD
+    if name == REWARD_ENVIRONMENT_HARD:
+        return environment_reward_at(stats, charge_window=require_hard_window())
     scored = terms(stats, mean_ca_plddt=mean_ca_plddt)
     environment = 0.5 * (scored["charge"] + scored["length"])
     if name == REWARD_ENVIRONMENT:
@@ -470,6 +532,8 @@ def rewards(stats: SequenceStatistics, *, mean_ca_plddt: float | None = None) ->
     out: dict[str, float] = {}
     for name in REWARD_NAMES:
         if REWARD_NEEDS_STRUCTURE[name] and mean_ca_plddt is None and stats.length > 0:
+            continue
+        if REWARD_NEEDS_DECLARED_WINDOW[name] and not hard_window_declared():
             continue
         out[name] = reward(name, stats, mean_ca_plddt=mean_ca_plddt)
     return out

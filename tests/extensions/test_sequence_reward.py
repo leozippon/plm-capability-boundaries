@@ -206,10 +206,12 @@ class TestRewards:
 
     def test_every_reward_is_bounded_in_the_unit_interval(self):
         stats = self._in_window()
-        for name in sr.REWARD_NAMES:
-            value = sr.reward(name, stats, mean_ca_plddt=100.0)
-            assert 0.0 <= value <= 1.0
+        for name, value in sr.rewards(stats, mean_ca_plddt=100.0).items():
+            assert 0.0 <= value <= 1.0, name
         assert sr.reward(sr.REWARD_MEMORY, stats, mean_ca_plddt=100.0) == pytest.approx(1.0)
+        # the positive control's reward is bounded alike at any window it could take
+        for window in (sr.CHARGE_WINDOW, (32.0, 36.0)):
+            assert 0.0 <= sr.environment_reward_at(stats, charge_window=window) <= 1.0
 
     def test_the_memory_reward_is_the_complexity_term_times_the_plddt_share(self):
         stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY" * 4)
@@ -223,16 +225,22 @@ class TestRewards:
         both = sr.reward(sr.REWARD_BOTH, stats, mean_ca_plddt=55.0)
         assert both == pytest.approx(0.5 * (memory + environment))
 
-    def test_the_complexity_term_is_shared_by_all_three_rewards(self):
-        """A poly-lysine solution to the charge window is forbidden, not rewarded."""
+    def test_the_complexity_term_is_shared_by_every_reward(self):
+        """A poly-lysine solution to the charge window is forbidden, not rewarded.
+
+        Including at the positive control's harder window, which poly-lysine would
+        otherwise reach even more easily than the declared one.
+        """
 
         poly = sr.statistics("K" * 90)
         low, high = sr.CHARGE_WINDOW
         assert poly.net_charge > high  # it overshoots the window as well
         assert poly.low_complexity_fraction == 1.0
         assert sr.complexity_term(poly) == 0.0
-        for name in sr.REWARD_NAMES:
-            assert sr.reward(name, poly, mean_ca_plddt=90.0) == 0.0
+        for name, value in sr.rewards(poly, mean_ca_plddt=90.0).items():
+            assert value == 0.0, name
+        for window in sr.CHARGE_LADDER if hasattr(sr, "CHARGE_LADDER") else ((32.0, 36.0),):
+            assert sr.environment_reward_at(poly, charge_window=window) == 0.0
 
     def test_a_structure_reward_with_no_structure_is_refused_not_paid_zero(self):
         stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY")
@@ -275,10 +283,14 @@ class TestRewards:
 
     def test_rewards_omits_the_structure_rewards_it_cannot_compute(self):
         stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY")
+        computable = {name for name in sr.REWARD_NAMES
+                      if not (sr.REWARD_NEEDS_DECLARED_WINDOW[name]
+                              and not sr.hard_window_declared())}
         without = sr.rewards(stats)
-        assert set(without) == {sr.REWARD_ENVIRONMENT}
+        assert set(without) == computable - {name for name in sr.REWARD_NAMES
+                                             if sr.REWARD_NEEDS_STRUCTURE[name]}
         with_fold = sr.rewards(stats, mean_ca_plddt=50.0)
-        assert set(with_fold) == set(sr.REWARD_NAMES)
+        assert set(with_fold) == computable
 
     def test_the_declared_objective_hits_are_the_windows_themselves(self):
         stats = self._in_window()

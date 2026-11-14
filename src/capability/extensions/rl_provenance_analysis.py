@@ -540,6 +540,91 @@ def reachability_curve(statistics: Mapping[int, Sequence[Any]], *,
     }
 
 
+def conjunction_rate_upper_bound(hits: int, n: int, *,
+                                 confidence: float = rp.RUNG_CONFIDENCE) -> float:
+    """One-sided exact-binomial upper bound on a conjunction rate.
+
+    Clopper-Pearson, which is the Beta quantile at ``(hits + 1, n - hits)``. It is
+    here rather than a bootstrap because the quantity it bounds is sometimes zero
+    *by observation*: a charge window the base pool never hits has an all-zero
+    indicator, and the nonparametric bootstrap of an all-zero vector is a
+    zero-width interval at zero. That would assert unreachability with no
+    uncertainty, at exactly the point where unreachability is the thing being
+    decided. An exact bound sees the rare event the sample missed.
+    """
+
+    from scipy.stats import beta
+
+    if n < 1 or not 0 <= hits <= n:
+        raise ValueError(f"a rate bound needs 0 <= hits <= n with n positive; got {hits}/{n}")
+    if not 0 < confidence < 1:
+        raise ValueError("a one-sided confidence level lies strictly between zero and one")
+    if hits == n:
+        return 1.0
+    return float(beta.ppf(confidence, hits + 1, n - hits))
+
+
+def rejection_hit_probability(rate: float, budget: int) -> float:
+    """Probability that a ``budget``-sample rejection sampler hits a rate-``rate`` target."""
+
+    if not 0.0 <= rate <= 1.0 or budget < 1:
+        raise ValueError("a hit probability needs a rate in [0, 1] and a positive budget")
+    return float(1.0 - (1.0 - rate) ** int(budget))
+
+
+def choose_hard_rung(ladder_rungs: Sequence[Mapping[str, Any]], *, n: int,
+                     budget: int = rp.RUNG_BUDGET,
+                     bound: float = rp.RUNG_UNREACHABLE_BOUND,
+                     confidence: float = rp.RUNG_CONFIDENCE) -> dict[str, Any]:
+    """The first declared rung that a rejection sampler of ``budget`` cannot reach.
+
+    ``ladder_rungs`` is :func:`reachability_curve`'s own ``rungs`` list and ``n``
+    the base pool's attempt count the rates were taken over. The rule is declared
+    in :data:`..rl_environment_provenance.RUNG_RULE`, and the one outcome it
+    refuses to engineer around is named there: if no rung clears the bound, the
+    coordinate cannot support a positive control and the ladder is not extended.
+    """
+
+    examined = []
+    chosen = None
+    for rung in ladder_rungs:
+        if rung.get("status") != "resolved":
+            examined.append({"window": rung.get("window"), "status": rung.get("status"),
+                             "reason": rung.get("reason")})
+            continue
+        rate = float(rung["conjunction_rate"])
+        hits = int(round(rate * n))
+        upper = conjunction_rate_upper_bound(hits, n, confidence=confidence)
+        reach = rejection_hit_probability(upper, budget)
+        entry = {"window": list(rung["window"]), "status": "resolved",
+                 "conjunction_hits": hits, "conjunction_rate": rate,
+                 "rate_upper_bound": upper,
+                 f"hit_probability_upper_bound_at_k{budget}": reach,
+                 "unreachable": bool(reach < bound)}
+        examined.append(entry)
+        if chosen is None and entry["unreachable"]:
+            chosen = entry
+    out = {
+        "rule": rp.RUNG_RULE,
+        "budget": int(budget),
+        "bound": float(bound),
+        "confidence": float(confidence),
+        "base_pool_attempts": int(n),
+        "rungs_examined": examined,
+        "chosen_window": None if chosen is None else chosen["window"],
+    }
+    if chosen is None:
+        out["reason"] = (
+            f"no rung of the declared ladder is unreachable at k = {budget}: rejection "
+            "sampling from the base pool reaches every charge target on this "
+            "coordinate at that budget. The ladder is not extended until something "
+            "qualifies, which is declared in the rule above. This is a "
+            "statement about the base distribution and not about reinforcement "
+            "learning, and it means the coordinate cannot support a positive control"
+        )
+    return out
+
+
 def support_tail_share(pool_nll: Sequence[float], base_pool_nll: Sequence[float], *,
                        quantile: float = rp.SUPPORT_TAIL_QUANTILE) -> dict[str, Any]:
     """Share of a pool's samples the base model finds less probable than its own tail.
@@ -694,7 +779,16 @@ def reading(*, optimised: Mapping[str, Any], k: Mapping[str, Any],
     read within or outside the protein-like region by the degeneracy bounds.
     """
 
-    if optimised.get("optimised") is not True:
+    moved = optimised.get("optimised")
+    if moved is None:
+        # Not measured is not a null. A pool that was never generated, or whose
+        # reward-gain column does not resolve, has not failed to optimise -- it has
+        # not been asked. Reporting it as a failed optimisation would turn an
+        # absent measurement into a finding.
+        return {"reading": rp.READING_UNRESOLVED,
+                "reason": "the reward gain is not measured, so whether this pool "
+                          "optimised at all is unknown: " + str(optimised.get("reason"))}
+    if moved is not True:
         return {"reading": rp.READING_NO_OPTIMISATION,
                 "reason": "the reward gain is not bounded above zero: "
                           + str(optimised.get("reason"))}

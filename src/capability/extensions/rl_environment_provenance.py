@@ -152,10 +152,19 @@ def prediction_spec(pool: str, checkpoint: Path):
 ARM_MEMORY = sr.REWARD_MEMORY
 ARM_ENVIRONMENT = sr.REWARD_ENVIRONMENT
 ARM_BOTH = sr.REWARD_BOTH
+ARM_ENVIRONMENT_HARD = sr.REWARD_ENVIRONMENT_HARD
 
 #: Trained arms, in declared order. One arm per reward, and the reward's name is
 #: the arm's name: the reward *is* the arm.
-TRAINED_ARMS: tuple[str, ...] = (ARM_MEMORY, ARM_ENVIRONMENT, ARM_BOTH)
+#:
+#: ``environment_hard`` is the positive control, added by the amendment of
+#: 2026-11-14 after the first three arms were launched and before any evaluation
+#: pool was read. It widens every declared family from four columns to five, and
+#: the best-of-k families from forty to fifty; a wider band makes every positive
+#: reading harder to reach, including the ones this project prefers, which is the
+#: direction an added arm should push.
+TRAINED_ARMS: tuple[str, ...] = (ARM_MEMORY, ARM_ENVIRONMENT, ARM_BOTH,
+                                 ARM_ENVIRONMENT_HARD)
 
 #: Every pool the analysis reads, in declared order. ``base`` is the untrained
 #: policy and is the control for all of them; ``published_dpo`` is the released
@@ -205,6 +214,22 @@ ARMS: tuple[Arm, ...] = (
             "be installed at all by post-training, it can be installed here, and "
             "if it cannot be installed here then the obstacle is the policy "
             "rather than the reward's provenance"
+        ),
+    ),
+    Arm(
+        name=ARM_ENVIRONMENT_HARD,
+        reward=ARM_ENVIRONMENT_HARD,
+        needs_structure=False,
+        provenance=sr.REWARD_PROVENANCE[sr.REWARD_ENVIRONMENT_HARD],
+        question=(
+            "the positive control. A small k* on the declared environment target "
+            "admits two readings that predict the same number -- reinforcement "
+            "learning installs nothing at this scale even against a closed-form "
+            "reward, or that target was reachable by selection from the base all "
+            "along -- and only a target selection demonstrably cannot reach "
+            "separates them. Its window is chosen by one declared rule applied "
+            "once to the base pool's measured conjunction rates, and written down "
+            "before this arm trains"
         ),
     ),
     Arm(
@@ -434,6 +459,38 @@ K_STAR_RULE = (
 #: policy is paid at any window but the declared one.
 CHARGE_LADDER: tuple[tuple[float, float], ...] = (
     (8.0, 12.0), (14.0, 18.0), (20.0, 24.0), (26.0, 30.0), (32.0, 36.0),
+)
+
+#: The selection budget a rung has to defeat to serve as a positive control: the
+#: deepest declared ``k``, so "unreachable" means unreachable by the best-of-k
+#: control this experiment actually runs.
+RUNG_BUDGET = K_GRID[-1]
+
+#: A rung is unreachable at that budget when the upper confidence bound on the
+#: probability that a ``RUNG_BUDGET``-sample rejection sampler hits it at all
+#: falls below this. At a half, even the generous reading says such a sampler is
+#: more likely to miss the target than to hit it.
+RUNG_UNREACHABLE_BOUND = 0.5
+
+#: One-sided confidence level of that bound.
+RUNG_CONFIDENCE = 0.95
+
+RUNG_RULE = (
+    f"the chosen rung is the first of the declared ladder whose one-sided "
+    f"{RUNG_CONFIDENCE:.2f} upper bound on the probability that a "
+    f"{RUNG_BUDGET}-sample rejection sampler hits its conjunction at all lies below "
+    f"{RUNG_UNREACHABLE_BOUND}. The bound is exact-binomial (Clopper-Pearson) on the "
+    "rung's observed conjunction count and not a bootstrap: a rung the base pool "
+    "never hits has an all-zero indicator, whose nonparametric bootstrap is a "
+    "zero-width interval at zero and therefore asserts unreachability with no "
+    "uncertainty at all. That is the one place in this analysis where the "
+    "resampling interval would be confidently wrong, and it is exactly the place "
+    "the rung is chosen.\n"
+    "If no rung of the declared ladder clears the bound -- if rejection sampling "
+    "from the base reaches every charge target on it -- that is the finding and the "
+    "ladder is not extended until something qualifies. It would mean the coordinate "
+    "cannot support a positive control, which is a statement about the base "
+    "distribution and not about reinforcement learning, and it is reported as such."
 )
 
 LADDER_NOTE = (

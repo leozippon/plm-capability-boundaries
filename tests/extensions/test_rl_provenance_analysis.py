@@ -193,7 +193,10 @@ class TestContrastBands:
     def test_the_realised_family_must_be_the_declared_one(self):
         rng = np.random.default_rng(5)
         columns = self._family(rng)
-        with pytest.raises(ValueError, match="declares 4 columns and realises 3"):
+        realised = len(rp.CONTRAST_POOLS) - 1
+        with pytest.raises(ValueError,
+                           match=f"declares {len(rp.CONTRAST_POOLS)} columns and "
+                                 f"realises {realised}"):
             ra.contrast_bands(columns[:-1], family=rp.FAMILY_ENTROPY, draws=200)
         with pytest.raises(ValueError, match="repeats a column key"):
             ra.contrast_bands(columns[:-1] + [dict(columns[0])],
@@ -593,3 +596,172 @@ class TestReachabilityLadder:
     def test_it_states_the_half_of_the_question_it_cannot_answer(self):
         assert "cannot answer the other half" in rp.LADDER_NOTE
         assert "trained against a higher rung" in rp.LADDER_NOTE
+
+
+class TestHardRungChoice:
+    """Choosing the positive control's target, and refusing to manufacture one."""
+
+    def test_the_bound_is_exact_and_not_a_bootstrap_of_a_zero_count(self):
+        """A target the base pool never hits is the case a bootstrap gets wrong.
+
+        The nonparametric bootstrap of an all-zero indicator is a zero-width
+        interval at zero: it would assert unreachability with no uncertainty, at
+        exactly the point where unreachability is the thing being decided.
+        """
+
+        empty = {0: [0.0] * 64, 1: [0.0] * 64, 2: [0.0] * 64}
+        drawn = ra.best_of_k_draws(empty, empty, family=rp.family_name(
+            rp.FAMILY_BEST_OF_K, rp.ARM_ENVIRONMENT), column=3, ks=[512], draws=200)
+        assert float(drawn.min()) == 0.0 and float(drawn.max()) == 0.0
+        # the exact bound sees the rare event the sample missed
+        assert ra.conjunction_rate_upper_bound(0, 192) > 0.0
+
+    def test_the_upper_bound_is_monotone_and_bounded(self):
+        bounds = [ra.conjunction_rate_upper_bound(hits, 3072) for hits in (0, 1, 2, 10)]
+        assert bounds == sorted(bounds)
+        assert all(0.0 < value < 1.0 for value in bounds)
+        assert ra.conjunction_rate_upper_bound(7, 7) == 1.0
+
+    def test_the_bound_tightens_with_the_sample_size(self):
+        assert (ra.conjunction_rate_upper_bound(0, 3072)
+                < ra.conjunction_rate_upper_bound(0, 512))
+
+    def test_a_malformed_count_is_refused(self):
+        with pytest.raises(ValueError, match="0 <= hits <= n"):
+            ra.conjunction_rate_upper_bound(5, 3)
+        with pytest.raises(ValueError, match="0 <= hits <= n"):
+            ra.conjunction_rate_upper_bound(-1, 10)
+        with pytest.raises(ValueError, match="positive budget"):
+            ra.rejection_hit_probability(0.1, 0)
+
+    def test_the_rejection_hit_probability_is_its_closed_form(self):
+        assert ra.rejection_hit_probability(0.0, 512) == 0.0
+        assert ra.rejection_hit_probability(1.0, 1) == 1.0
+        assert ra.rejection_hit_probability(0.001, 512) == pytest.approx(
+            1 - 0.999 ** 512)
+
+    def _rungs(self, rates):
+        return [{"status": "resolved", "window": [8.0 + 6 * index, 12.0 + 6 * index],
+                 "conjunction_rate": rate} for index, rate in enumerate(rates)]
+
+    def test_the_first_unreachable_rung_is_chosen(self):
+        """One observed hit in 3072 is still reachable: its bound reaches 0.55.
+
+        That is the bound doing its job rather than a threshold being generous.
+        A single observation cannot rule out a rate a 512-sample sampler would
+        find more often than not, and the rung chosen as a positive control has
+        to be one the sampler misses.
+        """
+
+        choice = ra.choose_hard_rung(
+            self._rungs([0.02, 0.004, 1 / 3072, 0.0, 0.0]), n=3072)
+        assert choice["chosen_window"] == [26.0, 30.0]
+        reached = [rung["unreachable"] for rung in choice["rungs_examined"]]
+        assert reached == [False, False, False, True, True]
+        one_hit = choice["rungs_examined"][2]
+        assert one_hit["conjunction_hits"] == 1
+        assert one_hit["hit_probability_upper_bound_at_k512"] > 0.5
+
+    def test_the_declared_target_itself_may_be_the_easy_end(self):
+        choice = ra.choose_hard_rung(self._rungs([0.0039, 0.0, 0.0, 0.0, 0.0]), n=3072)
+        assert choice["rungs_examined"][0]["unreachable"] is False
+        assert choice["chosen_window"] == [14.0, 18.0]
+
+    def test_a_ladder_with_no_unreachable_rung_is_reported_rather_than_extended(self):
+        choice = ra.choose_hard_rung(self._rungs([0.05, 0.04, 0.03, 0.02, 0.01]), n=3072)
+        assert choice["chosen_window"] is None
+        assert "The ladder is not extended" in choice["reason"] \
+            or "ladder is not extended" in choice["reason"]
+        assert "cannot support a positive control" in choice["reason"]
+
+    def test_an_unresolved_rung_is_carried_rather_than_skipped_silently(self):
+        rungs = self._rungs([0.02, 0.0, 0.0, 0.0, 0.0])
+        rungs[1] = {"status": "unresolved", "window": [14.0, 18.0],
+                    "reason": "below the resampling floor on stream(s) ['1']"}
+        choice = ra.choose_hard_rung(rungs, n=3072)
+        assert choice["rungs_examined"][1]["status"] == "unresolved"
+        assert choice["chosen_window"] == [20.0, 24.0]
+
+    def test_the_declared_constants_are_what_the_rule_names(self):
+        assert rp.RUNG_BUDGET == rp.K_GRID[-1]
+        assert 0.0 < rp.RUNG_UNREACHABLE_BOUND < 1.0
+        assert "Clopper-Pearson" in rp.RUNG_RULE
+        assert "not extended" in rp.RUNG_RULE
+
+
+class TestHardArmDeclaration:
+    """The fourth arm, and the refusals that keep its target from being chosen late."""
+
+    def test_the_hard_arm_is_declared_and_needs_no_structure(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        assert rp.ARM_ENVIRONMENT_HARD in rp.TRAINED_ARMS
+        arm = rp.arm(rp.ARM_ENVIRONMENT_HARD)
+        assert arm.needs_structure is False
+        assert sr.REWARD_NEEDS_DECLARED_WINDOW[sr.REWARD_ENVIRONMENT_HARD] is True
+
+    def test_every_family_widened_to_the_five_contrast_pools(self):
+        assert len(rp.CONTRAST_POOLS) == 5
+        assert rp.POOL_BASE not in rp.CONTRAST_POOLS
+        for family, size in rp.FAMILY_SIZES.items():
+            expected = (len(rp.CONTRAST_POOLS) * len(rp.K_GRID)
+                        if family.startswith(rp.FAMILY_BEST_OF_K)
+                        else len(rp.CONTRAST_POOLS) * (2 if family == rp.FAMILY_CROSS_NLL
+                                                       else 1))
+            assert size == expected, family
+
+    def test_the_hard_reward_refuses_until_its_window_is_declared(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        stats = sr.statistics("ACDEFGHIKLMNPQRSTVWY" * 4)
+        if sr.hard_window_declared():
+            pytest.skip("the window has been chosen; the refusal path is behind it")
+        with pytest.raises(ValueError, match="has not been chosen"):
+            sr.reward(sr.REWARD_ENVIRONMENT_HARD, stats)
+        with pytest.raises(ValueError, match="has not been chosen"):
+            sr.require_hard_window()
+        # and it is omitted from the computable set rather than raising there
+        assert sr.REWARD_ENVIRONMENT_HARD not in sr.rewards(stats, mean_ca_plddt=50.0)
+
+    def test_the_hard_reward_is_the_environment_arithmetic_at_another_window(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        stats = sr.statistics("K" * 20 + "ACDEFGHILMNPQSTVWY" * 4)
+        declared = sr.environment_reward_at(stats, charge_window=sr.CHARGE_WINDOW)
+        assert declared == pytest.approx(sr.reward(sr.REWARD_ENVIRONMENT, stats))
+        harder = sr.environment_reward_at(stats, charge_window=(32.0, 36.0))
+        assert 0.0 <= harder <= 1.0
+
+    def test_the_hard_window_must_be_a_rung_of_the_declared_ladder(self):
+        """Not enforced by the type system, so it is asserted where it is read."""
+
+        from src.capability.extensions import sequence_reward as sr
+
+        if sr.hard_window_declared():
+            assert tuple(sr.HARD_CHARGE_WINDOW) in rp.CHARGE_LADDER
+
+
+class TestNotMeasuredIsNotANull:
+    """An absent pool must not be reported as a failed optimisation."""
+
+    def _reading(self, optimised):
+        return ra.reading(
+            optimised=optimised,
+            k={"k_star": None, "redistribution": False, "reason": "fixture"},
+            support={"share_above": 0.5, "null_share": 0.01},
+            degeneracy={"breached": False, "breaches": {}},
+        )
+
+    def test_an_unmeasured_gain_is_unresolved_and_says_why(self):
+        got = self._reading(ra.optimisation_finding(None))
+        assert got["reading"] == rp.READING_UNRESOLVED
+        assert "not measured" in got["reason"]
+
+    def test_a_measured_gain_that_did_not_move_is_a_failed_optimisation(self):
+        got = self._reading(ra.optimisation_finding([-0.02, 0.05]))
+        assert got["reading"] == rp.READING_NO_OPTIMISATION
+
+    def test_a_measured_gain_that_moved_the_wrong_way_is_also_one(self):
+        got = self._reading(ra.optimisation_finding([-0.3, -0.1]))
+        assert got["reading"] == rp.READING_NO_OPTIMISATION
+        assert "wrong way" in got["reason"]

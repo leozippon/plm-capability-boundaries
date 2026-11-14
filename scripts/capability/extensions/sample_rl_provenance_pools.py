@@ -129,7 +129,7 @@ def generate(args: argparse.Namespace) -> int:
     # lane's frozen 400: it is the budget the policies were trained under and the
     # one the calibration record measured the base distribution at.
     ug.POLICY["max_new_tokens"] = rp.MAX_NEW_TOKENS
-    attempts = rp.pool_attempts(args.pool)
+    attempts = rp.pool_attempts(args.pool) if args.smoke is None else int(args.smoke)
     seeds = rp.pool_seeds(args.pool)
     cells = []
     for stream, directory in enumerate(cell_dirs(out, args.pool)):
@@ -170,6 +170,7 @@ def generate(args: argparse.Namespace) -> int:
         "closed_form_statistics": str(statistics_path),
         "closed_form_statistics_sha256": sha256_file(statistics_path),
         "written_utc": datetime.now(timezone.utc).isoformat(),
+        "declared_attempts_per_stream": rp.pool_attempts(args.pool),
         "is_scientific_measurement": all(
             cell["attempts"] == rp.pool_attempts(args.pool) for cell in cells
         ),
@@ -361,6 +362,12 @@ def main(argv: list[str] | None = None) -> int:
             stage.add_argument("--device", default="cuda:0")
             stage.add_argument("--policies", type=Path, default=None,
                                help="directory holding the trained arms' run directories")
+            # Interface check only. A pool drawn at anything but its declared
+            # attempt count is recorded is_scientific_measurement false, which is
+            # the lane's own rule for a sample that is not the declared one.
+            stage.add_argument("--smoke", type=int, default=None,
+                               help="attempts per stream for an interface check; the "
+                                    "record then claims no measurement")
         if name == "collect":
             stage.add_argument("--structures", type=Path, required=True,
                                help="evidence index of realisation A")

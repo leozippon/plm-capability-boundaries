@@ -302,7 +302,11 @@ def reachability(pools: Path) -> dict[str, Any]:
                 non_canonical_residues=int(row["non_canonical_residues"]),
             )
         )
-    return ra.reachability_curve(streams)
+    curve = ra.reachability_curve(streams)
+    attempts = sum(len(values) for values in streams.values())
+    curve["rung_choice"] = ra.choose_hard_rung(curve["rungs"], n=attempts)
+    curve["base_pool_attempts_scored"] = attempts
+    return curve
 
 
 def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, Any],
@@ -418,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     args.out.mkdir(parents=True, exist_ok=True)
     write_json(args.out / RESULT, record)
+    chosen = (ladder.get("rung_choice") or {}).get("chosen_window")
+    print(json.dumps({"chosen_hard_rung": chosen}), flush=True)
     print(json.dumps({pool: {"reading": reading["reading"],
                              "reward_gain": reading["reward_gain"]["point"],
                              "k_star": reading["k_star"]["k_star"]}
