@@ -456,53 +456,95 @@ def reward_range_share(pool_rewards: Sequence[float],
     }
 
 
+def degeneracy_offsets(base: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each declared degeneracy bound as a limit on the pool-minus-base contrast.
+
+    The banded quantity is the contrast, so every bound has to be a statement
+    about the contrast, and two of the four are declared against a *level* -- the
+    base pool's own 0.05 quantile of distinct 5-mer fraction and twice its 0.95
+    quantile of longest run. Those become contrast limits by subtracting the base
+    pool's mean, which is exactly the same statement about the same quantity and
+    uses only the interval that was actually banded. The other two are declared
+    as distances from the base pool and are contrast limits already.
+
+    ``side`` says which end of the contrast interval has to clear the limit:
+    ``below`` for a bound that degeneracy breaches by falling, ``above`` for the
+    one it breaches by rising.
+    """
+
+    offsets: dict[str, dict[str, Any]] = {}
+    if "mean_ca_plddt" in base:
+        offsets[rp.FAMILY_PLDDT] = {
+            "limit": -rp.PLDDT_DEGENERACY_MARGIN, "side": "below",
+            "reason": f"more than {rp.PLDDT_DEGENERACY_MARGIN:g} pLDDT points below the "
+                      "base pool",
+        }
+    if {"distinct_5mer_fraction_quantile", "distinct_5mer_fraction_mean"} <= set(base):
+        offsets[rp.FAMILY_DISTINCT_5MER] = {
+            "limit": (float(base["distinct_5mer_fraction_quantile"])
+                      - float(base["distinct_5mer_fraction_mean"])),
+            "side": "below",
+            "reason": f"below the base pool's {rp.DISTINCT_5MER_BASE_QUANTILE:g} quantile "
+                      "of distinct 5-mer fraction",
+        }
+    if {"longest_single_residue_run_quantile",
+            "longest_single_residue_run_mean"} <= set(base):
+        offsets[rp.FAMILY_LONGEST_RUN] = {
+            "limit": (rp.LONGEST_RUN_DEGENERACY_MULTIPLE
+                      * float(base["longest_single_residue_run_quantile"])
+                      - float(base["longest_single_residue_run_mean"])),
+            "side": "above",
+            "reason": f"above {rp.LONGEST_RUN_DEGENERACY_MULTIPLE:g} times the base pool's "
+                      f"{rp.LONGEST_RUN_BASE_QUANTILE:g} quantile of longest "
+                      "single-residue run",
+        }
+    if "composition_entropy_bits" in base:
+        offsets[rp.FAMILY_COMPOSITION_ENTROPY] = {
+            "limit": -rp.COMPOSITION_ENTROPY_DEGENERACY_MARGIN, "side": "below",
+            "reason": f"more than {rp.COMPOSITION_ENTROPY_DEGENERACY_MARGIN:g} bit below "
+                      "the base pool",
+        }
+    return offsets
+
+
 def degeneracy_breaches(summaries: Mapping[str, Mapping[str, Any]],
                         base: Mapping[str, Any]) -> dict[str, Any]:
     """Which declared degeneracy bounds a pool breaches, by the declaration's own rules.
 
     ``summaries`` maps a family name to that pool's banded column -- ``point``
-    and ``interval`` -- and ``base`` carries the base pool's point estimates and
-    the two declared quantiles. A breach does not make a bias absent; it decides
-    which of the two installed-bias readings applies, because a bias reached by
-    leaving the protein-like region is this project's own stronger claim.
+    and ``interval``, both of the pool-minus-base contrast -- and ``base``
+    carries the base pool's own means and the two declared quantiles, from which
+    :func:`degeneracy_offsets` forms each bound's limit on that contrast. A
+    breach needs the *whole* interval past the limit, which is the same rule
+    every other reading in this programme uses: a point estimate past a limit
+    with an interval reaching back over it has not shown the effect.
+
+    A breach does not make a bias absent. It decides which of the two
+    installed-bias readings applies, because a bias reached by leaving the
+    protein-like region is this project's own stronger claim rather than a
+    refutation of it.
     """
 
+    offsets = degeneracy_offsets(base)
     breaches: dict[str, str] = {}
-
-    def interval(family: str) -> tuple[float, float] | None:
+    measured: dict[str, dict[str, Any]] = {}
+    for family, bound in offsets.items():
         entry = summaries.get(family)
         if entry is None or entry.get("interval") is None:
-            return None
-        return float(entry["interval"][0]), float(entry["interval"][1])
-
-    plddt = interval(rp.FAMILY_PLDDT)
-    if plddt is not None and plddt[1] < float(base["mean_ca_plddt"]) - rp.PLDDT_DEGENERACY_MARGIN:
-        breaches[rp.FAMILY_PLDDT] = (
-            f"the whole interval lies more than {rp.PLDDT_DEGENERACY_MARGIN:g} pLDDT points "
-            "below the base pool"
-        )
-    shingle = interval(rp.FAMILY_DISTINCT_5MER)
-    if shingle is not None and shingle[1] < float(base["distinct_5mer_fraction_quantile"]):
-        breaches[rp.FAMILY_DISTINCT_5MER] = (
-            f"the whole interval lies below the base pool's "
-            f"{rp.DISTINCT_5MER_BASE_QUANTILE:g} quantile of distinct 5-mer fraction"
-        )
-    runs = interval(rp.FAMILY_LONGEST_RUN)
-    if runs is not None and runs[0] > (rp.LONGEST_RUN_DEGENERACY_MULTIPLE
-                                      * float(base["longest_single_residue_run_quantile"])):
-        breaches[rp.FAMILY_LONGEST_RUN] = (
-            f"the whole interval lies above {rp.LONGEST_RUN_DEGENERACY_MULTIPLE:g} times the "
-            f"base pool's {rp.LONGEST_RUN_BASE_QUANTILE:g} quantile of longest single-residue run"
-        )
-    entropy = interval(rp.FAMILY_COMPOSITION_ENTROPY)
-    if entropy is not None and entropy[1] < (float(base["composition_entropy_bits"])
-                                             - rp.COMPOSITION_ENTROPY_DEGENERACY_MARGIN):
-        breaches[rp.FAMILY_COMPOSITION_ENTROPY] = (
-            f"the whole interval lies more than "
-            f"{rp.COMPOSITION_ENTROPY_DEGENERACY_MARGIN:g} bit below the base pool"
-        )
-    unmeasured = [family for family in rp.DEGENERACY_BOUNDS if interval(family) is None]
-    return {"breaches": breaches, "breached": bool(breaches),
+            continue
+        low, high = float(entry["interval"][0]), float(entry["interval"][1])
+        limit = float(bound["limit"])
+        breached = high < limit if bound["side"] == "below" else low > limit
+        measured[family] = {"interval": [low, high], "limit": limit,
+                            "side": bound["side"], "breached": bool(breached)}
+        if breached:
+            breaches[family] = (
+                f"the whole contrast interval [{low:+.4f}, {high:+.4f}] lies past "
+                f"{limit:+.4f}: {bound['reason']}"
+            )
+    unmeasured = [family for family in rp.DEGENERACY_BOUNDS
+                  if family not in measured]
+    return {"breaches": breaches, "breached": bool(breaches), "measured": measured,
             "unmeasured_bounds": unmeasured, "bounds": dict(rp.DEGENERACY_BOUNDS)}
 
 

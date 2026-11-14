@@ -337,34 +337,68 @@ class TestReadings:
         assert record["share_above"] == 0.0
         assert "identically zero" in record["ceiling_note"]
 
+    #: The base pool's own levels, as the analyser derives them. The bounds are
+    #: limits on the pool-minus-base contrast, so a pool that matches the base
+    #: carries an interval around zero and must breach nothing.
+    BASE_LEVELS = {"mean_ca_plddt": 50.0,
+                   "distinct_5mer_fraction_mean": 0.9,
+                   "distinct_5mer_fraction_quantile": 0.35,
+                   "longest_single_residue_run_mean": 4.0,
+                   "longest_single_residue_run_quantile": 12.0,
+                   "composition_entropy_bits": 3.3}
+
     def _degeneracy(self, **columns):
-        base = {"mean_ca_plddt": 50.0, "distinct_5mer_fraction_quantile": 0.35,
-                "longest_single_residue_run_quantile": 12.0,
-                "composition_entropy_bits": 3.3}
-        summaries = {rp.FAMILY_PLDDT: {"interval": [48.0, 52.0]},
-                     rp.FAMILY_DISTINCT_5MER: {"interval": [0.9, 1.0]},
-                     rp.FAMILY_LONGEST_RUN: {"interval": [3.0, 5.0]},
-                     rp.FAMILY_COMPOSITION_ENTROPY: {"interval": [3.2, 3.4]}}
+        summaries = {rp.FAMILY_PLDDT: {"interval": [-2.0, 2.0]},
+                     rp.FAMILY_DISTINCT_5MER: {"interval": [-0.02, 0.02]},
+                     rp.FAMILY_LONGEST_RUN: {"interval": [-1.0, 1.0]},
+                     rp.FAMILY_COMPOSITION_ENTROPY: {"interval": [-0.1, 0.1]}}
         summaries.update(columns)
-        return ra.degeneracy_breaches(summaries, base)
+        return ra.degeneracy_breaches(summaries, self.BASE_LEVELS)
+
+    def test_the_bounds_are_limits_on_the_contrast_not_on_the_level(self):
+        """The banded quantity is the contrast, so the limits have to be too.
+
+        Reading a level bound against a contrast interval is the one way this
+        could go wrong without looking wrong: every pool would breach every
+        bound, because a contrast near zero sits far below the base's level.
+        """
+
+        offsets = ra.degeneracy_offsets(self.BASE_LEVELS)
+        assert offsets[rp.FAMILY_PLDDT]["limit"] == -rp.PLDDT_DEGENERACY_MARGIN
+        assert offsets[rp.FAMILY_DISTINCT_5MER]["limit"] == pytest.approx(0.35 - 0.9)
+        assert offsets[rp.FAMILY_LONGEST_RUN]["limit"] == pytest.approx(2 * 12.0 - 4.0)
+        assert offsets[rp.FAMILY_LONGEST_RUN]["side"] == "above"
+        assert offsets[rp.FAMILY_COMPOSITION_ENTROPY]["limit"] == pytest.approx(-1.0)
 
     def test_a_protein_like_pool_breaches_nothing(self):
-        assert self._degeneracy()["breached"] is False
+        record = self._degeneracy()
+        assert record["breached"] is False
+        assert record["unmeasured_bounds"] == []
 
     def test_each_declared_bound_is_breached_by_the_thing_it_names(self):
-        collapsed = self._degeneracy(**{rp.FAMILY_PLDDT: {"interval": [20.0, 30.0]}})
+        collapsed = self._degeneracy(**{rp.FAMILY_PLDDT: {"interval": [-30.0, -20.0]}})
         assert rp.FAMILY_PLDDT in collapsed["breaches"]
-        repetitive = self._degeneracy(**{rp.FAMILY_DISTINCT_5MER: {"interval": [0.1, 0.2]}})
+        repetitive = self._degeneracy(**{rp.FAMILY_DISTINCT_5MER: {"interval": [-0.8, -0.7]}})
         assert rp.FAMILY_DISTINCT_5MER in repetitive["breaches"]
-        homopolymer = self._degeneracy(**{rp.FAMILY_LONGEST_RUN: {"interval": [40.0, 60.0]}})
+        homopolymer = self._degeneracy(**{rp.FAMILY_LONGEST_RUN: {"interval": [30.0, 60.0]}})
         assert rp.FAMILY_LONGEST_RUN in homopolymer["breaches"]
-        narrow = self._degeneracy(**{rp.FAMILY_COMPOSITION_ENTROPY: {"interval": [1.0, 1.5]}})
+        narrow = self._degeneracy(**{rp.FAMILY_COMPOSITION_ENTROPY: {"interval": [-2.0, -1.5]}})
         assert rp.FAMILY_COMPOSITION_ENTROPY in narrow["breaches"]
+
+    def test_a_point_past_the_limit_with_an_interval_over_it_is_not_a_breach(self):
+        marginal = self._degeneracy(**{rp.FAMILY_PLDDT: {"interval": [-18.0, -2.0]}})
+        assert rp.FAMILY_PLDDT not in marginal["breaches"]
+        assert marginal["measured"][rp.FAMILY_PLDDT]["breached"] is False
 
     def test_an_unmeasured_bound_is_named_rather_than_passed(self):
         record = self._degeneracy(**{rp.FAMILY_PLDDT: {"interval": None}})
         assert rp.FAMILY_PLDDT in record["unmeasured_bounds"]
         assert rp.FAMILY_PLDDT not in record["breaches"]
+
+    def test_a_base_reference_with_no_levels_measures_no_bound(self):
+        record = ra.degeneracy_breaches({}, {})
+        assert record["breached"] is False
+        assert sorted(record["unmeasured_bounds"]) == sorted(rp.DEGENERACY_BOUNDS)
 
     def _reading(self, *, optimised, k_star_value, share, breached):
         return ra.reading(

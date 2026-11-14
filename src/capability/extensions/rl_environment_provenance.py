@@ -112,6 +112,41 @@ def esmfold2_checkpoint(model_root: Path | None = None) -> Path:
     return Path(model_root or MODEL_ROOT) / ESMFOLD2_DIRECTORY_NAME
 
 
+def prediction_spec(pool: str, checkpoint: Path):
+    """The arm declaration the prediction side-effect scores one pool's weights under.
+
+    This is the hook into the existing off-roster route. That route resolves an
+    arm by name through ``objective_tuned_arms.spec_for`` and loads it with
+    ``load_arm_spec``, which verifies the declared depth and width against the
+    live config of the directory it is given -- so a trained checkpoint of this
+    policy is scoreable there as the policy's own declaration with its path
+    replaced, and nothing about the rendering, the packing family or the marker
+    ids changes, because training changed none of them.
+
+    What it does *not* do is add a name to that campaign's declarations. Its
+    admitted list is frozen in ``configs/objective_tuned_prediction.json`` and
+    its pair table is the single source of what that campaign measures; adding
+    this experiment's weights to either is an amendment to its registration and
+    not something this one may make. The route's producer takes an arm *name*,
+    so scoring these weights through it needs that producer to accept a
+    checkpoint override alongside the name -- honoured or refused, never
+    ignored, which is the rule the generation lane already applies for exactly
+    this failure. That change is reported rather than made here.
+    """
+
+    import dataclasses
+
+    if pool not in EVALUATED_POOLS:
+        raise KeyError(f"unknown pool {pool!r}; declared: {list(EVALUATED_POOLS)}")
+    directory = Path(checkpoint)
+    if not (directory / "config.json").is_file():
+        raise FileNotFoundError(
+            f"{directory} declares no config.json, so its architecture cannot be "
+            "verified against the policy's declaration"
+        )
+    return dataclasses.replace(ot.spec_for(POLICY_ARM), path=directory)
+
+
 # -------------------------------------------------------------------- the arms
 
 ARM_MEMORY = sr.REWARD_MEMORY
