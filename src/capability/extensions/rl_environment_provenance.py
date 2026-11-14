@@ -27,21 +27,25 @@ pool. An evaluation of someone else's optimisation cannot separate "RL cannot
 install a bias" from "that recipe did not", and it cannot vary the one thing the
 thesis is about, which is where the reward came from.
 
-So this experiment trains three policies from one base, under three rewards that
-differ only in provenance, and asks of each whether the gain was reachable by
-rejection sampling from the base distribution. The decisive quantity is ``k*``:
+So this experiment trains policies from one base, under rewards that differ only
+in provenance, and asks of each whether the gain was reachable by rejection
+sampling from the base distribution. The decisive quantity is ``k*``:
 the smallest number of base samples that, with selection under the same reward,
 matches the trained policy's mean reward. A small ``k*`` means the optimisation
 redistributed memory the base already held. A large one means it did not.
 
-Three arms, one difference
---------------------------
+The arms, and the one difference between them
+---------------------------------------------
 Identical base, prompt, algorithm, hyperparameters, seeds and budgets. The
 reward is the only thing that changes, and what changes about it is where it
 comes from: a learned predictor trained on the policy's own corpus, a closed-form
-target no learned model touches, or both. The low-complexity constraint is in all
-three -- the published objective carries it, and it is what forbids a poly-lysine
-solution to a charge window -- so it cannot explain a difference between them.
+target no learned model touches, or both. The low-complexity constraint is in
+every arm -- a constraint at its limit is part of the published objective, and it
+is what forbids a poly-lysine solution to a charge window -- so it cannot explain
+a difference between them. Being shared is the only property of it this
+experiment depends on: the mask itself is this project's own operationalisation
+and not the published pipeline's, which
+:data:`~.sequence_reward.LOW_COMPLEXITY_PROVENANCE` states.
 """
 
 from __future__ import annotations
@@ -81,10 +85,17 @@ SCHEMA = "rl_environment_provenance"
 #: campaign's frozen pair table, which is that campaign's own single source.
 POLICY_ARM = "protgpt3-112m"
 
-#: The released DPO sibling of the same base, aligned against the objective arm
-#: ``memory`` reproduces. It is evaluated, never trained: it is what the
-#: published recipe produced from this base under this reward, and it belongs in
-#: every pool comparison for that reason.
+#: The released DPO sibling of the same base, aligned against the structural
+#: statistic arm ``memory`` is paid on. It is evaluated, never trained.
+#:
+#: The comparison it supports is a comparison of **pLDDT objectives with
+#: differing low-complexity constraints**, not of identical objectives: the
+#: published alignment's mask is not stated anywhere this project can read, arm
+#: M's mask is this experiment's own, and only the 0.25 limit and the pLDDT
+#: statistic are common to both. It is still the closest available comparison --
+#: one base, one structural statistic, one released checkpoint aligned against it
+#: -- and it belongs in every pool comparison for that reason, described as what
+#: it is.
 PUBLISHED_DPO_ARM = "protgpt3-112m-dpo"
 
 #: Parameter count of the base, measured on the staged checkpoint. Recorded
@@ -196,11 +207,16 @@ ARMS: tuple[Arm, ...] = (
         needs_structure=True,
         provenance=sr.REWARD_PROVENANCE[sr.REWARD_MEMORY],
         question=(
-            "the published DPO objective, trained online instead of as a "
-            "preference over a frozen sample. Its reward is computed by a model "
-            "trained on the same evolutionary record as the policy, so the "
-            "thesis predicts the gain is reachable by selection over the base "
-            "pool and is therefore a redistribution"
+            "the published DPO objective's own pLDDT statistic, trained online "
+            "as a continuous reward instead of as a binary preference over a "
+            "frozen sample, and under this experiment's own low-complexity mask "
+            "at that objective's 0.25 limit rather than under the published "
+            "pipeline's mask, which is not stated anywhere this project can "
+            "read. What is shared is the statistic and the limit; what is not is "
+            "the mask. Its reward is computed by a model trained on the same "
+            "evolutionary record as the policy, so the thesis predicts the gain "
+            "is reachable by selection over the base pool and is therefore a "
+            "redistribution"
         ),
     ),
     Arm(
@@ -526,7 +542,7 @@ SUPPORT_NOTE = (
 # One family per quantity and per unit. A maximum-statistic band in native units
 # may not span two quantities measured in different units, which is the rule the
 # objective-alignment declaration already applies to its identity endpoints, and
-# the three rewards are three quantities even though all three are dimensionless.
+# the rewards are different quantities even though all of them are dimensionless.
 
 FAMILY_REWARD_GAIN = "reward_gain"
 FAMILY_BEST_OF_K = "best_of_k"

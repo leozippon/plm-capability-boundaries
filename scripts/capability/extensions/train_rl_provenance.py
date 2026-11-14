@@ -7,7 +7,13 @@ one arm: the policy is ProtGPT3-112M, the algorithm is a group-relative policy
 gradient with a KL penalty to the frozen base, and the only thing that differs
 between invocations is which reward is paid.
 
-Two of the three rewards need a protein fold per completion, so the process
+The environment arm's reward needs no fold at all; the memory-derived arm's is
+the published DPO objective's own structural statistic under this experiment's
+declared low-complexity mask, which is not the published pipeline's -- see the
+registration under *What arm M does and does not share with the published
+objective*.
+
+Two of the rewards need a protein fold per completion, so the process
 holds the policy, the frozen reference and ESMFold2 at once. That is why it runs
 under the project's isolated folding runtime (``runtimes/esmfold2/bin/python``,
 Transformers 5.x) rather than under ``ct``: the folding instrument is only

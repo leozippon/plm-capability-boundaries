@@ -1,4 +1,4 @@
-"""Closed-form sequence statistics, and the three rewards whose provenance differs.
+"""Closed-form sequence statistics, and the rewards whose provenance differs.
 
 The experiment this serves is declared in ``docs/rl-environment-provenance.md``.
 Its one manipulated variable is where a reward *comes from*. Protein design has
@@ -17,8 +17,8 @@ this module imports no model, touches no GPU, and is therefore testable against
 hand-computed values, which is what a reward function has to be before anything
 is trained against it.
 
-Three terms, one shape
-----------------------
+The terms, and the one shape they share
+---------------------------------------
 Every term is a :func:`plateau` score in ``[0, 1]``: one inside a declared
 window, decaying linearly to zero over a declared half-width outside it. The
 shape is the same for all three so that none of them can quietly carry a
@@ -102,16 +102,22 @@ def net_charge(sequence: str, *, ph: float = REFERENCE_PH) -> float:
 
 # ------------------------------------------------- low-complexity residues
 #
-# The published preference objective this experiment's memory-derived arm
-# reproduces reads "fewer than 25% low-complexity residues". It does not say
-# which mask produced that fraction, and this repository holds no residue-level
-# low-complexity mask: its existing screen is the distinct 5-mer fraction, which
-# is a ranking over whole sequences rather than a per-residue label, and the
-# objective-alignment declaration already records that gap rather than papering
-# over it. So the mask below is **declared here as this experiment's own**, with
-# its window, its threshold and its union rule, and it is not a reproduction of
-# the published pipeline's mask. The threshold it shares with that objective is
-# 25% of residues; how a residue earns the label is ours.
+# The published preference objective the memory-derived arm takes its pLDDT
+# statistic from also reads "fewer than 25% low-complexity residues". It does not
+# say which mask produced that fraction, and this repository holds no
+# residue-level low-complexity mask at all: its existing screen is the distinct
+# 5-mer fraction, which is a ranking over whole sequences rather than a
+# per-residue label and whose direction is the opposite of what its name suggests
+# -- higher means more diverse.
+#
+# So there are three distinct statistics here and not three versions of one. The
+# published objective's mask is unknown. The objective-alignment campaign's
+# ``objective_tuned_analysis._low_complexity`` is a distinct-5-mer fraction with
+# no window and no entropy in it. And the mask below is **this experiment's own**,
+# declared here with its window, its entropy threshold and its union rule. The
+# only thing it shares with the published objective is the 0.25 limit on the share
+# of residues; how a residue earns the label is ours, and nothing here reproduces
+# that pipeline's mask or is interchangeable with the campaign's screen.
 
 #: Window length, in residues, over which local composition entropy is read.
 LOW_COMPLEXITY_WINDOW = 12
@@ -130,9 +136,13 @@ LOW_COMPLEXITY_LIMIT = 0.25
 LOW_COMPLEXITY_PROVENANCE = (
     f"union of sliding windows of {LOW_COMPLEXITY_WINDOW} residues whose "
     f"composition entropy is at most {LOW_COMPLEXITY_ENTROPY_BITS} bits; a "
-    "residue is low-complexity if any window containing it is labelled. This "
-    "is this experiment's own declared mask, not the published DPO pipeline's, "
-    "which is not available here; the 25% limit is the published one"
+    "residue is low-complexity if any window containing it is labelled. This is "
+    "this experiment's own declared mask. It is not the published DPO pipeline's, "
+    "which does not state which mask produced its fraction, and it is not the "
+    "objective-alignment campaign's distinct-5-mer screen, which has no window "
+    "and no entropy in it and runs in the opposite direction to its own name. "
+    f"The only thing shared with the published objective is the "
+    f"{LOW_COMPLEXITY_LIMIT:g} limit on the share of residues"
 )
 
 
@@ -305,9 +315,11 @@ def statistics(sequence: str) -> SequenceStatistics:
 
 # ------------------------------------------------------------- the rewards
 
-#: The memory-derived reward: the published preference objective's own score,
+#: The memory-derived reward: the published preference objective's own *score* --
 #: mean CA-pLDDT from a predictor trained on the same evolutionary corpus as the
-#: policy, under that objective's low-complexity constraint.
+#: policy -- under this experiment's own low-complexity constraint at that
+#: objective's 0.25 limit. The pLDDT statistic is shared; the mask is not, and
+#: :data:`LOW_COMPLEXITY_PROVENANCE` says so.
 REWARD_MEMORY = "memory"
 #: The environment-supplied reward: charge and length windows under the same
 #: constraint, every term exactly computable and no learned model anywhere.
@@ -368,7 +380,8 @@ REWARD_PROVENANCE: Mapping[str, str] = {
     REWARD_MEMORY: (
         "ESMFold2 mean CA-pLDDT, a learned predictor trained on the same "
         "evolutionary record as the policy, under the closed-form "
-        "low-complexity constraint the published objective also carries"
+        "low-complexity constraint declared here at the 0.25 limit the published "
+        "objective also uses"
     ),
     REWARD_ENVIRONMENT: (
         "net charge at pH 7.0 and residue count, each inside a declared window, "
@@ -392,10 +405,13 @@ REWARD_PROVENANCE: Mapping[str, str] = {
 def complexity_term(stats: SequenceStatistics) -> float:
     """The declared constraint, as a term: one below the limit, decaying above it.
 
-    Shared by all three rewards, because the published objective carries it and
-    because it is what forbids the degenerate solutions -- poly-lysine reaches
-    any charge window -- that the environment reward would otherwise admit. Being
-    shared, it cannot explain a difference between the arms.
+    Shared by every reward, because a constraint at this limit is part of the
+    published objective and because it is what forbids the degenerate solutions
+    -- poly-lysine reaches any charge window -- that the environment reward would
+    otherwise admit. Being shared, it cannot explain a difference between the
+    arms, which is the only property of it this experiment depends on; the mask
+    itself is this project's own and is not interchangeable with the published
+    pipeline's or with the objective-alignment campaign's screen.
     """
 
     return plateau(
@@ -521,7 +537,7 @@ def reward(name: str, stats: SequenceStatistics, *, mean_ca_plddt: float | None 
 
 
 def rewards(stats: SequenceStatistics, *, mean_ca_plddt: float | None = None) -> dict[str, float]:
-    """All three rewards for one completion, where each can be computed.
+    """Every declared reward for one completion, where each can be computed.
 
     Every pool is read under every reward, not only the one it was trained
     against: that is how the experiment asks whether an environment-supplied
