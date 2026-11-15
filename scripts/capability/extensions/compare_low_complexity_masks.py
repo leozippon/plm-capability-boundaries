@@ -90,6 +90,8 @@ def measure(sequence: str) -> dict:
     """Both statistics and their integer counts for one sequence."""
 
     length = len(sequence)
+    if length == 0:
+        raise SystemExit("an empty sequence has neither statistic")
     s1 = sr.low_complexity_fraction(sequence)
     d5 = ota._low_complexity(sequence)  # the statistic the rule `low_complexity_residues` ranks by
     positions = length - RESIDUE_SHINGLE + 1
