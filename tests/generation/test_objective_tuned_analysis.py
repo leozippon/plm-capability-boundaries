@@ -353,6 +353,8 @@ def test_the_explicit_statistics_control_reproduces_a_stated_share(analysis):
             assert selection["n_retained"] == int(selection["n_scored"] * 0.25)
             assert selection["n_retained"] == selection["tuned_folded_pool"], (name, stream)
             assert selection["n_unscorable"] == 0
+            assert 0 < selection["n_retained_at_cut"] <= min(selection["n_retained"],
+                                                             selection["n_tied_at_cut"])
         for key, cell in band["columns"].items():
             arm, stratum = key.split("|")
             if cell["status"] != "resolved":
@@ -898,6 +900,31 @@ def test_the_retained_count_follows_the_selection_fraction():
     rule = ota.filter_rules(_counts())[0]
     assert [ota.rank_and_retain(members, rule, fraction=f)["n_retained"]
             for f in (0.5, 0.25, 0.125)] == [40, 20, 10]
+
+
+def test_the_cut_records_how_much_of_the_retained_set_the_tie_break_decided():
+    rule = ota.filter_rules(_counts())[0]
+
+    def pool(scores):
+        return [{"key": f"m{index}", "sequence": "A", "score": score}
+                for index, score in enumerate(scores)]
+
+    # Ranked: one member beats the cut, and the cut group is told apart by its key.
+    ranked = ota.rank_and_retain(pool([3.0, 2.0, 2.0, 1.0]), rule, fraction=0.5)
+    assert (ranked["cut_score"], ranked["n_tied_at_cut"], ranked["n_retained_at_cut"]) == (2.0, 2, 1)
+    assert ranked["retained_keys"] == {"m0", "m1"}
+    # Saturated: the retained set lies wholly inside the group at the best score, so it is
+    # the key-ordered members of the group. Keys compare as strings, which is why
+    # "m10" is kept before "m2".
+    members = pool([1.0] * 12 + [0.5] * 4)
+    saturated = ota.rank_and_retain(members, rule, fraction=0.25)
+    assert (saturated["cut_score"], saturated["n_tied_at_cut"],
+            saturated["n_retained_at_cut"], saturated["n_retained"]) == (1.0, 12, 4, 4)
+    assert saturated["retained_keys"] == {"m0", "m1", "m10", "m11"}
+    # Nothing retained, nothing cut.
+    nothing = ota.rank_and_retain(pool([1.0, 2.0]), rule, fraction=0.25)
+    assert nothing["cut_score"] is None
+    assert nothing["n_tied_at_cut"] == nothing["n_retained_at_cut"] == 0
 
 
 def test_the_repetitiveness_statistics_and_rank_correlation():

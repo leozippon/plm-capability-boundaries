@@ -859,10 +859,22 @@ def rank_and_retain(
     *,
     fraction: float = TOP_FRACTION,
 ) -> dict[str, Any]:
-    """Retain the top ``fraction`` of an already-scored pool, best first."""
+    """Retain the top ``fraction`` of an already-scored pool, best first.
+
+    The record says how much of the retained set the statistic decided.
+    ``cut_score`` is the score of the last retained member, ``n_tied_at_cut`` the
+    number of scored members, retained or not, carrying exactly that score, and
+    ``n_retained_at_cut`` how many retained members sit in that group. Members of
+    one group are told apart only by the attempt key, so a retained set wholly
+    inside it (``n_retained_at_cut == n_retained``) is a key-ordered subsample of
+    the group and not a ranking by the statistic: a binary statistic on a pool
+    where most members score alike realises exactly that.
+    """
 
     order = _by_score(scored, rule.retain)
     retain = int(len(order) * float(fraction))
+    cut = float(scored[order[retain - 1]]["score"]) if retain else None
+    at_cut = [float(scored[index]["score"]) == cut for index in order]
     return {
         "rule": rule.name,
         "retain": rule.retain,
@@ -871,6 +883,9 @@ def rank_and_retain(
         "fraction": float(fraction),
         "n_scored": len(order),
         "n_retained": retain,
+        "cut_score": cut,
+        "n_tied_at_cut": sum(at_cut),
+        "n_retained_at_cut": sum(at_cut[:retain]),
         "retained_keys": frozenset(str(scored[index]["key"]) for index in order[:retain]),
     }
 
