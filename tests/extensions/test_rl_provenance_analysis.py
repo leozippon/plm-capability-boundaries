@@ -866,11 +866,23 @@ class TestLengthStratification:
         assert edges[0] == sr.STRUCTURE_SUPPORT[0]
         assert edges[-1] == rp.MAX_NEW_TOKENS + 1
 
-    def test_the_strata_are_finer_where_the_measured_slope_is_steeper(self):
+    def test_the_strata_widen_from_the_short_end_and_bracket_the_minimum(self):
+        """The dependence is U-shaped with a minimum near 72-100 residues.
+
+        The edges are finer at the short end, where the fall from 16 to 32
+        residues is about nine pLDDT points, and they bracket the turn at 64-95
+        and 96-127. Stratification is agnostic to the sign of the dependence, so
+        the edges do the work on the rising limb as well -- which is the point of
+        the device for a non-monotone confound, since no linear control can
+        remove a U.
+        """
+
         widths = [high - low for low, high in zip(rp.LENGTH_STRATUM_EDGES[:-1],
                                                   rp.LENGTH_STRATUM_EDGES[1:])]
         assert widths == sorted(widths)
         assert widths[0] < widths[-1]
+        assert "64-95" in rp.LENGTH_STRATUM_NAMES
+        assert "96-127" in rp.LENGTH_STRATUM_NAMES
 
     def test_nothing_below_the_structural_support_reaches_a_stratum(self):
         from src.capability.extensions import sequence_reward as sr

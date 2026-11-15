@@ -522,27 +522,33 @@ LADDER_NOTE = (
 
 # ------------------------------------------------- the length confound
 #
-# Mean CA-pLDDT falls monotonically with sequence length across the retained
-# structural support, and the fall is large where the support begins. Priced from
-# 93,049 of this project's own recorded ESMFold2 readings: 69.2 at 16-23 residues,
-# 59.9 at 24-31, 56.5 at 32-39, 52.5 at 56-71, 51.3 at 72-95, with four
-# independent corpora reproducing the slope inside their own families. Between the
-# 32-56 and 72-96 bands length alone is worth about five pLDDT points, 0.05 in
-# reward units; at 16-30 residues the best recorded readings are short amphipathic
-# helices at 80.8 to 84.3, a memory-derived reward of 0.81 to 0.84 against the base
-# pool's 0.468.
+# Mean CA-pLDDT depends on sequence length, and the dependence is **U-shaped** with
+# a minimum somewhere around 72 to 100 residues. It is not monotone, which is how
+# an earlier draft of this block had it. Priced from 93,049 of this project's own
+# recorded ESMFold2 readings: 69.2 at 16-23 residues, 59.9 at 24-31, 56.5 at 32-39,
+# 52.5 at 56-71, 51.3 at 72-95 -- and then back up, 52.6 at 96-143 and 56.3 at
+# 144-223. A nested-prefix series over the same sequences shows the turn more
+# sharply still, 35.1 at 120 residues, 51.1 at 160 and 60.6 at 192, and that
+# within-sequence slope is the one that bears on a policy changing the length of
+# its own output.
 #
-# So a policy can beat the base pool's *mean* cheaply by shortening, without
-# approaching what natural-length sequences reach -- and that is the exact shape of
-# a gain that would read as an installed bias and be an instrument artifact. The
-# structural-support rule bounds the channel at 16 residues; it does not remove the
-# slope above it, and none of the four declared degeneracy bounds reads length at
-# any point.
+# So the risk is **movement away from the minimum in either direction**, not
+# shortening. On the short side the best recorded readings at 16-30 residues are
+# amphipathic helices at 80.8 to 84.3, a memory-derived reward of 0.81 to 0.84
+# against the base pool's 0.468. On the long side the within-sequence slope between
+# 160 and 192 residues is worth about nine pLDDT points on its own. Either
+# direction can buy reward with nothing installed, and none of the four declared
+# degeneracy bounds reads length at any point. The structural-support rule bounds
+# the short channel at 16 residues and does nothing about the long one.
 #
 # The remedy is the device this project used to reject the depth confound against
 # its clause (ii): read the contrast within strata of the confounding variable and
-# withhold the verdict where the gain does not survive. It costs no compute,
-# because the pool sampler already records every sequence's length.
+# withhold the verdict where the gain does not survive. A non-monotone dependence
+# is the case where it is indispensable rather than merely convenient -- no linear
+# control and no single covariate can remove a U -- and stratification is agnostic
+# to the sign of the dependence, so it catches movement in either direction. It
+# costs no compute, because the pool sampler already records every sequence's
+# length.
 
 #: Length stratum edges, lower inclusive and upper exclusive, declared explicitly
 #: and fixed before any trained pool was read.
@@ -552,11 +558,20 @@ LADDER_NOTE = (
 #: record cited in the registration -- and never from a trained pool's, so the
 #: choice cannot be tuned to a result. The first edge is the structural support's
 #: own lower bound, the last is one past the declared completion budget, and the
-#: interior edges are closer together where the measured pLDDT-length slope is
-#: steepest: the fall from 16 to 32 residues is about nine pLDDT points and the
-#: fall from 56 to 96 is about one, so octave-wide strata at the short end would
-#: leave inside one stratum more length effect than the contrast is trying to
-#: remove.
+#: interior edges are closer together at the short end, where the fall from 16 to
+#: 32 residues is about nine pLDDT points. They bracket the minimum of the U at
+#: 64-95 and 96-127, which is the right shape, and it was arrived at for the wrong
+#: reason: the rationale written here first described the dependence as monotone
+#: and placed the fine edges where the fall was steepest, not where the turn is.
+#:
+#: The residual this leaves is declared rather than smoothed over, and it is
+#: largest in the top stratum. 128-200 is the widest of the seven at 73 residues
+#: and it sits on the rising limb, where the within-sequence slope between 160 and
+#: 192 residues is about nine pLDDT points; a length change spanning that stratum
+#: could therefore carry up to roughly twenty points, 0.2 in reward units, inside
+#: one stratum. A split at 160 would halve it and is not taken here, because the
+#: edges are declared and no pool has been read: changing them is an amendment
+#: rather than a run-time decision, and it is offered rather than made.
 LENGTH_STRATUM_EDGES: tuple[int, ...] = (16, 24, 32, 48, 64, 96, 128, 201)
 
 LENGTH_STRATUM_NAMES: tuple[str, ...] = tuple(
