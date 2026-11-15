@@ -302,6 +302,10 @@ def collect(args: argparse.Namespace) -> int:
         # The structure-conditional hit lands under realisation A, the rest under
         # the closed-form table, because that is where each is measured.
         for key, value in entry["hits"].items():
+            # Flat, and spelled exactly as the value tables spell it, so a
+            # stratified family and a pooled one read one name for one quantity.
+            entry[f"hit_{key}"] = 1.0 if value else 0.0
+        for key, value in entry["hits"].items():
             realisation = "A" if key in ("plddt_criterion", "memory_conjunction") \
                 else "closed_form"
             values.setdefault(f"hit_{key}", {}).setdefault(realisation, {}).setdefault(

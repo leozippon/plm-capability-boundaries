@@ -581,6 +581,20 @@ def length_stratum(length: int) -> str | None:
     return None
 
 
+CRITERION_RATE_AMPLIFICATION = (
+    "the predicted-confidence rate is stratified because a threshold crossing "
+    "amplifies a shift in a distribution's location when the threshold sits inside "
+    "the shift, and here it does. The recorded mean CA-pLDDT at 16-23 residues is "
+    "69.2, essentially on the project's 70-point criterion, so in that stratum "
+    "about half of everything clears it from length alone; at 72-95 residues the "
+    "mean is 51.3 and almost nothing does. The rate is therefore *more* "
+    "length-driven than the mean it derives from, not less. It is also the "
+    "quotable form -- 'this share of generations exceeds seventy' is a "
+    "design-capability sentence in a way a mean is not -- and a caveat in a "
+    "declaration does not travel into a later sentence the way a stratified number "
+    "does. It stays a derived diagnostic and is not promoted to a verdict input"
+)
+
 STRATIFICATION_RULE = (
     "every pool contrast that involves the structural term is read within the "
     "declared length strata as well as over the pool, and an installed-bias "
@@ -640,6 +654,14 @@ FAMILY_LOW_COMPLEXITY = "low_complexity_fraction"
 FAMILY_LENGTH = "length"
 FAMILY_REWARD_GAIN_BY_LENGTH = "reward_gain_by_length"
 FAMILY_PLDDT_BY_LENGTH = "mean_ca_plddt_by_length"
+FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH = "plddt_criterion_rate_by_length"
+
+#: Families read within length strata that are diagnostics rather than verdict
+#: inputs. The gate reads the reward gain alone; these say what the length shift
+#: did to the quantities a reader would otherwise quote unstratified.
+STRATIFIED_DIAGNOSTIC_FAMILIES: tuple[str, ...] = (
+    FAMILY_PLDDT_BY_LENGTH, FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH,
+)
 FAMILY_CHARGE_RATE = "charge_window_rate"
 FAMILY_CONJUNCTION_RATE = "environment_conjunction_rate"
 FAMILY_PLDDT_CRITERION_RATE = "plddt_criterion_rate"
@@ -670,6 +692,8 @@ FAMILY_SIZES: dict[str, int] = {
        len(CONTRAST_POOLS) * len(LENGTH_STRATUM_NAMES)
        for reward in structural_rewards()},
     FAMILY_PLDDT_BY_LENGTH: len(CONTRAST_POOLS) * len(LENGTH_STRATUM_NAMES),
+    FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH: (len(CONTRAST_POOLS)
+                                            * len(LENGTH_STRATUM_NAMES)),
     FAMILY_LENGTH: len(CONTRAST_POOLS),
     **{_reward_family(FAMILY_BEST_OF_K, reward): len(CONTRAST_POOLS) * len(K_GRID)
        for reward in sr.REWARD_NAMES},

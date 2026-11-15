@@ -705,15 +705,15 @@ class TestHardArmDeclaration:
 
         assert len(rp.CONTRAST_POOLS) == 5
         assert rp.POOL_BASE not in rp.CONTRAST_POOLS
-        axis = {rp.FAMILY_CROSS_NLL: 2,
-                rp.FAMILY_PLDDT_BY_LENGTH: len(rp.LENGTH_STRATUM_NAMES)}
         for family, size in rp.FAMILY_SIZES.items():
             if family.startswith(rp.FAMILY_BEST_OF_K):
                 width = len(rp.K_GRID)
-            elif family.startswith(rp.FAMILY_REWARD_GAIN_BY_LENGTH):
+            elif family.endswith("_by_length") or "_by_length__" in family:
                 width = len(rp.LENGTH_STRATUM_NAMES)
+            elif family == rp.FAMILY_CROSS_NLL:
+                width = 2
             else:
-                width = axis.get(family, 1)
+                width = 1
             assert size == len(rp.CONTRAST_POOLS) * width, family
 
     def test_the_hard_reward_refuses_until_its_window_is_declared(self):
@@ -882,6 +882,39 @@ class TestLengthStratification:
     def test_a_completion_past_the_budget_reaches_none(self):
         assert rp.length_stratum(rp.MAX_NEW_TOKENS) == rp.LENGTH_STRATUM_NAMES[-1]
         assert rp.length_stratum(rp.MAX_NEW_TOKENS + 1) is None
+
+    def test_the_confidence_rate_is_stratified_because_a_threshold_amplifies(self):
+        """The rate is more length-driven than the mean it comes from, not less.
+
+        The recorded mean at 16-23 residues is 69.2, essentially on the 70-point
+        criterion, so about half of that stratum clears it from length alone; at
+        72-95 the mean is 51.3 and almost nothing does. A threshold inside a
+        location shift amplifies it. The rate is also the quotable form, and a
+        caveat in a declaration does not travel the way a stratified number does.
+        """
+
+        family = rp.FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH
+        assert rp.FAMILY_SIZES[family] == (len(rp.CONTRAST_POOLS)
+                                           * len(rp.LENGTH_STRATUM_NAMES))
+        assert "amplifies" in rp.CRITERION_RATE_AMPLIFICATION
+        assert "69.2" in rp.CRITERION_RATE_AMPLIFICATION
+        assert "51.3" in rp.CRITERION_RATE_AMPLIFICATION
+
+    def test_the_stratified_diagnostics_are_not_verdict_inputs(self):
+        """They say what the length shift did; the gate reads the gain alone."""
+
+        assert set(rp.STRATIFIED_DIAGNOSTIC_FAMILIES) == {
+            rp.FAMILY_PLDDT_BY_LENGTH, rp.FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH}
+        gate = {rp.family_name(rp.FAMILY_REWARD_GAIN_BY_LENGTH, reward)
+                for reward in rp.structural_rewards()}
+        assert not gate & set(rp.STRATIFIED_DIAGNOSTIC_FAMILIES)
+
+    def test_four_families_carry_the_stratification(self):
+        stratified = [name for name in rp.FAMILY_SIZES
+                      if name.endswith("_by_length") or "_by_length__" in name]
+        assert len(stratified) == 4
+        assert all(rp.FAMILY_SIZES[name] == len(rp.CONTRAST_POOLS)
+                   * len(rp.LENGTH_STRATUM_NAMES) for name in stratified)
 
     def test_only_the_structural_rewards_are_stratified(self):
         from src.capability.extensions import sequence_reward as sr

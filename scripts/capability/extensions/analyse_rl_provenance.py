@@ -147,7 +147,11 @@ def stratified_family(per_sequence: Mapping[str, Sequence[Mapping[str, Any]]], *
         "names": list(rp.LENGTH_STRATUM_NAMES),
         "field": field,
         "rule": rp.STRATIFICATION_RULE,
+        "role": ("derived diagnostic; the gate reads the reward gain alone"
+                 if family in rp.STRATIFIED_DIAGNOSTIC_FAMILIES else "verdict input"),
     }
+    if family == rp.FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH:
+        record["stratification"]["why"] = rp.CRITERION_RATE_AMPLIFICATION
     return record
 
 
@@ -491,6 +495,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     families[rp.FAMILY_PLDDT_BY_LENGTH] = stratified_family(
         per_sequence, family=rp.FAMILY_PLDDT_BY_LENGTH, field="mean_ca_plddt_A")
+    families[rp.FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH] = stratified_family(
+        per_sequence, family=rp.FAMILY_PLDDT_CRITERION_RATE_BY_LENGTH,
+        field="hit_plddt_criterion")
     families.update(external_families(supplied))
     undeclared = sorted(set(families) ^ set(rp.FAMILY_SIZES))
     if undeclared:
