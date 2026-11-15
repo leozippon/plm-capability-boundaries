@@ -45,8 +45,9 @@ def env_path(variable: str, default: Path) -> Path:
     and would fail while a corpus is still being staged; it is checked at first
     use instead, by :func:`require_input_path`.
 
-    The shell wins, then ``.env.local``, then the module default. The file is
-    read into this module and never into ``os.environ``: a value written there
+    The shell wins, then ``.env.local``, then the module default.
+    An explicitly empty shell value uses the default without consulting ``.env.local``.
+    The file is read into this module and never into ``os.environ``: a value written there
     is inherited by every subprocess the run spawns, so one host's layout would
     reach a child that had been given its own.
     """
@@ -54,7 +55,7 @@ def env_path(variable: str, default: Path) -> Path:
     value = os.environ.get(variable)
     if value is None:
         value = _LOCAL_ENVIRONMENT.get(variable)
-    return Path(default if value is None else value)
+    return Path(default if value is None or value == "" else value)
 
 
 def require_input_path(path: Path, variable: str) -> Path:

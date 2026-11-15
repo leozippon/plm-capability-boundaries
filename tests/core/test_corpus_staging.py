@@ -10,9 +10,11 @@ transfer that fills the volume damages work outside this experiment.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from src.capability.core.corpus_staging import (
     PublishedDigest, file_digests, free_bytes, parse_release_metalink,
@@ -54,6 +56,42 @@ METALINK = """<?xml version="1.0" encoding="UTF-8"?>
 </metalink>
 """
 URL = "https://example.invalid/RELEASE.metalink"
+
+
+class InputPaths(unittest.TestCase):
+    def test_shell_local_and_default_precedence(self):
+        from src.capability.core import arms
+
+        variable = "CAPABILITY_TEST_INPUT"
+        default = Path("/default/input")
+        local = {variable: "/local/input"}
+        cases = (
+            (None, {}, default),
+            (None, local, Path("/local/input")),
+            ("", local, default),
+            ("/shell/input", local, Path("/shell/input")),
+        )
+        for shell, local_values, expected in cases:
+            environment = {} if shell is None else {variable: shell}
+            with (
+                self.subTest(shell=shell, local=local_values),
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(arms, "_LOCAL_ENVIRONMENT", local_values),
+            ):
+                self.assertEqual(arms.env_path(variable, default), expected)
+
+    def test_empty_shell_does_not_hide_a_missing_default(self):
+        from src.capability.core import arms
+
+        variable = "CAPABILITY_TEST_INPUT"
+        with tempfile.TemporaryDirectory() as raw:
+            default = Path(raw) / "missing"
+            with (
+                patch.dict(os.environ, {variable: ""}),
+                patch.object(arms, "_LOCAL_ENVIRONMENT", {variable: raw}),
+                self.assertRaisesRegex(FileNotFoundError, f"set {variable}"),
+            ):
+                arms.require_input_path(arms.env_path(variable, default), variable)
 
 
 class DeclaredDigest(unittest.TestCase):
