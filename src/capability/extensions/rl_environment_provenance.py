@@ -520,6 +520,86 @@ LADDER_NOTE = (
     "and not an analysis"
 )
 
+# ------------------------------------------------- the length confound
+#
+# Mean CA-pLDDT falls monotonically with sequence length across the retained
+# structural support, and the fall is large where the support begins. Priced from
+# 93,049 of this project's own recorded ESMFold2 readings: 69.2 at 16-23 residues,
+# 59.9 at 24-31, 56.5 at 32-39, 52.5 at 56-71, 51.3 at 72-95, with four
+# independent corpora reproducing the slope inside their own families. Between the
+# 32-56 and 72-96 bands length alone is worth about five pLDDT points, 0.05 in
+# reward units; at 16-30 residues the best recorded readings are short amphipathic
+# helices at 80.8 to 84.3, a memory-derived reward of 0.81 to 0.84 against the base
+# pool's 0.468.
+#
+# So a policy can beat the base pool's *mean* cheaply by shortening, without
+# approaching what natural-length sequences reach -- and that is the exact shape of
+# a gain that would read as an installed bias and be an instrument artifact. The
+# structural-support rule bounds the channel at 16 residues; it does not remove the
+# slope above it, and none of the four declared degeneracy bounds reads length at
+# any point.
+#
+# The remedy is the device this project used to reject the depth confound against
+# its clause (ii): read the contrast within strata of the confounding variable and
+# withhold the verdict where the gain does not survive. It costs no compute,
+# because the pool sampler already records every sequence's length.
+
+#: Length stratum edges, lower inclusive and upper exclusive, declared explicitly
+#: and fixed before any trained pool was read.
+#:
+#: They are fixed from the *base* policy's own length distribution -- measured at
+#: this experiment's operating point and completion budget in the calibration
+#: record cited in the registration -- and never from a trained pool's, so the
+#: choice cannot be tuned to a result. The first edge is the structural support's
+#: own lower bound, the last is one past the declared completion budget, and the
+#: interior edges are closer together where the measured pLDDT-length slope is
+#: steepest: the fall from 16 to 32 residues is about nine pLDDT points and the
+#: fall from 56 to 96 is about one, so octave-wide strata at the short end would
+#: leave inside one stratum more length effect than the contrast is trying to
+#: remove.
+LENGTH_STRATUM_EDGES: tuple[int, ...] = (16, 24, 32, 48, 64, 96, 128, 201)
+
+LENGTH_STRATUM_NAMES: tuple[str, ...] = tuple(
+    f"{low}-{high - 1}" for low, high in zip(LENGTH_STRATUM_EDGES[:-1],
+                                             LENGTH_STRATUM_EDGES[1:])
+)
+
+
+def length_stratum(length: int) -> str | None:
+    """The declared stratum one completion falls in, or ``None`` outside them all.
+
+    ``None`` is every length the structural term is not defined on anyway -- the
+    empty completion and anything below the structural support -- so a stratified
+    structural contrast and the structural reward have the same domain by
+    construction.
+    """
+
+    value = int(length)
+    for index, name in enumerate(LENGTH_STRATUM_NAMES):
+        if LENGTH_STRATUM_EDGES[index] <= value < LENGTH_STRATUM_EDGES[index + 1]:
+            return name
+    return None
+
+
+STRATIFICATION_RULE = (
+    "every pool contrast that involves the structural term is read within the "
+    "declared length strata as well as over the pool, and an installed-bias "
+    "verdict is withheld unless the arm's reward gain is bounded above zero in at "
+    "least one stratum where both pools clear the resampling floor. The stratum "
+    "that carries it is quoted with the verdict. "
+    "Where no stratum admits the comparison -- which happens when a policy has "
+    "moved its length distribution out of the base pool's altogether -- the "
+    "verdict is withheld for want of a matched comparison rather than passed on "
+    "the pooled gain. That is the conservative direction and it is the point: a "
+    "gain measured across a length distribution the base pool does not share is "
+    "not evidence that anything was installed. "
+    "The best-of-k families are not stratified. k* asks whether rejection sampling "
+    "from the base pool reaches the policy's mean reward, which is a question about "
+    "the pools as drawn; whether that gain is a length artifact is what the "
+    "stratified gain decides, and it decides it first. Where the stratified gain "
+    "withholds the verdict, no k* reading is taken."
+)
+
 #: The quantile of the base pool's own base-model NLL above which a policy sample
 #: counts as outside the base's observed support. Its null value is one minus the
 #: quantile, which is what the containment reading is tested against.
@@ -557,6 +637,9 @@ FAMILY_DISTINCT_5MER = "distinct_5mer_fraction"
 FAMILY_LONGEST_RUN = "longest_single_residue_run"
 FAMILY_COMPOSITION_ENTROPY = "composition_entropy_bits"
 FAMILY_LOW_COMPLEXITY = "low_complexity_fraction"
+FAMILY_LENGTH = "length"
+FAMILY_REWARD_GAIN_BY_LENGTH = "reward_gain_by_length"
+FAMILY_PLDDT_BY_LENGTH = "mean_ca_plddt_by_length"
 FAMILY_CHARGE_RATE = "charge_window_rate"
 FAMILY_CONJUNCTION_RATE = "environment_conjunction_rate"
 FAMILY_PLDDT_CRITERION_RATE = "plddt_criterion_rate"
@@ -569,9 +652,25 @@ def _reward_family(stem: str, reward: str) -> str:
 #: Declared size per family. Every family is the four contrast pools crossed
 #: with whatever axis the family has; the reward-indexed families exist once per
 #: reward because their units are that reward's.
+def structural_rewards() -> tuple[str, ...]:
+    """The declared rewards whose value depends on a folded structure.
+
+    Only these are read within length strata, because only these carry the
+    instrument whose confidence depends on length. The exactly computable rewards
+    are untouched by the confound and by its remedy.
+    """
+
+    return tuple(name for name in sr.REWARD_NAMES if sr.REWARD_NEEDS_STRUCTURE[name])
+
+
 FAMILY_SIZES: dict[str, int] = {
     **{_reward_family(FAMILY_REWARD_GAIN, reward): len(CONTRAST_POOLS)
        for reward in sr.REWARD_NAMES},
+    **{_reward_family(FAMILY_REWARD_GAIN_BY_LENGTH, reward):
+       len(CONTRAST_POOLS) * len(LENGTH_STRATUM_NAMES)
+       for reward in structural_rewards()},
+    FAMILY_PLDDT_BY_LENGTH: len(CONTRAST_POOLS) * len(LENGTH_STRATUM_NAMES),
+    FAMILY_LENGTH: len(CONTRAST_POOLS),
     **{_reward_family(FAMILY_BEST_OF_K, reward): len(CONTRAST_POOLS) * len(K_GRID)
        for reward in sr.REWARD_NAMES},
     FAMILY_CROSS_NLL: len(CONTRAST_POOLS) * 2,
@@ -771,6 +870,21 @@ def _check_declarations() -> None:
         raise AssertionError("the base pool is the control and carries no contrast column")
     if sorted(K_GRID) != list(K_GRID) or K_GRID[0] != 1:
         raise AssertionError("the k grid is increasing and starts at one")
+    edges = list(LENGTH_STRATUM_EDGES)
+    if edges != sorted(edges) or len(set(edges)) != len(edges) or len(edges) < 3:
+        raise AssertionError(f"the length strata are strictly increasing; got {edges}")
+    if edges[0] != sr.STRUCTURE_SUPPORT[0]:
+        raise AssertionError(
+            f"the first length stratum begins at the structural support's own lower "
+            f"bound; got {edges[0]} against {sr.STRUCTURE_SUPPORT[0]}"
+        )
+    if edges[-1] != MAX_NEW_TOKENS + 1:
+        raise AssertionError(
+            f"the last length stratum ends at the declared completion budget; got "
+            f"{edges[-1] - 1} against {MAX_NEW_TOKENS}"
+        )
+    if length_stratum(sr.STRUCTURE_SUPPORT[0] - 1) is not None:
+        raise AssertionError("no stratum may reach below the structural support")
     if CHARGE_LADDER[0] != sr.CHARGE_WINDOW:
         raise AssertionError(
             f"the ladder's first rung is the declared charge window; got "
@@ -861,6 +975,10 @@ def contract() -> dict[str, Any]:
         "minimum_units_per_pool": MIN_UNITS_PER_POOL,
         "double_folded_pools": list(DOUBLE_FOLDED_POOLS),
         "cross_fit_note": CROSS_FIT_NOTE,
+        "length_strata": {"edges": list(LENGTH_STRATUM_EDGES),
+                          "names": list(LENGTH_STRATUM_NAMES),
+                          "rule": STRATIFICATION_RULE,
+                          "structural_rewards": list(structural_rewards())},
         "k_grid": list(K_GRID),
         "k_redistribution": K_REDISTRIBUTION,
         "k_star_rule": K_STAR_RULE,

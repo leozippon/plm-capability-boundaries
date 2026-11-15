@@ -848,8 +848,74 @@ def degeneracy_breaches(summaries: Mapping[str, Mapping[str, Any]],
             "unmeasured_bounds": unmeasured, "bounds": dict(rp.DEGENERACY_BOUNDS)}
 
 
+def stratified_gain(columns: Mapping[str, Mapping[str, Any]], *, pool: str,
+                    strata: Sequence[str] = rp.LENGTH_STRATUM_NAMES) -> dict[str, Any]:
+    """Whether a pool's structural gain survives reading it within length strata.
+
+    Mean CA-pLDDT falls with length across the retained structural support, so a
+    policy that shortens gains reward without anything having been installed. The
+    pooled gain cannot tell the two apart; a gain that holds at matched length can.
+
+    The rule is :data:`..rl_environment_provenance.STRATIFICATION_RULE`: the gain
+    survives when at least one stratum's whole interval lies above zero, and the
+    strata that carry it are named. A stratum neither pool populates, or that one
+    of them populates below the resampling floor, is unresolved and says so --
+    which is the case a policy that moved out of the base pool's length range
+    produces, and in that case the verdict is withheld for want of a matched
+    comparison rather than passed on the pooled gain.
+    """
+
+    survived: list[str] = []
+    negative: list[str] = []
+    unresolved: list[str] = []
+    detail: dict[str, Any] = {}
+    for stratum in strata:
+        entry = columns.get(f"{pool}|length={stratum}")
+        if entry is None or entry.get("status") != "resolved" or entry.get("interval") is None:
+            unresolved.append(stratum)
+            detail[stratum] = {"status": "unresolved",
+                               "reason": None if entry is None else entry.get("reason"),
+                               "units": None if entry is None else entry.get("units")}
+            continue
+        low, high = float(entry["interval"][0]), float(entry["interval"][1])
+        detail[stratum] = {"status": "resolved", "point": entry.get("point"),
+                           "interval": [low, high], "units": entry.get("units")}
+        if low > 0.0:
+            survived.append(stratum)
+        elif high < 0.0:
+            negative.append(stratum)
+    out = {
+        "pool": pool,
+        "strata": list(strata),
+        "survived_in": survived,
+        "negative_in": negative,
+        "unresolved_in": unresolved,
+        "per_stratum": detail,
+        "survives": bool(survived),
+        "rule": rp.STRATIFICATION_RULE,
+    }
+    if survived:
+        out["reason"] = (
+            "the gain is bounded above zero at matched length in stratum(s) "
+            + ", ".join(survived)
+        )
+    elif len(unresolved) == len(strata):
+        out["reason"] = (
+            "no length stratum admits the comparison: the pools do not overlap in "
+            "length anywhere both of them clear the resampling floor, so the pooled "
+            "gain is measured across a length distribution they do not share"
+        )
+    else:
+        out["reason"] = (
+            "no length stratum carries the gain: it does not survive being read at "
+            "matched length, which is what a gain earned by shortening looks like"
+        )
+    return out
+
+
 def reading(*, optimised: Mapping[str, Any], k: Mapping[str, Any],
-            support: Mapping[str, Any], degeneracy: Mapping[str, Any]) -> dict[str, Any]:
+            support: Mapping[str, Any], degeneracy: Mapping[str, Any],
+            stratified: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One pool's reading, by the decision rules declared before anything was trained.
 
     The rules are in :data:`..rl_environment_provenance.DECISION_RULES` and are
@@ -873,6 +939,14 @@ def reading(*, optimised: Mapping[str, Any], k: Mapping[str, Any],
         return {"reading": rp.READING_NO_OPTIMISATION,
                 "reason": "the reward gain is not bounded above zero: "
                           + str(optimised.get("reason"))}
+    if stratified is not None and not stratified.get("survives"):
+        # Before k* is consulted at all: a gain that does not hold at matched
+        # length is not a gain this experiment can attribute to anything the
+        # optimisation installed, so neither reading is taken.
+        return {"reading": rp.READING_UNRESOLVED,
+                "reason": "the reward gain does not survive length stratification, so "
+                          "no installed-bias or redistribution reading is taken: "
+                          + str(stratified.get("reason"))}
     if k.get("redistribution") is True:
         return {"reading": rp.READING_REDISTRIBUTION,
                 "reason": f"selection over {k['k_star']} base samples under the identical "

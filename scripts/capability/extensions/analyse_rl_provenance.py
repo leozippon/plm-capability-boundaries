@@ -30,7 +30,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -50,6 +50,7 @@ RESULT = "rl_provenance_result.json"
 #: because no structure enters them.
 QUANTITY_FAMILIES: dict[str, tuple[str, str]] = {
     rp.FAMILY_PLDDT: ("mean_ca_plddt", "A"),
+    rp.FAMILY_LENGTH: ("length", "closed_form"),
     rp.FAMILY_DISTINCT_5MER: ("distinct_5mer_fraction", "closed_form"),
     rp.FAMILY_LONGEST_RUN: ("longest_single_residue_run", "closed_form"),
     rp.FAMILY_COMPOSITION_ENTROPY: ("composition_entropy_bits", "closed_form"),
@@ -72,6 +73,82 @@ EXTERNAL_FAMILIES: dict[str, str] = {
     rp.FAMILY_SUPPORT_TAIL: "the base model's per-residue NLL of every pool, which the "
                             "support reading is a tail share of",
 }
+
+
+def read_per_sequence(pools: Path) -> dict[str, list[dict[str, Any]]]:
+    """Each pool's per-sequence table, which carries length beside every reward.
+
+    The stratified families need length and value on the *same* row, and the
+    per-stream value tables carry them as separate lists whose alignment is
+    positional. Reading the joined table the collect stage already writes is what
+    makes the stratification robust to a quantity that skipped a row.
+    """
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pool in rp.EVALUATED_POOLS:
+        path = Path(pools) / f"{pool}_per_sequence.jsonl"
+        if not path.is_file():
+            continue
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        out[pool] = rows
+    return out
+
+
+def stratified_streams(rows: Sequence[Mapping[str, Any]], *, field: str,
+                       stratum: str) -> dict[int, list[float]]:
+    """One pool's values for one length stratum, laid out by stream.
+
+    Only completions the structural term is defined on reach a stratum at all, so
+    a stratified structural contrast and the structural reward share one domain.
+    """
+
+    out: dict[int, list[float]] = {}
+    for row in rows:
+        if rp.length_stratum(int(row["length"])) != stratum:
+            continue
+        value = row.get(field)
+        if value is None:
+            continue
+        out.setdefault(int(row["stream"]), []).append(float(value))
+    return out
+
+
+def stratified_family(per_sequence: Mapping[str, Sequence[Mapping[str, Any]]], *,
+                      family: str, field: str) -> dict[str, Any]:
+    """One family of pool-minus-base contrasts, crossed with the length strata.
+
+    A column is ``pool|length=<stratum>``. The strata are declared from the base
+    policy's own length distribution and fixed before any trained pool was read,
+    so a stratum that leaves a column unresolved does so because the pools do not
+    overlap there and not because the edges were chosen to make it so.
+    """
+
+    base = per_sequence.get(rp.POOL_BASE)
+    columns = []
+    for pool in rp.CONTRAST_POOLS:
+        side = per_sequence.get(pool)
+        for stratum in rp.LENGTH_STRATUM_NAMES:
+            key = f"{pool}|length={stratum}"
+            if base is None or side is None:
+                absent = rp.POOL_BASE if base is None else pool
+                columns.append({"key": key,
+                                "skip_reason": f"no per-sequence table for pool "
+                                               f"{absent!r}"})
+                continue
+            columns.append({"key": key,
+                            "left": stratified_streams(side, field=field,
+                                                       stratum=stratum),
+                            "right": stratified_streams(base, field=field,
+                                                        stratum=stratum)})
+    record = ra.contrast_bands(columns, family=family)
+    record["stratification"] = {
+        "edges": list(rp.LENGTH_STRATUM_EDGES),
+        "names": list(rp.LENGTH_STRATUM_NAMES),
+        "field": field,
+        "rule": rp.STRATIFICATION_RULE,
+    }
+    return record
 
 
 def read_values(pools: Path) -> dict[str, dict[str, dict[str, dict[int, list[float]]]]]:
@@ -324,6 +401,12 @@ def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, An
     gain = gain_family["columns"].get(pool, {})
     optimised = ra.optimisation_finding(gain.get("interval"))
     k = ra.k_star(families[rp.family_name(rp.FAMILY_BEST_OF_K, own)]["columns"], pool=pool)
+    stratified = None
+    if own in rp.structural_rewards():
+        stratified = ra.stratified_gain(
+            families[rp.family_name(rp.FAMILY_REWARD_GAIN_BY_LENGTH, own)]["columns"],
+            pool=pool,
+        )
     degeneracy = ra.degeneracy_breaches(
         {family: families[family]["columns"].get(pool, {}) for family in rp.DEGENERACY_BOUNDS
          if family in families},
@@ -341,10 +424,10 @@ def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, An
             else ra.reading(optimised=optimised, k=k,
                             support={"share_above": 0.0, "null_share":
                                      1 - rp.SUPPORT_TAIL_QUANTILE},
-                            degeneracy=degeneracy)
+                            degeneracy=degeneracy, stratified=stratified)
     else:
         verdict = ra.reading(optimised=optimised, k=k, support=support,
-                             degeneracy=degeneracy)
+                             degeneracy=degeneracy, stratified=stratified)
     return {
         "pool": pool,
         "own_reward": own,
@@ -355,6 +438,7 @@ def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, An
         "k_star": k,
         "support": support,
         "degeneracy": degeneracy,
+        "length_stratified_gain": stratified,
         **verdict,
     }
 
@@ -397,6 +481,16 @@ def main(argv: list[str] | None = None) -> int:
     for family, (quantity, realisation) in QUANTITY_FAMILIES.items():
         families[family] = pool_contrast_family(values, family=family, quantity=quantity,
                                                 realisation=realisation)
+    per_sequence = read_per_sequence(args.pools)
+    for reward in rp.structural_rewards():
+        families[rp.family_name(rp.FAMILY_REWARD_GAIN_BY_LENGTH, reward)] = (
+            stratified_family(per_sequence,
+                              family=rp.family_name(rp.FAMILY_REWARD_GAIN_BY_LENGTH,
+                                                    reward),
+                              field=f"reward_{reward}_A")
+        )
+    families[rp.FAMILY_PLDDT_BY_LENGTH] = stratified_family(
+        per_sequence, family=rp.FAMILY_PLDDT_BY_LENGTH, field="mean_ca_plddt_A")
     families.update(external_families(supplied))
     undeclared = sorted(set(families) ^ set(rp.FAMILY_SIZES))
     if undeclared:

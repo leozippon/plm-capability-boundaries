@@ -700,15 +700,21 @@ class TestHardArmDeclaration:
         assert arm.needs_structure is False
         assert sr.REWARD_NEEDS_DECLARED_WINDOW[sr.REWARD_ENVIRONMENT_HARD] is True
 
-    def test_every_family_widened_to_the_five_contrast_pools(self):
+    def test_every_family_is_the_contrast_pools_crossed_with_its_own_axis(self):
+        """Five contrast pools, times whatever second axis the family declares."""
+
         assert len(rp.CONTRAST_POOLS) == 5
         assert rp.POOL_BASE not in rp.CONTRAST_POOLS
+        axis = {rp.FAMILY_CROSS_NLL: 2,
+                rp.FAMILY_PLDDT_BY_LENGTH: len(rp.LENGTH_STRATUM_NAMES)}
         for family, size in rp.FAMILY_SIZES.items():
-            expected = (len(rp.CONTRAST_POOLS) * len(rp.K_GRID)
-                        if family.startswith(rp.FAMILY_BEST_OF_K)
-                        else len(rp.CONTRAST_POOLS) * (2 if family == rp.FAMILY_CROSS_NLL
-                                                       else 1))
-            assert size == expected, family
+            if family.startswith(rp.FAMILY_BEST_OF_K):
+                width = len(rp.K_GRID)
+            elif family.startswith(rp.FAMILY_REWARD_GAIN_BY_LENGTH):
+                width = len(rp.LENGTH_STRATUM_NAMES)
+            else:
+                width = axis.get(family, 1)
+            assert size == len(rp.CONTRAST_POOLS) * width, family
 
     def test_the_hard_reward_refuses_until_its_window_is_declared(self):
         from src.capability.extensions import sequence_reward as sr
@@ -840,3 +846,139 @@ class TestBestOfKUsesTheDeclaredWeighting:
         drawn = ra.best_of_k_draws(streams, streams, family=family, column=9,
                                    ks=[1], draws=500)
         assert float(drawn[:, 0].mean()) == pytest.approx(ra.pool_mean(streams), abs=0.01)
+
+
+class TestLengthStratification:
+    """The length confound, and the device that withholds a verdict it could fake.
+
+    Mean CA-pLDDT falls with length across the retained structural support -- 69.2
+    at 16-23 residues against 51.3 at 72-95, priced from 93,049 of this project's
+    own readings -- so a policy that shortens gains reward without anything having
+    been installed. None of the four degeneracy bounds reads length, so the
+    stratified contrast is what stands between that and an installed-bias verdict.
+    """
+
+    def test_the_edges_are_declared_and_anchored_to_the_support_and_the_budget(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        edges = rp.LENGTH_STRATUM_EDGES
+        assert list(edges) == sorted(edges) and len(set(edges)) == len(edges)
+        assert edges[0] == sr.STRUCTURE_SUPPORT[0]
+        assert edges[-1] == rp.MAX_NEW_TOKENS + 1
+
+    def test_the_strata_are_finer_where_the_measured_slope_is_steeper(self):
+        widths = [high - low for low, high in zip(rp.LENGTH_STRATUM_EDGES[:-1],
+                                                  rp.LENGTH_STRATUM_EDGES[1:])]
+        assert widths == sorted(widths)
+        assert widths[0] < widths[-1]
+
+    def test_nothing_below_the_structural_support_reaches_a_stratum(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        for length in (0, 1, 8, sr.STRUCTURE_SUPPORT[0] - 1):
+            assert rp.length_stratum(length) is None
+        assert rp.length_stratum(sr.STRUCTURE_SUPPORT[0]) == rp.LENGTH_STRATUM_NAMES[0]
+
+    def test_a_completion_past_the_budget_reaches_none(self):
+        assert rp.length_stratum(rp.MAX_NEW_TOKENS) == rp.LENGTH_STRATUM_NAMES[-1]
+        assert rp.length_stratum(rp.MAX_NEW_TOKENS + 1) is None
+
+    def test_only_the_structural_rewards_are_stratified(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        assert set(rp.structural_rewards()) == {
+            name for name in sr.REWARD_NAMES if sr.REWARD_NEEDS_STRUCTURE[name]}
+        assert sr.REWARD_ENVIRONMENT not in rp.structural_rewards()
+        for reward in rp.structural_rewards():
+            family = rp.family_name(rp.FAMILY_REWARD_GAIN_BY_LENGTH, reward)
+            assert rp.FAMILY_SIZES[family] == (len(rp.CONTRAST_POOLS)
+                                               * len(rp.LENGTH_STRATUM_NAMES))
+
+    def _columns(self, **per_stratum):
+        out = {}
+        for stratum in rp.LENGTH_STRATUM_NAMES:
+            key = f"memory|length={stratum}"
+            entry = per_stratum.get(stratum)
+            out[key] = (entry if entry is not None
+                        else {"status": "unresolved", "interval": None,
+                              "reason": "below the resampling floor"})
+        return out
+
+    def test_a_gain_that_holds_at_matched_length_survives(self):
+        got = ra.stratified_gain(
+            self._columns(**{"128-200": {"status": "resolved", "point": 0.08,
+                                         "interval": [0.02, 0.14]}}), pool="memory")
+        assert got["survives"] is True
+        assert got["survived_in"] == ["128-200"]
+        assert "bounded above zero at matched length" in got["reason"]
+
+    def test_a_gain_that_vanishes_at_matched_length_does_not(self):
+        got = ra.stratified_gain(
+            self._columns(**{"128-200": {"status": "resolved", "point": 0.01,
+                                         "interval": [-0.03, 0.05]}}), pool="memory")
+        assert got["survives"] is False
+        assert "does not survive being read at matched length" in got["reason"]
+
+    def test_non_overlapping_length_distributions_say_so_rather_than_passing(self):
+        """The case a policy that shortened out of the base's range produces."""
+
+        got = ra.stratified_gain(self._columns(), pool="memory")
+        assert got["survives"] is False
+        assert got["unresolved_in"] == list(rp.LENGTH_STRATUM_NAMES)
+        assert "do not overlap in length" in got["reason"]
+
+    def test_a_negative_stratum_is_recorded_as_negative_not_as_unresolved(self):
+        got = ra.stratified_gain(
+            self._columns(**{"64-95": {"status": "resolved", "point": -0.1,
+                                       "interval": [-0.2, -0.02]}}), pool="memory")
+        assert got["negative_in"] == ["64-95"]
+        assert got["survives"] is False
+
+
+class TestStratifiedVerdictGate:
+    def _reading(self, stratified):
+        return ra.reading(
+            optimised={"optimised": True, "reason": "fixture"},
+            k={"k_star": 256, "redistribution": False, "reason": "fixture"},
+            support={"share_above": 0.4, "null_share": 0.01},
+            degeneracy={"breached": False, "breaches": {}},
+            stratified=stratified,
+        )
+
+    def test_an_installed_bias_needs_the_gain_to_survive_stratification(self):
+        survived = self._reading({"survives": True, "reason": "holds at 128-200"})
+        assert survived["reading"] == rp.READING_BIAS_ON_MANIFOLD
+        withheld = self._reading({"survives": False, "reason": "no stratum carries it"})
+        assert withheld["reading"] == rp.READING_UNRESOLVED
+        assert "does not survive length stratification" in withheld["reason"]
+
+    def test_the_gate_runs_before_the_redistribution_reading_too(self):
+        """Neither reading is taken on a gain that may be a length artifact."""
+
+        got = ra.reading(
+            optimised={"optimised": True, "reason": "fixture"},
+            k={"k_star": 8, "redistribution": True, "reason": "fixture"},
+            support={"share_above": 0.0, "null_share": 0.01},
+            degeneracy={"breached": False, "breaches": {}},
+            stratified={"survives": False, "reason": "no stratum carries it"},
+        )
+        assert got["reading"] == rp.READING_UNRESOLVED
+
+    def test_the_closed_form_arms_pass_no_stratification_and_are_unaffected(self):
+        got = ra.reading(
+            optimised={"optimised": True, "reason": "fixture"},
+            k={"k_star": 8, "redistribution": True, "reason": "fixture"},
+            support={"share_above": 0.0, "null_share": 0.01},
+            degeneracy={"breached": False, "breaches": {}},
+        )
+        assert got["reading"] == rp.READING_REDISTRIBUTION
+
+    def test_a_failed_optimisation_is_still_read_before_stratification(self):
+        got = ra.reading(
+            optimised={"optimised": False, "reason": "interval contains zero"},
+            k={"k_star": None, "redistribution": False, "reason": "fixture"},
+            support={"share_above": 0.0, "null_share": 0.01},
+            degeneracy={"breached": False, "breaches": {}},
+            stratified={"survives": False, "reason": "fixture"},
+        )
+        assert got["reading"] == rp.READING_NO_OPTIMISATION
