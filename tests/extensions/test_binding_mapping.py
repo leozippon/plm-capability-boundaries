@@ -9,6 +9,18 @@ import pytest
 from src.capability.extensions import binding_mapping as mapping
 
 ROOT = Path(__file__).resolve().parents[2]
+#: The phase-1 admission records and the public structures they were mapped onto
+#: are host-local: ``results/`` and ``data/`` are not distributed.
+BINDING = ROOT/'results/extensions/phenotype_followups_20261007/binding'
+STRUCTURES = ROOT/'data/phenotype_followups_20261007/binding-structures'
+needs_admission = pytest.mark.skipif(
+    not BINDING.exists(),
+    reason='the phase-1 binding admission is host-local and not distributed with this checkout',
+)
+needs_structures = pytest.mark.skipif(
+    not (BINDING.exists() or STRUCTURES.exists()),
+    reason='the cached public structures and the phase-1 binding admission are host-local and not distributed',
+)
 
 CIF = '''data_1ABC
 _entry.id 1ABC
@@ -169,11 +181,12 @@ def test_public_payload_cache_and_failure_receipts(tmp_path,monkeypatch):
     assert 'TimeoutError' in failed['error']
 
 
+@needs_structures
 def test_actual_1cse_author_mapping_from_cached_public_payload():
-    path = ROOT/'data/phenotype_followups_20261007/binding-structures/1CSE.cif.gz'
+    path = STRUCTURES/'1CSE.cif.gz'
     assert path.exists(), 'run bounded mapping preparation to stage the actual public test fixture'
     reference = mapping.parse_reference(mapping.read_payload(path),'1CSE')
-    with (ROOT/'results/extensions/phenotype_followups_20261007/binding/admission.jsonl').open() as handle:
+    with (BINDING/'admission.jsonl').open() as handle:
         first = json.loads(next(handle))
     result = mapping.map_row(first,reference)
     assert result['status'] == 'validated_operational_PDB_reference'
@@ -185,11 +198,11 @@ def test_actual_1cse_author_mapping_from_cached_public_payload():
 
 
 def admitted_source_rows():
-    phase1 = ROOT/'results/extensions/phenotype_followups_20261007/binding'
-    return [r for line in (phase1/'admission.jsonl').read_text().splitlines()
+    return [r for line in (BINDING/'admission.jsonl').read_text().splitlines()
             if (r := json.loads(line))['admitted']]
 
 
+@needs_structures
 @pytest.mark.parametrize('complex_id,n', [('3S9D_A_B',156), ('1KBH_A_B',9),
                                          ('1A22_A_B',209), ('1BP3_A_B',52)])
 def test_source_backed_background_conflicts_block_all_label_states(complex_id,n):
@@ -197,7 +210,7 @@ def test_source_backed_background_conflicts_block_all_label_states(complex_id,n)
     assert len(rows) == n
     pdb = complex_id.split('_')[0]
     reference = mapping.parse_reference(mapping.read_payload(
-        ROOT/f'data/phenotype_followups_20261007/binding-structures/{pdb}.cif.gz'),pdb)
+        STRUCTURES/f'{pdb}.cif.gz'),pdb)
     for r in rows:
         operational = mapping.map_row(r,reference,{'conflicts': []})
         assert operational['status'] == 'validated_operational_PDB_reference'
@@ -210,16 +223,17 @@ def test_source_backed_background_conflicts_block_all_label_states(complex_id,n)
         assert mapping.components([blocked]) == ({},[])
 
 
+@needs_admission
 def test_frozen_adjudication_reviews_every_distinct_admitted_note():
-    phase1 = ROOT/'results/extensions/phenotype_followups_20261007/binding'
     table = mapping.load_adjudication()
-    mapping.validate_adjudication(ROOT,admitted_source_rows(),phase1,table)
+    mapping.validate_adjudication(ROOT,admitted_source_rows(),BINDING,table)
     assert table['distinct_notes'] == 110
     table['review_groups'][0]['note_indexes'].pop()
     with pytest.raises(ValueError,match='review incomplete or changed'):
-        mapping.validate_adjudication(ROOT,admitted_source_rows(),phase1,table)
+        mapping.validate_adjudication(ROOT,admitted_source_rows(),BINDING,table)
 
 
+@needs_admission
 def test_omitted_mutant_substitutions_are_row_scoped_not_blanket_pdb_exclusion():
     rows = [r for r in admitted_source_rows() if r['complex_id'] == '1BJ1_HL_VW']
     table = mapping.load_adjudication()

@@ -113,6 +113,14 @@ def hits_of(count: int, *, wildtype: str = WILDTYPE) -> list[Hit]:
     return hits
 
 
+@pytest.fixture
+def plmc_identity(tmp_path, monkeypatch):
+    """Export records a producer digest; these tests never fit or execute PLMC."""
+    path = tmp_path / "plmc-test-identity"
+    path.write_text("Synthetic PLMC identity for export tests; not an executable.\n")
+    monkeypatch.setattr(R, "PLMC", path)
+
+
 # ------------------------------------------------------------------- refusal
 
 
@@ -191,7 +199,8 @@ def test_export_refuses_to_overwrite_an_existing_export(tmp_path):
 @pytest.mark.skipif(R.available_memory() < R.MIN_HEADROOM_BYTES,
                     reason="the export's declared memory headroom is not available here")
 @pytest.mark.parametrize("hits,exported,refused", [(1, 0, 1), (4, 1, 0)])
-def test_the_export_refuses_a_reference_without_enough_support(tmp_path, hits, exported, refused):
+def test_the_export_refuses_a_reference_without_enough_support(
+        tmp_path, plmc_identity, hits, exported, refused):
     config = tiny_cohort(tmp_path, expect={"references": 1, "samples": 2, "refusals": refused})
     hits_tsv(tmp_path / "hits.tsv", hits)
     arguments = argparse.Namespace(cohort="tiny", config=config, out=tmp_path / "out",
@@ -254,7 +263,7 @@ def test_a_directory_input_is_digested_and_verifies(tmp_path):
 
 @pytest.mark.skipif(R.available_memory() < R.MIN_HEADROOM_BYTES,
                     reason="the export's declared memory headroom is not available here")
-def test_verify_inputs_accepts_a_directory_the_manifest_names(tmp_path):
+def test_verify_inputs_accepts_a_directory_the_manifest_names(tmp_path, plmc_identity):
     config = tiny_cohort(tmp_path, expect={"references": 1, "samples": 2, "refusals": 0})
     hits_tsv(tmp_path / "hits.tsv", 4)
     extra = tmp_path / "rows"
@@ -266,8 +275,8 @@ def test_verify_inputs_accepts_a_directory_the_manifest_names(tmp_path):
     arguments = argparse.Namespace(cohort="tiny", config=config, out=tmp_path / "out",
                                    workers=1, threads=1)
     R.stage_export(arguments, R.Log(tmp_path / "log" / "export.log"))
-    # The root is the repository's, as in production: this cohort's own inputs are
-    # absolute and the plmc binary the manifest names is repository-relative.
+    # The root is the repository's, as in production; this fixture's cohort inputs
+    # and synthetic PLMC identity are absolute paths outside it.
     verified = B.verify_inputs(tmp_path / "out", root=REPO_ROOT)
     assert verified["source"]["rows"]["sha256"] == B.path_digest(extra)
     # And a change inside it is drift, not silence.

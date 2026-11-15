@@ -704,7 +704,10 @@ class TestCampaignShape:
         shrunk = build.cell_plan(declared[1:])
         assert any(cell["seed"] != stable[build.label(cell)] for cell in shrunk)
 
-    def test_the_manifest_rows_name_the_stage_the_arm_and_the_seed(self, tmp_path):
+    def test_the_manifest_rows_name_the_stage_the_arm_and_the_seed(self, tmp_path, monkeypatch):
+        # Scheduling shape only: TestStaging exercises the real filesystem predicate.
+        free_arms = {arm for pair in ot.pairs_in_lane(ot.LANE_FREE_LENGTH) for arm in pair.arms}
+        monkeypatch.setattr(ot, "weights_complete", lambda name: name in free_arms)
         build = builder()
         assert build.main(["--run", str(tmp_path), "--gpus", "0", "1", "2"]) == 0
         manifest = tmp_path / "queue" / f"campaign_{ot.CAMPAIGN}_generate.tsv"

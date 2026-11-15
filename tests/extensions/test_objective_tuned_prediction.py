@@ -1,8 +1,9 @@
 """The prediction side-effect's declaration, its estimand, its matched support and its band.
 
-Fixtures are synthetic ladder rows, so the invariants are tested without a scored arm. One
-test reads the real checkpoint of the smallest tuned arm where it is present, because the
-packing it is scored through is the one thing a synthetic fixture cannot witness.
+Fixtures are synthetic ladder rows, but their admission and instrument calibration still
+require the host-local campaign evidence, so this module skips where that bundle is absent.
+One test reads the real checkpoint of the smallest tuned arm where it is present, because
+the packing it is scored through is the one thing a synthetic fixture cannot witness.
 """
 import hashlib
 import json
@@ -11,13 +12,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+ROOT = Path(__file__).resolve().parents[2]
+if not (ROOT / 'logs/operations/objective-tuned-prediction-20261110').exists():
+    pytest.skip('the frozen admission and instrument-calibration evidence bundle is not distributed; '
+                'even the synthetic ladder rows depend on it', allow_module_level=True)
+
 from src.capability.extensions import bidirectional
 from src.capability.extensions import explicit_statistics_lanes as lanes
 from src.capability.extensions import objective_tuned_prediction as endpoint
 from src.capability.extensions import statistical_ladder as ladder
 from src.capability.generation import objective_tuned_arms as tuned_arms
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def ladder_rows(*, forward=None, reverse=None, groups=12, seeds=ladder.SEEDS):

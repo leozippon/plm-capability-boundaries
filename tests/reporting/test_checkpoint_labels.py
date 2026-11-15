@@ -47,7 +47,13 @@ def test_generated_keys_are_consistent_with_single_mapping(tmp_path):
         assert b'\r' not in path.read_bytes()
         assert all(line == line.rstrip() for line in path.read_bytes().splitlines())
     assert (ROOT / csv_path.relative_to(tmp_path)).read_text() == labels.key_csv()
-    assert (ROOT / tex_path.relative_to(tmp_path)).read_text() == labels.key_tex()
+
+
+@pytest.mark.skipif(
+    not (ROOT / labels.publication_paths.SUBMISSION).exists(),
+    reason='the host-local manuscript submission bundle is not distributed')
+def test_retained_manuscript_key_matches_single_mapping():
+    assert (ROOT / labels.publication_paths.CHECKPOINT_KEY).read_text() == labels.key_tex()
 
 
 def test_verdict_strip_counts_retained_intervals_without_inference():

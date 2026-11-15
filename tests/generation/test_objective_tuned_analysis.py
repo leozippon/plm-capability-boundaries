@@ -75,6 +75,8 @@ def triples() -> dict[tuple[str, str], list[tuple[str, float, float]]]:
     this repository made.
     """
 
+    if not any(path.exists() for path in (EVIDENCE, KMERS)):
+        pytest.skip("the measured generation evidence and UniRef50 k-mer bundle are not distributed")
     identity: dict[str, float] = {}
     for row in read_jsonl(SUBSET):
         status = row.get("reference_search_status")
@@ -543,6 +545,8 @@ def test_an_interface_cell_is_refused_as_a_measurement(triples, tmp_path):
 def test_within_arm_reading_on_its_own_frozen_instrument():
     """The amendment's reading, against the search of this pair's own cells."""
 
+    if not any(path.exists() for path in (WITHIN_ARM_NOVELTY, CONDITIONED)):
+        pytest.skip("the within-arm novelty and conditioned-generation bundle is not distributed")
     record = aot.within_arm_reading(WITHIN_ARM_NOVELTY, CONDITIONED)
     assert record["status"] == "measured"
     # No matched structural contrast for this pair, at this lane, ever.
@@ -569,6 +573,8 @@ def test_within_arm_reading_on_its_own_frozen_instrument():
 def test_within_arm_reading_refuses_to_average_a_partial_search():
     """A distribution read off part of a pool is biased by whatever chose that part."""
 
+    if not any(path.exists() for path in (OTHER_CAMPAIGN_NOVELTY, CONDITIONED)):
+        pytest.skip("the partial-coverage novelty and conditioned-generation bundle is not distributed")
     record = aot.within_arm_reading(OTHER_CAMPAIGN_NOVELTY, CONDITIONED)
     assert record["status"] == "measured"
     for condition, entry in record["per_arm"]["zymctrl"]["conditions"].items():
@@ -580,6 +586,9 @@ def test_within_arm_reading_refuses_to_average_a_partial_search():
 
 
 def test_the_control_arithmetic_and_its_undefined_case():
+    assert ota.reproduction_finding([1.1, 1.4])["finding"] == ota.SUPPORTED
+    assert ota.reproduction_finding([0.1, 0.9])["finding"] == ota.BOUNDED_NEGATIVE
+    assert ota.reproduction_finding([0.4, 1.6])["finding"] == ota.UNRESOLVED
     positive = ota.reproduced_fraction(60.0, 68.0, 66.0)
     assert positive["tuned_minus_base_gain"] == pytest.approx(8.0)
     assert positive["filter_minus_base_gain"] == pytest.approx(6.0)
@@ -700,9 +709,6 @@ def test_the_pair_decision_reports_both_narrowing_routes(analysis):
 def test_the_banded_share_says_whether_statistics_reproduce_the_whole_gain(analysis):
     """The reading a point estimate cannot give: most of the gain against all of it."""
 
-    assert ota.reproduction_finding([1.1, 1.4])["finding"] == ota.SUPPORTED
-    assert ota.reproduction_finding([0.1, 0.9])["finding"] == ota.BOUNDED_NEGATIVE
-    assert ota.reproduction_finding([0.4, 1.6])["finding"] == ota.UNRESOLVED
     seen = set()
     for block in analysis["explicit_statistics_control"]["rules"].values():
         band = block["bands"]
@@ -843,8 +849,9 @@ def test_the_likelihood_rule_ranks_by_mean_loglikelihood_per_token(tmp_path):
 
 
 def _counts():
+    """Small synthetic counts for rule declarations and rankings, not corpus measurements."""
     from src.capability.generation import generative_control as gc
-    return gc.load_kmer_counts(KMERS, aot.KMER_ORDERS)
+    return {k: np.ones(len(gc.AA20) ** k, dtype=np.int64) for k in aot.KMER_ORDERS}
 
 
 def test_the_three_declared_rules_are_unchanged_without_a_likelihood_table():

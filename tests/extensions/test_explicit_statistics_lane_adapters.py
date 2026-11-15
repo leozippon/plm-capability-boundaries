@@ -299,9 +299,18 @@ EXPORTS = {
     'abundance': 'results/extensions/explicit_statistics_abundance_20261109',
     'pairwise': 'results/extensions/explicit_statistics_pairwise_20261109',
 }
+#: Both exports are lane archives under the host-local ``results/`` tree.
+needs_export = {
+    cohort: pytest.mark.skipif(
+        not pathlib.Path(root).exists(),
+        reason=f'the {cohort} export archive is host-local and not distributed with this checkout',
+    )
+    for cohort, root in EXPORTS.items()
+}
 
 
-@pytest.mark.parametrize('cohort', sorted(EXPORTS))
+@pytest.mark.parametrize('cohort', [
+    pytest.param(cohort, marks=needs_export[cohort]) for cohort in sorted(EXPORTS)])
 def test_the_export_names_a_row_by_its_assay_and_its_mutation(cohort):
     from src.capability.baselines.cohorts import SAMPLE_SEPARATOR
 
@@ -316,6 +325,7 @@ def test_the_export_names_a_row_by_its_assay_and_its_mutation(cohort):
         assert ':' in multi[0]['mutation']
 
 
+@needs_export['abundance']
 def test_the_abundance_export_is_keyed_by_domain_and_refused_by_reference():
     document = json.loads((pathlib.Path(EXPORTS['abundance']) / 'inputs'
                            / 'variant_table.json').read_text())

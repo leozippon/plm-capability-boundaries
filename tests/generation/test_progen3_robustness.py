@@ -61,6 +61,10 @@ def columns() -> dict[str, int]:
     return {domain: json.loads((REFERENCES / f"{domain}.json").read_text())["length"] for domain in DOMAINS}
 
 
+# An installed but incomplete reference bundle must still fail in columns().
+if not REFERENCES.exists():
+    pytest.skip('the real Potts family-reference bundle is host-local and not distributed',
+                allow_module_level=True)
 COLUMNS = columns()
 
 

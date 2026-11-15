@@ -74,6 +74,8 @@ def run(rows, family_models=None):
 
 
 def test_development_records_are_refused_on_every_primary_contrast(tmp_path):
+    if not any(path.exists() for path in (DEV_RECORDS.parents[1], DEV_REFERENCES, MSA_DIR.parent)):
+        pytest.skip("the E20 development records, family references and MSA bundle are not distributed")
     out = tmp_path / "dev.json"
     assert ana.main(["--records", str(DEV_RECORDS), "--references", str(DEV_REFERENCES), "--out", str(out),
                      "--permutation-seed", "20261013", *ASSETS]) == 0
@@ -279,12 +281,18 @@ def test_missing_asset_names_the_option(tmp_path):
                            "--out", str(tmp_path / "o.json"), "--permutation-seed", "1"],
                           capture_output=True, text=True)
     assert run_.returncode == 2 and "--references" in run_.stderr
+    # These refusals precede reading any records, references or alignments.
+    records = tmp_path / "records.jsonl"
+    records.write_text("", encoding="utf-8")
+    references = tmp_path / "references"
+    references.mkdir()
+    assets = ["--msa-dir", str(tmp_path / "msa"), "--wild-type-fasta", str(tmp_path / "wild.faa")]
     with pytest.raises(FileNotFoundError, match="--references"):
-        ana.main(["--records", str(DEV_RECORDS), "--references", str(tmp_path / "nope"),
-                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *ASSETS])
+        ana.main(["--records", str(records), "--references", str(tmp_path / "nope"),
+                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *assets])
     with pytest.raises(FileNotFoundError, match="--records"):
-        ana.main(["--records", str(tmp_path / "nope.jsonl"), "--references", str(DEV_REFERENCES),
-                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *ASSETS])
+        ana.main(["--records", str(tmp_path / "nope.jsonl"), "--references", str(references),
+                  "--out", str(tmp_path / "o.json"), "--permutation-seed", "1", *assets])
 
 
 def test_verdict_reason_names_every_condition_with_numbers():
@@ -303,6 +311,8 @@ def test_verdict_reason_names_every_condition_with_numbers():
 
 
 def test_real_covariates_cover_twelve_domains_and_match_the_declared_depths():
+    if not MSA_DIR.parent.exists():
+        pytest.skip("the same12 wild-type and MSA bundle is not distributed")
     wild = ana.fr.load_wild_types(WILD_TYPES)
     cov = ana.msa_covariates(MSA_DIR, wild)
     assert len(cov) == 12 and {d for d, v in cov.items() if v["role"] == "evaluation"} == set(ana.SEALED_DOMAINS)

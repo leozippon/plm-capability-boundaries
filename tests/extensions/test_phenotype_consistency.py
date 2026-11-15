@@ -11,6 +11,12 @@ from src.capability.extensions.phenotype_consistency import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+#: ``manuscript/`` is host-local; the three source tables read here are not distributed.
+MANUSCRIPT_DATA = ROOT / 'manuscript/data'
+needs_manuscript = pytest.mark.skipif(
+    not MANUSCRIPT_DATA.exists(),
+    reason='the manuscript source tables are host-local and not distributed with this checkout',
+)
 
 
 def test_cell_validation_rejects_missing_duplicates_and_nonfinite():
@@ -38,6 +44,7 @@ def test_release_means_weight_checkpoints_not_counts_of_other_releases():
     assert releases.proteingym_rank.tolist() == [2., 10.]
 
 
+@needs_manuscript
 def test_real_frozen_panel():
     joined, releases, result = analyse(ROOT)
     assert len(joined) == 33 and len(releases) == 16

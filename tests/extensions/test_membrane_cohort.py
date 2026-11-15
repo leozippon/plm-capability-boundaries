@@ -12,6 +12,12 @@ from src.capability.extensions.membrane_cohort import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+#: The discovery export is host-local; ``results/`` is not distributed.
+DISCOVERY_BUNDLE = ROOT / DISCOVERY
+needs_discovery = pytest.mark.skipif(
+    not DISCOVERY_BUNDLE.exists(),
+    reason='the phenotype discovery export is host-local and not distributed with this checkout',
+)
 
 
 def test_exact_identity_and_wrong_WT():
@@ -73,7 +79,11 @@ def test_source_parse_guard(tmp_path):
     path.write_text('a,a\n1,2\n')
     with pytest.raises(ValueError, match='header'):
         table(path)
-    rows, qc = sgca_prefix(ROOT / DISCOVERY / 'catalog_candidates/sgca_scores.csv')
+
+
+@needs_discovery
+def test_the_real_sgca_export_parses_into_its_own_shape():
+    rows, qc = sgca_prefix(DISCOVERY_BUNDLE / 'catalog_candidates/sgca_scores.csv')
     assert len(rows) == 3483
     assert qc['malformed_alleles_rows'] == 3483
     assert all('MLS3' in r and 'sigma' in r and 'hgvs_nt' in r for r in rows)
@@ -82,11 +92,12 @@ def test_source_parse_guard(tmp_path):
 
 
 def sgca_real_sources():
-    meta = json.loads((ROOT / DISCOVERY / 'catalog_candidates/sgca_metadata.json').read_text())
-    rows, _ = sgca_prefix(ROOT / DISCOVERY / 'catalog_candidates/sgca_scores.csv')
+    meta = json.loads((DISCOVERY_BUNDLE / 'catalog_candidates/sgca_metadata.json').read_text())
+    rows, _ = sgca_prefix(DISCOVERY_BUNDLE / 'catalog_candidates/sgca_scores.csv')
     return meta, rows
 
 
+@needs_discovery
 def test_sgca_source_anchored_translation_without_terminal_stop():
     meta, rows = sgca_real_sources()
     wt, qc = sgca_coding_wt(meta, rows)
@@ -100,6 +111,7 @@ def test_sgca_source_anchored_translation_without_terminal_stop():
     assert duplicated_wt == wt
 
 
+@needs_discovery
 @pytest.mark.parametrize('field,value,error', [
     ('WT_nt', 'G', 'nucleotide/site/codon/reference'),
     ('hgvs_nt', 'c.1G>C', 'nucleotide/site/codon/reference'),
@@ -116,6 +128,7 @@ def test_sgca_annotation_conflicts_fail(field, value, error):
         sgca_coding_wt(meta, rows)
 
 
+@needs_discovery
 def test_sgca_wrong_frame_and_incomplete_coverage_fail():
     meta, rows = sgca_real_sources()
     dna = meta['targetGenes'][0]['targetSequence']['sequence']
@@ -135,6 +148,7 @@ def test_anchor_exact_and_containment_not_homology():
     assert result['homology_exclusion'] == 'NOT_ESTABLISHED'
 
 
+@needs_discovery
 def test_real_source_end_to_end(tmp_path):
     summary = prepare(ROOT, tmp_path)
     assert summary['validated_WT_proteins'] == 3

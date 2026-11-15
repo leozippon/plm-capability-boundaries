@@ -11,6 +11,11 @@ from src.capability.extensions.binding_cohort import R_KCAL, admit, parse_mutati
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'data/skempi2/skempi_v2.csv'
+#: The SKEMPI v2 table is host-local, like every dataset under ``data/``.
+needs_source = pytest.mark.skipif(
+    not SOURCE.parent.exists(),
+    reason='the SKEMPI v2 source table is host-local and not distributed with this checkout',
+)
 
 
 @pytest.fixture(scope='module')
@@ -18,6 +23,7 @@ def records():
     return admit(SOURCE)
 
 
+@needs_source
 def test_known_source_rows_and_support(records):
     first = records[0]
     assert first['source_row_id'] == 'skempi2:000001'
@@ -75,6 +81,7 @@ def test_mutation_integrity():
             parse_mutations(mutation, complex_id)
 
 
+@needs_source
 def test_actual_duplicates_conditions_and_source_integrity(records):
     accepted = [r for r in records if r['admitted']]
     duplicates = [r for r in accepted if r['duplicate_group_size'] > 1]
@@ -104,6 +111,7 @@ def test_cli_refuses_existing_output_before_write(tmp_path):
     assert sentinel.read_text() == 'unchanged'
 
 
+@needs_source
 def test_malformed_source_fails_with_row_identity(tmp_path):
     with SOURCE.open(newline='') as handle:
         reader = csv.DictReader(handle, delimiter=';')

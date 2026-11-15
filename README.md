@@ -63,13 +63,13 @@ pip install -r requirements.txt
 
 ## Running a measurement
 
-Run every entry point from the repository root and read its declared inputs from `--help`:
+Run measurement entry points from the repository root. For runners with an argument parser, start with `--help`:
 
 ```bash
 python scripts/capability/context/analyse_crossed_controls.py --help
 ```
 
-Reporting helpers, including `current_manuscript_quantities.py`, `followup_quantities.py` and the shared palette definitions, are imported modules rather than commands. The historical `build_ncs_figures.py` extractor runs to completion with an optional `--from-source-data` instead of providing `--help`. Other entry points take `--help`.
+Reporting helpers, including `current_manuscript_quantities.py`, `followup_quantities.py` and the shared palette definitions, are imported modules rather than commands. Dated analysis recipes are retained producers, not general command-line interfaces: inspect their source and recorded invocation before running them, because `--help` may not be implemented. The historical `build_ncs_figures.py` extractor likewise runs to completion, with an optional `--from-source-data`, rather than providing `--help`.
 
 Three entry points are not category-specific:
 
@@ -79,7 +79,7 @@ Three entry points are not category-specific:
 
 Endpoint-specific campaigns declare their own support and checkpoints, which are not the same panel as that foundational stage.
 
-Checkpoint weights, model directories and dataset paths are environment variables. `src/capability/core/arms.py` reads the model and corpus locations, and the modules and entry points that need other inputs (ProteinGym, InterPro, CATH, Swiss-Prot XML, MegaScale, AlphaFold structures, DIAMOND) read their own. The dataset and checkpoint variables are named in `.env.example`, with a comment saying what each points at. Copy that file to `.env.local` and fill in this machine's paths. Three variables are read by code and deliberately absent from it: `TRANSFER_PROJECT_ROOT` and `TRANSFER_PACKAGE_ROOT`, which the host-local cluster launch layer (`h200/h200_env.sh`) exports before Python starts, and `PYMOL_EXECUTABLE`, which only names an existing PyMOL binary for `render_framework_structures.py` and has `--pymol` as its equivalent. `.env.local` is ignored. A variable already exported in the shell is left unchanged, and an unset or empty one keeps the default in the code that reads it. A missing input stops the run with the variable's name. On the cluster, the launch script assigns the path variables before Python starts. Never commit `.env.local`.
+Checkpoint weights, model directories and dataset paths are environment variables. `src/capability/core/arms.py` reads the model and corpus locations, and the modules and entry points that need other inputs (ProteinGym, InterPro, CATH, Swiss-Prot XML, MegaScale, AlphaFold structures, DIAMOND) read their own. The dataset and checkpoint variables are named in `.env.example`, with a comment saying what each points at. Copy that file to `.env.local` and fill in this machine's paths. Three variables are read by code and deliberately absent from it: `TRANSFER_PROJECT_ROOT` and `TRANSFER_PACKAGE_ROOT`, which the host-local cluster launch layer (`h200/h200_env.sh`) exports before Python starts, and `PYMOL_EXECUTABLE`, which only names an existing PyMOL binary for `render_framework_structures.py` and has `--pymol` as its equivalent. `.env.local` is ignored. A nonempty shell value takes precedence over `.env.local`; an unset shell variable allows the local file and then the code default. An explicitly empty shell value selects the code default without consulting the local file. A missing input stops the run with the variable's name. On the cluster, the launch script assigns the path variables before Python starts. Never commit `.env.local`.
 
 ## Figures
 
@@ -101,13 +101,13 @@ Shared palette definitions keep repeated visual roles consistent across generate
 python -m pytest -q
 ```
 
-`pytest.ini` sets `testpaths = tests`. The suite covers estimator behaviour, contract checks and negative paths, and `ruff` is pinned alongside it for linting.
+`pytest.ini` sets `testpaths = tests`. The suite covers estimator behaviour, contract checks and negative paths, and `ruff` is pinned alongside it for linting. Code-only and synthetic tests run in a clean checkout. Integration tests requiring non-distributed data, campaign receipts, model weights or manuscript assets explicitly skip when their prerequisites are absent. A skip reports unavailable inputs, not a successful validation; supplied inputs remain subject to the tests' format and provenance checks. A public-checkout pass is therefore not a reproduction of the scientific measurements. Run the retained-material checks on a suitably staged host as a separate validation.
 
 ## Data, results and models
 
-Datasets, checkpoint weights, run outputs, per-cell receipts and runtime logs are not distributed, and the manuscript evidence derived from them is distributed only as the figure source tables described above. Datasets are staged locally from their upstream releases, and their size and licences do not permit redistribution from this repository. Each measurement entry point declares the inputs it expects in `--help`, and each retained output records the support it was computed on, so a run can be checked against what it declares rather than against a number restated in prose.
+Datasets, checkpoint weights, run outputs, per-cell receipts and runtime logs are not distributed, and the manuscript evidence derived from them is distributed only as the figure source tables described above. Datasets are staged locally from their upstream releases, and their size and licences do not permit redistribution from this repository. Input declarations and retained outputs identify the support used by each measurement, so a run can be checked against those declarations rather than against a number restated in prose.
 
-A few retained records name absolute paths on the authoring host. The oracle inputs in `configs/generation_replication_manifest.json` are the clearest case: those keys are the identity the completed replication was digested against, so they are kept as written and are not expected to resolve on another machine.
+A few retained records and digest-bound historical producers name absolute paths on the authoring host. The oracle inputs in `configs/generation_replication_manifest.json` are one example: those keys are the identity the completed replication was digested against, so they are kept as written and are not expected to resolve on another machine. These historical paths are provenance constraints, not portable defaults; do not silently redirect them to a different input or checkout.
 
 ## Licence
 

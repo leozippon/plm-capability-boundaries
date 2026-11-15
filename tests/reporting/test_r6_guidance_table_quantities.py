@@ -67,7 +67,15 @@ def r6_ledger(*, with_owners: bool = True) -> Ledger:
 
 
 @pytest.fixture(scope="module")
-def ledger() -> Ledger:
+def retained_materials():
+    # Only a wholly absent bundle is optional; a partially staged tree must fail.
+    root = Artifacts().root
+    if not any((root / name).exists() for name in ("manuscript", "results")):
+        pytest.skip("the R6 manuscript and retained-results bundle is host-local and not distributed")
+
+
+@pytest.fixture(scope="module")
+def ledger(retained_materials) -> Ledger:
     built = r6_ledger()
     r6.add_r6_guidance_table_quantities(built)
     return built
@@ -141,7 +149,7 @@ def test_the_module_is_wired_into_the_table_builder():
 # What the module may not do.
 # --------------------------------------------------------------------------- #
 
-def test_it_emits_only_pointers_no_row_read_before():
+def test_it_emits_only_pointers_no_row_read_before(retained_materials):
     before = r6_ledger()
     existing = {quantity.id: quantity for quantity in before.quantities}
     read_before = pointers(before)
@@ -218,7 +226,7 @@ def test_a_carried_row_that_has_drifted_from_its_source_refuses(ledger):
         r6._agrees_with_source(carried, carried.value, None)
 
 
-def test_it_refuses_when_the_modules_owning_its_supports_have_not_run():
+def test_it_refuses_when_the_modules_owning_its_supports_have_not_run(retained_materials):
     with pytest.raises(LedgerError, match="is declared by"):
         r6.add_r6_guidance_table_quantities(r6_ledger(with_owners=False))
 
@@ -247,7 +255,7 @@ def test_selector_rows_read_the_mean_over_the_domains(ledger):
             assert quantity.value not in per_domain
 
 
-def test_a_selector_block_carrying_the_per_domain_field_refuses(tmp_path):
+def test_a_selector_block_carrying_the_per_domain_field_refuses(tmp_path, retained_materials):
     path = r6.CAMPAIGNS[0].path
     payload = json.loads((Artifacts().root / path).read_bytes())
     block = payload[r6.CAPTURE]["arms"]["N"]["selectors"]["potts_full"]
@@ -354,7 +362,7 @@ def test_the_entropy_reference_carries_the_convention_its_artifact_records(ledge
     assert quantity.unit == "nats"
 
 
-def test_a_condition_missing_a_reference_refuses(tmp_path):
+def test_a_condition_missing_a_reference_refuses(tmp_path, retained_materials):
     payload = json.loads((Artifacts().root / r6.GATE).read_bytes())
     del payload["cells"][3]["endpoints"][r6.GATE_ENDPOINT]["controls"]["natural"]
     target = tmp_path / r6.GATE
@@ -400,7 +408,7 @@ def table_rows(path: str) -> list[str]:
     return [row for row in text.split(r"\\") if "&" in row]
 
 
-def test_each_anchor_is_pinned_to_the_rows_it_names():
+def test_each_anchor_is_pinned_to_the_rows_it_names(retained_materials):
     assert set(r6.CROSS_SUPPORT_ANCHORS) == set(PINNED)
     for anchor, expected in PINNED.items():
         for path, count in expected.items():
@@ -411,7 +419,7 @@ def test_each_anchor_is_pinned_to_the_rows_it_names():
             assert text.count(anchor) == count
 
 
-def test_no_anchor_names_anything_outside_the_two_guidance_tables():
+def test_no_anchor_names_anything_outside_the_two_guidance_tables(retained_materials):
     submission = Artifacts().root / "manuscript/submission"
     for anchor in r6.CROSS_SUPPORT_ANCHORS:
         elsewhere = sorted(
@@ -421,14 +429,14 @@ def test_no_anchor_names_anything_outside_the_two_guidance_tables():
         assert elsewhere == sorted(TABLES), f"{anchor!r} also names {elsewhere}"
 
 
-def test_no_row_binds_two_anchors():
+def test_no_row_binds_two_anchors(retained_materials):
     for path in TABLES:
         for row in table_rows(path):
             held = [anchor for anchor in r6.CROSS_SUPPORT_ANCHORS if anchor in row]
             assert len(held) <= 1, f"{path}: one row binds {held}"
 
 
-def test_a_dead_or_doubled_anchor_refuses(tmp_path):
+def test_a_dead_or_doubled_anchor_refuses(tmp_path, retained_materials):
     """An anchor that names no row, or one row twice, is a refusal at build time."""
     def stage(replacement: str) -> Ledger:
         for path in r6.GUIDANCE_TABLES:
@@ -445,7 +453,7 @@ def test_a_dead_or_doubled_anchor_refuses(tmp_path):
         r6._cross_support_anchors(stage(doubled))
 
 
-def test_the_committed_policy_carries_exactly_the_declared_exceptions():
+def test_the_committed_policy_carries_exactly_the_declared_exceptions(retained_materials):
     policy = json.loads(
         (Artifacts().root
          / "results/shared/manuscript_evidence_20261004/checker-policy.json").read_text())

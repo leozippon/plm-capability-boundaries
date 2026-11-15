@@ -20,6 +20,18 @@ sys.path.insert(0, str(ROOT))
 from src.capability.mutation import matched_discrimination as md  # noqa: E402
 
 SAMPLES = ROOT / "manuscript/data/prediction-details/mutation-samples.csv.gz"
+#: The retained sample table and the ProteinGym length reference are host-local:
+#: ``manuscript/`` and ``data/`` are not distributed.
+SAMPLES_BUNDLE = ROOT / "manuscript/data"
+LENGTH_REFERENCE = ROOT / "data/proteingym_raw"
+needs_samples = pytest.mark.skipif(
+    not SAMPLES_BUNDLE.exists(),
+    reason="the retained manuscript sample table is host-local and not distributed with this checkout",
+)
+needs_length_reference = pytest.mark.skipif(
+    not (SAMPLES_BUNDLE.exists() or LENGTH_REFERENCE.exists()),
+    reason="the retained sample table and the ProteinGym length reference are host-local and not distributed",
+)
 
 #: The construction frozen by configs/matched_discrimination_manifest.json, as
 #: first computed before any model score was read. Any change to the pair rule,
@@ -340,6 +352,7 @@ def test_family_mean_spearman_averages_by_cluster_and_drops_a_constant_assay():
 # --------------------------------------------------------------------------- #
 
 
+@needs_samples
 def test_the_declared_cohort_on_the_retained_table_is_unchanged():
     cohort = md.build_cohort(pd.read_csv(SAMPLES))
     assert cohort["profile_match_threshold"]["value"] == pytest.approx(
@@ -527,10 +540,11 @@ def test_selection_quality_refuses_misaligned_or_empty_input():
         md.selection_quality(np.array([]), np.array([]))
 
 
+@needs_length_reference
 def test_the_position_rules_agree_on_the_real_retained_pairs():
     samples = pd.read_csv(SAMPLES)
     cohort = md.build_cohort(samples)
-    reference = pd.read_csv(ROOT / "data/proteingym_raw/DMS_substitutions.csv",
+    reference = pd.read_csv(LENGTH_REFERENCE / "DMS_substitutions.csv",
                             usecols=["DMS_id", "seq_len"]).set_index("DMS_id")["seq_len"]
     lengths = {assay: int(reference[assay]) for assay in cohort["tiers"]["T_open"]["assay"].unique()}
     frame = md.attach_positions(cohort["tiers"]["T_open"], lengths)
@@ -540,6 +554,7 @@ def test_the_position_rules_agree_on_the_real_retained_pairs():
     assert ((frame["better_midpoint_distance"] >= 0) & (frame["better_midpoint_distance"] <= 1)).all()
 
 
+@needs_samples
 def test_every_retained_pair_sits_in_one_assay_and_one_cluster():
     samples = pd.read_csv(SAMPLES)
     support = md.common_support(samples)

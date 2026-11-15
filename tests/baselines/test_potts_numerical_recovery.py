@@ -20,6 +20,8 @@ VENDOR = ROOT / "data/pairwise_assets/plmc/debbiemarkslab-plmc-18c9e55"
 
 @pytest.fixture(scope="module")
 def builds(tmp_path_factory):
+    if not VENDOR.exists():
+        pytest.skip('the PLMC vendor source bundle for real C fitting is not distributed')
     before = {str(p): R.digest(p) for p in VENDOR.rglob("*") if p.is_file()}
     root = tmp_path_factory.mktemp("recovery-build")
     for name, testing in (("production", False), ("testing", True)):

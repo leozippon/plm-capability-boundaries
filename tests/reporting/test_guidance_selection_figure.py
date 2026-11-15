@@ -30,6 +30,9 @@ def retained(monkeypatch):
         monkeypatch.setattr(renderer, name, {})
 
 
+@pytest.mark.skipif(
+    not any((ROOT / relative).parent.exists() for relative in ARTIFACTS),
+    reason='the retained R6 campaign artifact bundles are host-local and not distributed')
 def test_every_plotted_row_carries_its_own_artifact_digest(plotted):
     """A row is redrawable and attributable on its own, or it is not retained."""
     assert set(plotted.panel) == {'a', 'b', 'c', 'declared-context'}

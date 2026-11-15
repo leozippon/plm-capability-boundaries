@@ -5,7 +5,9 @@ the frozen science: they pin the *boundary* the requalification exists to defend
 The measured outcomes on every excluded row are poisoned with ``NaN`` sentinels
 wherever the fixture permits, so a test that reads one fails loudly rather than
 passing by accident. The head weights here are explicitly synthetic and are
-labelled as such; nothing in this file claims a laboratory or model result.
+labelled as such; nothing in this file claims a laboratory or model result. The
+two tests that read a host-local asset rather than a fixture -- the licensed
+protocol and the frozen embeddings -- skip where the checkout does not carry it.
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ TARGETS = [
 #: hash to something else, which is the point of the distinction being recorded.
 HISTORICAL = "678e8b918bb1c16f419400b4b8f1744156bf34940de549f3c37c33f4607541a3"
 POISON = float("nan")
+#: The licensed pilot bundle is host-local, like every dataset under ``data/``.
+LICENSED_PILOT = REPO_ROOT / "data/r6_licensed_prediction_pilot_20261013"
 
 
 def _seq(name: str, length: int) -> str:
@@ -574,9 +578,16 @@ def test_historical_and_current_digests_are_recorded_and_not_relabelled(tmp_path
     assert source["current_rows_sha256_observed"] != source["historical_rows_sha256_pinned"]
     assert source["current_equals_historical"] is False
 
-    real = rq.load_protocol(
-        REPO_ROOT / "data/r6_licensed_prediction_pilot_20261013/evaluator-requalification-protocol.json"
-    )
+
+@pytest.mark.skipif(
+    not LICENSED_PILOT.exists(),
+    reason="the licensed prediction-pilot bundle is host-local and not distributed with this checkout",
+)
+def test_the_licensed_protocol_separates_its_historical_and_current_digests():
+    # The synthetic fixture above pins the distinction being recorded; this reads
+    # the protocol the campaign actually ran and checks that its own two digests
+    # are the different ones the recording exists to keep apart.
+    real = rq.load_protocol(LICENSED_PILOT / "evaluator-requalification-protocol.json")
     assert real["source_version"]["historical_rows_sha256"] != real["source_version"]["current_rows_sha256"]
     assert len(real["preparation"]["reviewed_targets"]) == 12
 

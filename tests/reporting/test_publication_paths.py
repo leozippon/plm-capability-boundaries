@@ -23,6 +23,9 @@ def submitted_figures():
     return set(INCLUDED.findall(assembled))
 
 
+@pytest.mark.skipif(
+    not (ROOT / paths.SUBMISSION).exists(),
+    reason='the host-local manuscript submission bundle is not distributed')
 def test_every_declared_figure_is_one_the_manuscript_includes():
     # What has to hold is not how many figures this repository renders but that
     # each one it declares is a figure of the submission, present where the
@@ -107,6 +110,9 @@ def test_pdf_contract_reads_the_figures_the_sections_hold(tmp_path, monkeypatch)
     assert contract['tables_claimed_by_no_figure'] == []
 
 
+@pytest.mark.skipif(
+    not (ROOT / 'manuscript/code').exists(),
+    reason='the host-local manuscript code bundle is not distributed')
 def test_packaged_stage_restores_retained_json_names_and_shared_helper(tmp_path, monkeypatch):
     # Loading the adapter must not leave a bytecode cache inside the handoff
     # package, which carries only the files its manifest records.

@@ -34,6 +34,9 @@ from src.capability.ladder import fold_geometry as fg
 
 @pytest.fixture(scope='module')
 def inputs():
+    if not any((assets.REPO / path).exists()
+               for path in ('results/R6', assets.FAMILY_REFERENCES)):
+        pytest.skip('the retained R6 structures and family-reference bundles are not distributed')
     return assets.Inputs(assets.REPO)
 
 
@@ -125,7 +128,7 @@ def test_two_renders_of_one_asset_are_byte_identical(inputs, tmp_path):
     assert digests[0] == digests[1]
 
 
-def test_the_manifest_leads_from_every_image_back_to_its_candidates(tmp_path):
+def test_the_manifest_leads_from_every_image_back_to_its_candidates(tmp_path, inputs):
     manifest = assets.render(tmp_path, assets.REPO)
     assert set(manifest['assets']) == {name for name, _ in assets.ASSETS}
     forbidden = set(assets.e20.FORBIDDEN_SELECTOR_FIELDS)
