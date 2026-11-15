@@ -10,7 +10,9 @@ did not carry, from the stream-separated table the 2026-11-12 run read.
    quarter lies wholly inside that group, ordered by the attempt key. The run
    reads the cut score and the tie counts from ``rank_and_retain`` at the
    retained fractions of the selection-strength curve (k of 2, 4 and 8), for every
-   base arm and stream.
+   base arm and stream, and checks that the key-ordered subsample of the cut group is
+   representative of the group on length and pLDDT (finite-population z), which is
+   what makes the subsample content-independent rather than assumed so.
 2. *Length.* The retained subset is shorter than its parent, and the control's
    share is a raw difference of means. The share is re-read with the length
    adjustment the project already uses, ``bin_match`` and ``nn_match`` of
@@ -144,6 +146,30 @@ def percentiles(values: list[int]) -> dict[str, float | int | None]:
     return out
 
 
+def representativeness(rows: list[dict[str, Any]], keys: set[str], cut: float) -> dict[str, Any]:
+    """Whether the key-ordered subsample of the cut group looks like the whole group.
+
+    The finite-population z of the retained members' mean against the mean of the
+    group tied at the cut, for length and for pLDDT. ``None`` where the whole group
+    is retained or too little of it is drawn for a standard error.
+    """
+
+    group = [row for row in rows if row["score"] == cut]
+    drawn = [row for row in group if row["key"] in keys]
+    out: dict[str, Any] = {}
+    for field in ("length", "plddt"):
+        values = np.asarray([row[field] for row in group], dtype=float)
+        chosen = np.asarray([row[field] for row in drawn], dtype=float)
+        n, size = len(drawn), len(group)
+        spread = float(values.var(ddof=1)) if size > 1 else 0.0
+        if n < 2 or n == size or spread == 0.0:
+            out[f"z_{field}_retained_in_group"] = None
+        else:
+            out[f"z_{field}_retained_in_group"] = float(
+                (chosen.mean() - values.mean()) / np.sqrt(spread / n * (1 - n / size)))
+    return out
+
+
 def retain_pool(pair, base, rule, label: str, stored: dict[str, Any],
                 tie_rows: list[dict[str, Any]]):
     """Each stream's scored pool and top quarter, and the tie record at every k of the curve."""
@@ -168,7 +194,8 @@ def retain_pool(pair, base, rule, label: str, stored: dict[str, Any],
                 "tie_group_share_of_pool": retention["n_tied_at_cut"] / retention["n_scored"],
                 "n_retained_at_cut": retention["n_retained_at_cut"],
                 "retained_decided_by_key_share": retention["n_retained_at_cut"]
-                / retention["n_retained"]})
+                / retention["n_retained"],
+                **representativeness(scored[stream], keys, retention["cut_score"])})
             if k == PRIMARY_K:
                 retained[stream] = set(keys)
     return scored, retained

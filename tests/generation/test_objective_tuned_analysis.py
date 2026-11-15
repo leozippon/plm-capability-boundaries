@@ -930,6 +930,23 @@ def test_the_five_mer_run_reads_the_retained_matchers_from_their_own_source():
     assert matchers["nn"](parent_length, parent_value, other_length, other_value) == (2.5, 2)
 
 
+def test_the_cut_group_subsample_is_compared_with_its_whole_group():
+    represent = _driver("run_ties_and_length", "objective_tuned_five_mer_rule_20261114"
+                        ).representativeness
+    rows = [{"key": f"m{index}", "score": 1.0, "length": 100.0 + index, "plddt": 50.0 + index}
+            for index in range(10)] + [{"key": "x", "score": 0.5, "length": 1.0, "plddt": 1.0}]
+    balanced = represent(rows, {f"m{index}" for index in (0, 4, 5, 9)}, 1.0)
+    assert balanced == {"z_length_retained_in_group": pytest.approx(0.0),
+                        "z_plddt_retained_in_group": pytest.approx(0.0)}
+    # The four lowest members of a ten-member group sit well below its mean; the lower-scoring
+    # member is not part of the group at the cut.
+    low = represent(rows, {f"m{index}" for index in range(4)}, 1.0)
+    assert low["z_length_retained_in_group"] < -2.0
+    # Nothing is subsampled where the whole group is retained.
+    assert represent(rows, {f"m{index}" for index in range(10)}, 1.0) == {
+        "z_length_retained_in_group": None, "z_plddt_retained_in_group": None}
+
+
 def test_the_match_point_is_the_smallest_k_not_wholly_below_one():
     curve = _driver("run_selection_curve")
     cell = lambda status, finding: {"status": status, "finding": finding}  # noqa: E731
