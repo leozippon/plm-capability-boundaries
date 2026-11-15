@@ -13,8 +13,8 @@ did not carry, from the stream-separated table the 2026-11-12 run read.
    base arm and stream, and checks that the key-ordered subsample of the cut group is
    representative of the group on length and pLDDT (finite-population z), which is
    what makes the subsample content-independent rather than assumed so.
-2. *Length.* The retained subset is shorter than its parent, and the control's
-   share is a raw difference of means. The share is re-read with the length
+2. *Length.* The retained subset is shorter than its parent, as is the tuned pool,
+   and the control's share is a raw difference of means. The share is re-read with the length
    adjustment the project already uses, ``bin_match`` and ``nn_match`` of
    ``scripts/capability/generation/length_adjusted_contrasts_20261110/analyse.py``,
    taken from that file's own source and not restated. The matcher is applied to
@@ -70,6 +70,8 @@ REPORTED_STRATUM = ota.STRATA[1]
 #: every sequence generated to the 400-residue cap is 399 or 400 residues.
 LENGTH_BINS = ((0, 223), (224, 319), (320, 398), (399, 400))
 PERCENTILES = (5, 25, 50, 75, 95)
+#: A sequence of at least this length ran to the generation budget.
+CAP_LENGTH = LENGTH_BINS[-1][0]
 
 MATCHED_METHOD = (
     "the declared nested resample, with a length matcher applied to each draw. Within "
@@ -143,6 +145,7 @@ def percentiles(values: list[int]) -> dict[str, float | int | None]:
     out: dict[str, float | int | None] = {"n": len(values)}
     for point in PERCENTILES:
         out[f"p{point}"] = float(np.percentile(values, point)) if values else None
+    out["share_at_cap"] = float(np.mean(np.asarray(values) >= CAP_LENGTH)) if values else None
     return out
 
 
@@ -396,11 +399,16 @@ def main() -> None:
             kept = [row for stream in sorted(scored) for row in scored[stream]
                     if row["key"] in retained[stream]]
             clean = [row for row in members if row["score"] == 1.0]
+            _, tuned = aot.require_pair(table, pair)
+            tuned_pool = [row for stream in sorted(tuned) for row in tuned[stream]["rows"]
+                          if row["plddt"] is not None]
             for scope, test in (("all_strata", lambda row: True),
                                 (REPORTED_STRATUM, lambda row: row["stratum"] == REPORTED_STRATUM)):
-                for group, rows in (("parent", members), ("retained_top_quarter", kept),
-                                    ("no_repeated_5mer", clean)):
-                    length_rows.append({"arm": pair.base, "scope": scope, "group": group,
+                for arm, group, rows in ((pair.base, "parent", members),
+                                         (pair.base, "retained_top_quarter", kept),
+                                         (pair.base, "no_repeated_5mer", clean),
+                                         (pair.tuned, "tuned_pool", tuned_pool)):
+                    length_rows.append({"arm": arm, "scope": scope, "group": group,
                                         **percentiles([row["length"] for row in rows
                                                        if test(row)])})
             if label != "primary":
