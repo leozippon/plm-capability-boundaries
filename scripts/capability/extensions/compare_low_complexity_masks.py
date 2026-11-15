@@ -164,6 +164,10 @@ def rank_correlation(frame: pd.DataFrame) -> dict:
 def describe_set(frame: pd.DataFrame) -> dict:
     out = {**confusion(frame), **rank_correlation(frame)}
     n = len(frame)
+    # The ranking the two statistics share where neither flags: what is left once the scale is set aside.
+    unflagged = frame[~frame["flag_s1"] & ~frame["flag_s2"]]
+    out["n_unflagged"] = int(len(unflagged))
+    out["spearman_among_unflagged"] = rank_correlation(unflagged)["spearman"]
     out["literal_pass"] = int(frame["literal_pass"].sum())
     out["sequence_reward_pass"] = int((~frame["flag_s1"]).sum())
     out["forcing_screen_flagged"] = int(frame["forcing_flag"].sum())
