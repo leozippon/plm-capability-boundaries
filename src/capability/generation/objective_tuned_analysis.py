@@ -910,6 +910,7 @@ def nested_base_draws(
     stream_index: int,
     draws: int = bd.DRAWS,
     fraction: float = TOP_FRACTION,
+    readout: Callable[[int, int, Mapping[str, np.ndarray], np.ndarray], None] | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
     """Per-stratum draw vectors of a base pool mean and of its filtered mean.
 
@@ -923,6 +924,12 @@ def nested_base_draws(
     unusable filtered mean discards the base mean with it. The caller applies
     :data:`MAX_INVALID_DRAW_FRACTION`. A stratum with no member at all is invalid
     on every draw and both its vectors are ``nan``.
+
+    ``readout`` lets a caller read another statistic off the very draws the two
+    means are read from, and cannot change them. It is called once per chunk with
+    the chunk's draw range ``(start, stop)``, each present stratum's resampled
+    members ``(chunk, members)`` and the retained members ``(chunk, retained)``,
+    all as positions in the ranking :func:`_by_score` gives ``scored``.
     """
 
     order = _by_score(scored, retain)
@@ -952,6 +959,8 @@ def nested_base_draws(
             blocks.append(drawn)
         pool = np.concatenate(blocks, axis=1)
         top = np.sort(pool, axis=1)[:, :retained]
+        if readout is not None:
+            readout(start, stop, dict(zip(present, blocks)), top)
         values, where = plddt[top], bands[top]
         for name in present:
             mask = where == codes[name]

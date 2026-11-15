@@ -417,6 +417,27 @@ def test_the_nested_resample_shares_one_draw_between_the_two_means():
     assert np.isnan(first[ota.STRATA[2]]["base"]).all()
 
 
+def test_a_readout_sees_each_chunk_of_draws_and_cannot_change_them():
+    rng = np.random.default_rng(3)
+    members = [{"key": f"m{index:03d}", "plddt": float(60 + 20 * rng.random()),
+                "stratum": ota.STRATA[index % 2], "score": float(rng.random())}
+               for index in range(120)]
+    kwargs = dict(retain="highest", family=ota.CONTROL_FAMILIES["markov_order2"],
+                  column=0, stream_index=0, draws=500)
+    seen = []
+    watched = ota.nested_base_draws(
+        members, readout=lambda start, stop, blocks, top: seen.append(
+            (start, stop, set(blocks), top.shape)), **kwargs)
+    plain = ota.nested_base_draws(members, **kwargs)
+    for stratum in ota.STRATA:
+        for field in ("base", "filtered", "valid"):
+            assert np.array_equal(plain[stratum][field], watched[stratum][field], equal_nan=True)
+    assert [(start, stop) for start, stop, _, _ in seen] == [
+        (start, start + bd.DRAW_CHUNK) for start in range(0, 500, bd.DRAW_CHUNK)]
+    assert all(strata == set(ota.STRATA[:2]) and shape == (stop - start, 30)
+               for start, stop, strata, shape in seen)
+
+
 def test_a_share_of_a_gain_that_is_not_resolved_carries_no_band():
     """A denominator that can reach zero gives a width, not an uncertainty."""
 
@@ -887,13 +908,26 @@ def test_the_likelihood_families_are_declared_distinct_and_sized():
 
 # ------------------------------------- the selection curve and repetitiveness (2026-11-14)
 
-def _driver(name):
+def _driver(name, directory="objective_tuned_base_likelihood_20261114"):
     import importlib.util
-    path = SCRIPTS / "objective_tuned_base_likelihood_20261114" / f"{name}.py"
+    path = SCRIPTS / directory / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_the_five_mer_run_reads_the_retained_matchers_from_their_own_source():
+    matchers = _driver("run_ties_and_length", "objective_tuned_five_mer_rule_20261114"
+                       ).load_matchers()
+    parent_length, parent_value = np.array([16.0, 17.0, 40.0]), np.array([1.0, 3.0, 5.0])
+    other_length, other_value = np.array([16.0, 40.0, 100.0]), np.array([4.0, 7.0, 9.0])
+    # Sixteen-residue bins: the two matched bins differ by 2 each, and the 100-residue
+    # row has no parent in its bin and is dropped.
+    assert matchers["bin"](parent_length, parent_value, other_length, other_value) == (2.0, 2, 3)
+    # Nearest parent length with a caliper of 5: differences 3 and 2, and the 100-residue row,
+    # whose nearest parent is 60 residues away, is dropped.
+    assert matchers["nn"](parent_length, parent_value, other_length, other_value) == (2.5, 2)
 
 
 def test_the_match_point_is_the_smallest_k_not_wholly_below_one():
