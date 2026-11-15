@@ -1,10 +1,18 @@
 """Sensitivity (labelled post hoc): the declared pairs-x-strata family with thin cells (either arm <30 rows) removed.
 Needs identity_stratified_contrast.tsv and the nearest-neighbour table under RESDIR."""
 import os
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from src.capability.context import homology as hm
-D=os.environ.get('RESDIR','results/external_baseline_analysis/length_adjusted_contrasts_20261110/')
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+
+from src.capability.context import homology as hm  # noqa: E402
+
+D=os.environ.get('RESDIR',str(ROOT / 'results/external_baseline_analysis/length_adjusted_contrasts_20261110')+'/')
 t=pd.read_csv(D+'natural_neighbour/per_structure_nearest_neighbour.tsv',sep='\t'); t['stratum']=t.identity_over_query.map(hm.assign_stratum)
 r=pd.read_csv(D+'identity_stratified_contrast.tsv',sep='\t'); A=r[(r.termination=='pooled')&r.thin.eq(False)]
 P={'112m':('protgpt3-112m','protgpt3-112m-dpo'),'1.3b':('protgpt3-1.3b','protgpt3-1.3b-dpo'),'10b':('protgpt3-10b','protgpt3-10b-dpo'),'mix7':('progen2-small-hugohrban','progen2-small-mix7')}

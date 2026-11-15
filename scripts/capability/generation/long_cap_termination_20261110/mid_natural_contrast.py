@@ -1,10 +1,17 @@
 """Natural 513-767 contrast (the longest sequences the models finish), tuned minus base. Rows with length >= 671
 were folded as two chunks of 16 samples; both arms are affected alike. B=5000 within-arm bootstrap."""
 import sys
-sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-H = "/Data/lzp/plm-capability-boundaries/results/long_cap_termination_20261110/"
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+
+from src.capability.context import homology as hm  # noqa: E402
+
+H = str(ROOT / "results/long_cap_termination_20261110") + "/"
 t = pd.read_csv(H + "analysis/per_structure_joined.tsv", sep="\t"); rng = np.random.default_rng(20261113)
 m = t[(~t.capped) & (t.L >= 513) & (t.L <= 767)]; rows = []
 for ep in ("plddt", "ptm"):
@@ -15,7 +22,6 @@ for ep in ("plddt", "ptm"):
 r = pd.DataFrame(rows); r.to_csv(H + "analysis/mid_natural_513_767.tsv", sep="\t", index=False, float_format="%.4f"); print(r.round(3).to_string())
 
 # identity adjustment within the same rows
-from src.capability.context import homology as hm  # noqa: E402
 ORDER = list(hm.STRATUM_NAMES)
 def coef(d, ep, strata, lin, comp):
     X = [np.ones(len(d)), d.tuned.values, ((d.L - d.L.mean()) / d.L.std()).values]

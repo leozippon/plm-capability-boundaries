@@ -4,13 +4,18 @@ the capped populations. Rows are resampled within arm; B=2000; seed fixed. pLDDT
 import json
 import sys
 import zlib
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from scipy import stats
-sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
-from src.capability.context import homology as hm
 
-H = "/Data/lzp/plm-capability-boundaries/results/long_cap_termination_20261110/"
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+
+from src.capability.context import homology as hm  # noqa: E402
+
+H = str(ROOT / "results/long_cap_termination_20261110") + "/"
 rng = np.random.default_rng(20261111); B = 2000
 lab = pd.read_csv(H + "fold/attempt_labels.tsv", sep="\t")
 import glob

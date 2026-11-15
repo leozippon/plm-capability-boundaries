@@ -1,11 +1,17 @@
 """Identity adjustment of the capped contrast: tuned capped (31) against the declared base-capped subsample (69).
 Same rows, strata and composition measures as analyse_companion.py; rows resampled within arm, B=5000."""
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import sys
-sys.path.insert(0, "/Data/lzp/plm-capability-boundaries")
-from src.capability.context import homology as hm
-H = "/Data/lzp/plm-capability-boundaries/results/long_cap_termination_20261110/"
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+
+from src.capability.context import homology as hm  # noqa: E402
+
+H = str(ROOT / "results/long_cap_termination_20261110") + "/"
 t = pd.read_csv(H + "analysis/per_structure_joined.tsv", sep="\t"); c = t[t.capped].copy()
 ORDER = list(hm.STRATUM_NAMES); rng = np.random.default_rng(20261112); B = 5000
 def coef(d, ep, strata, comp, lin):

@@ -26,7 +26,7 @@ import hashlib
 import pathlib
 import pandas as pd
 
-ROOT = pathlib.Path("/Data/lzp/plm-capability-boundaries")
+ROOT = pathlib.Path(__file__).resolve().parents[4]
 SRC = ROOT / "results/long_cap_termination_20261110/analysis/per_structure_joined.tsv"
 OUT = ROOT / "results/long_cap_termination_20261110/analysis/declared_simultaneous_band/natural_neighbour/per_structure_nearest_neighbour.tsv"
 PRODUCERS = ["scripts/capability/generation/length_adjusted_contrasts_20261110/identity_stratified_contrast.py",

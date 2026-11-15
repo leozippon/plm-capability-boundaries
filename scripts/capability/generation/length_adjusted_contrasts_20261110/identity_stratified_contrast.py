@@ -1,11 +1,20 @@
 """Declared primary contrast: tuned-minus-base mean pLDDT within each identity stratum (docs/objective-alignment.md),
 with the sixteenth amendment's termination split. Boundaries are the frozen ones (src/capability/context/homology.py):
 [0,30) [30,70) [70,95) [95,100]; a query with no hit carries identity 0.0 as the search script assigns it."""
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from src.capability.context import homology as hm
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+
+from src.capability.context import homology as hm  # noqa: E402
+
 B=10000; rng=np.random.default_rng(20261114)
-D=__import__('os').environ.get('RESDIR','results/external_baseline_analysis/length_adjusted_contrasts_20261110/')
+D=os.environ.get('RESDIR',str(ROOT / 'results/external_baseline_analysis/length_adjusted_contrasts_20261110')+'/')
 t=pd.read_csv(D+'natural_neighbour/per_structure_nearest_neighbour.tsv',sep='\t')
 assert t.identity_over_query.between(0,100).all()
 t['stratum']=t.identity_over_query.map(hm.assign_stratum)
