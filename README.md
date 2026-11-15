@@ -4,6 +4,8 @@ Code accompanying a manuscript that compares released protein, text and joint la
 
 The design point is that these are different quantities rather than different scores on one quantity. A likelihood difference ranks supplied variants, a readout fitted on frozen hidden states predicts labels, and a generation procedure produces new sequences. A checkpoint can rank well and generate unremarkably without contradiction, so the code keeps the three apart instead of aggregating them into a single score.
 
+The current synthesis is that evolutionary memory carries genuine phenotype-discriminative signal, while its likelihood-based predictive value overlaps strongly with explicit evolutionary statistics. The statistical ladder measures conditional gains in both directions; unequal readout capacity limits an information-containment interpretation but does not invalidate those comparisons. Fine-tuning can produce useful local generative bias, consistent with redistribution within a narrower part of the evolutionary record, without yet establishing general innovative protein-design capability. Family-statistical relearning is a plausible explanation, not an identified mechanism.
+
 ## Results structure
 
 The results are organised into six sections, not a single capability ranking:
@@ -17,7 +19,7 @@ The results are organised into six sections, not a single capability ranking:
 | Homologous context improves prediction but does not establish remote generalization | Context improves selected interfaces, but remote generalization remains unconfirmed because the required close-stratum positive control failed. |
 | Predictive gains do not guarantee generative advantage over length-matched protein fragments | Generation must be compared directly with length-matched real fragments, and scoring gains can coexist with lower absolute generation yields. |
 
-These are checkpoint- and protocol-specific findings, not causal effects of protein exposure or model size. An unresolved interval does not establish equivalence or absent information; a failed endpoint qualification is not a model failure. Sequence recognition and predicted fold confidence do not establish measured folding or function.
+These are checkpoint- and protocol-specific findings, not causal effects of protein exposure or model size. An unresolved interval does not establish equivalence or absent information; a failed endpoint qualification is not a model failure. Sequence recognition and predicted fold confidence do not establish measured folding or function. Small conditional increments and their upper bounds, rather than non-significance alone, support the statistical-overlap interpretation.
 
 ## Measurement lanes
 
