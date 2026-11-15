@@ -252,14 +252,25 @@ LENGTH_HALF_WIDTH = 120.0
 #: rates -- see ``rl_environment_provenance.RUNG_RULE``. Everything that would
 #: pay or score this reward refuses while it is ``None``, because a positive
 #: control whose target was picked after its arm's result is not a control.
-HARD_CHARGE_WINDOW: tuple[float, float] | None = None
+HARD_CHARGE_WINDOW: tuple[float, float] | None = (32.0, 36.0)
 
 HARD_CHARGE_PROVENANCE = (
-    "the first rung of the declared charge ladder whose one-sided 0.95 upper bound "
-    "on a 512-sample rejection sampler's hit probability falls below 0.5, read off "
-    "the base pool's own measured conjunction rates exactly once and written here "
-    "before the arm trained. The bound is exact-binomial rather than a bootstrap "
-    "because the rate it bounds is sometimes zero by observation"
+    "the first rung of the declared charge ladder whose expected best-of-512 "
+    "shaped environment reward over the base pool falls below 0.70, read off the "
+    "base pool's own measured ladder exactly once and written here before the arm "
+    "trained. Its R@512 is 0.6231 against the next easier rung's 0.7394.\n"
+    "This is the ladder's *second* rule. The first was posed on the conjunction "
+    "indicator and selected the declared target itself, because the base pool "
+    "attains the conjunction nowhere in 3,072 draws and the exact bound therefore "
+    "cleared its threshold at the first rung. It was voided on the narrow ground "
+    "that its answer was degenerate by construction -- a rung equal to the "
+    "declared target makes this arm a duplicate of arm E, which answers no "
+    "question -- and not on the ground that the answer was unwelcome. See "
+    "rl_environment_provenance.RUNG_RULE_VOIDED.\n"
+    "The rung is hard and not impossible: it is attainable at reward exactly 1.0 "
+    "by a lysine-rich, non-repeating, full-diversity sequence, at a K share of "
+    "0.28 in the degeneracy sweep's own witness and 0.350, 0.318 and 0.325 at "
+    "lengths 100, 110 and 120 in an independently constructed one"
 )
 
 #: CA-pLDDT scale the memory-derived term is divided by, so every term is a
@@ -620,6 +631,12 @@ def meets_declared_objective(stats: SequenceStatistics, *, mean_ca_plddt: float 
         "low_complexity_ok": stats.low_complexity_fraction < LOW_COMPLEXITY_LIMIT,
     }
     out["environment_conjunction"] = all(out.values())
+    if hard_window_declared():
+        hard_low, hard_high = require_hard_window()
+        out["charge_window_hard"] = hard_low <= stats.net_charge <= hard_high
+        out["environment_hard_conjunction"] = (out["charge_window_hard"]
+                                               and out["length_window"]
+                                               and out["low_complexity_ok"])
     if mean_ca_plddt is not None:
         out["plddt_criterion"] = mean_ca_plddt >= plddt_criterion
         out["memory_conjunction"] = out["plddt_criterion"] and out["low_complexity_ok"]

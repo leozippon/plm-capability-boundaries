@@ -9,6 +9,7 @@ checked to be handled as declared.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -951,15 +952,15 @@ class TestLengthStratification:
 
     def test_a_gain_that_holds_at_matched_length_survives(self):
         got = ra.stratified_gain(
-            self._columns(**{"128-200": {"status": "resolved", "point": 0.08,
+            self._columns(**{"160-200": {"status": "resolved", "point": 0.08,
                                          "interval": [0.02, 0.14]}}), pool="memory")
         assert got["survives"] is True
-        assert got["survived_in"] == ["128-200"]
+        assert got["survived_in"] == ["160-200"]
         assert "bounded above zero at matched length" in got["reason"]
 
     def test_a_gain_that_vanishes_at_matched_length_does_not(self):
         got = ra.stratified_gain(
-            self._columns(**{"128-200": {"status": "resolved", "point": 0.01,
+            self._columns(**{"160-200": {"status": "resolved", "point": 0.01,
                                          "interval": [-0.03, 0.05]}}), pool="memory")
         assert got["survives"] is False
         assert "does not survive being read at matched length" in got["reason"]
@@ -1027,3 +1028,130 @@ class TestStratifiedVerdictGate:
             stratified={"survives": False, "reason": "fixture"},
         )
         assert got["reading"] == rp.READING_NO_OPTIMISATION
+
+
+class TestTheSecondRungRule:
+    """Two rules on the record: what the first selected, and why it was voided."""
+
+    def test_the_first_rule_s_selection_is_kept(self):
+        assert tuple(rp.RUNG_RULE_FIRST_SELECTION) == rp.CHARGE_LADDER[0]
+        assert "degenerate by construction" in rp.RUNG_RULE_VOIDED
+        assert "voidable because" in rp.RUNG_RULE_VOIDED
+
+    def test_the_ground_for_voiding_is_the_duplicate_arm_and_not_the_number(self):
+        """The only ground that costs the pre-registration nothing."""
+
+        assert "duplicate" in rp.RUNG_RULE_VOIDED
+        assert "answers no question" in rp.RUNG_RULE_VOIDED
+        assert "without reference to any trained pool" in rp.RUNG_RULE_VOIDED
+
+    def test_the_second_rule_is_posed_on_a_quantity_that_discriminates(self):
+        assert rp.RUNG_SHAPED_BOUND == 0.70
+        assert rp.RUNG_SHAPED_BUDGET == rp.K_GRID[-1]
+        assert "shaped" in rp.RUNG_SHAPED_RULE
+        assert "attainable at reward exactly 1.0" in rp.RUNG_SHAPED_RULE
+
+    def _ladder(self, values):
+        return [{"status": "resolved", "window": [8.0 + 6 * i, 12.0 + 6 * i],
+                 "r_at_k": {"512": {"point": v}}} for i, v in enumerate(values)]
+
+    def test_it_takes_the_first_rung_below_the_bound(self):
+        got = ra.choose_shaped_rung(self._ladder([0.97, 0.86, 0.75, 0.74, 0.62]))
+        assert got["chosen_window"] == [32.0, 36.0]
+
+    def test_a_ladder_entirely_above_the_bound_is_reported_not_extended(self):
+        got = ra.choose_shaped_rung(self._ladder([0.97, 0.96, 0.95, 0.94, 0.93]))
+        assert got["chosen_window"] is None
+        assert "the ladder is not extended" in got["reason"]
+
+    def test_the_declared_window_is_what_the_rule_selects_from_the_measured_ladder(self):
+        """The constant and the rule must not be able to disagree."""
+
+        import json
+
+        from src.capability.extensions import sequence_reward as sr
+
+        path = (Path(__file__).resolve().parents[2]
+                / "results/extensions/rl_environment_provenance_20261114/pools"
+                / "base_reachability_ladder.json")
+        if not path.is_file():
+            pytest.skip("the base pool's ladder has not been written on this host")
+        ladder = json.loads(path.read_text(encoding="utf-8"))
+        chosen = ra.choose_shaped_rung(ladder["rungs"])["chosen_window"]
+        assert chosen == list(sr.require_hard_window())
+
+    def test_the_chosen_rung_is_attainable_at_reward_one(self):
+        """Hard, not impossible: a witness constructed from the declaration itself."""
+
+        from src.capability.extensions import sequence_reward as sr
+
+        window = sr.require_hard_window()
+        backbone = "ACDEFGHILMNPQRSTVWY"
+        for length in (100, 110, 120):
+            for count in range(20, 50):
+                residues = [backbone[index % len(backbone)] for index in range(length)]
+                for index in range(count):
+                    residues[(index * length) // count] = "K"
+                stats = sr.statistics("".join(residues))
+                if sr.environment_reward_at(stats, charge_window=window) == 1.0:
+                    assert stats.longest_single_residue_run <= 2
+                    assert stats.low_complexity_fraction < sr.LOW_COMPLEXITY_LIMIT
+                    return
+        raise AssertionError("no witness attains the chosen rung at reward one")
+
+
+class TestObjectiveAttainment:
+    """A reward gain is not evidence that the objective was attained."""
+
+    def test_every_reward_has_a_family_carrying_its_own_attainment_rate(self):
+        from src.capability.extensions import sequence_reward as sr
+
+        assert set(rp.OBJECTIVE_ATTAINMENT_FAMILY) == set(sr.REWARD_NAMES)
+        for family in rp.OBJECTIVE_ATTAINMENT_FAMILY.values():
+            assert family in rp.FAMILY_SIZES
+
+    def test_a_rate_bounded_above_the_base_is_attainment(self):
+        got = ra.objective_attainment({"status": "resolved", "interval": [0.1, 0.3]},
+                                      {"status": "resolved", "interval": [0.02, 0.08]})
+        assert got["state"] == ra.ATTAINED
+
+    def test_a_rising_reward_with_a_flat_rate_is_approaching_without_attaining(self):
+        got = ra.objective_attainment({"status": "resolved", "interval": [0.1, 0.3]},
+                                      {"status": "resolved", "interval": [-0.01, 0.01]})
+        assert got["state"] == ra.APPROACHED
+        assert "approach its objective's constraints without meeting them" in got["reason"]
+
+    def test_neither_moving_is_also_the_approached_state_with_its_own_reason(self):
+        got = ra.objective_attainment({"status": "resolved", "interval": [-0.05, 0.05]},
+                                      {"status": "resolved", "interval": [-0.01, 0.01]})
+        assert got["state"] == ra.APPROACHED
+        assert "neither the shaped reward nor the attainment rate" in got["reason"]
+
+    def test_an_unresolved_rate_is_not_measured_rather_than_a_shortfall(self):
+        got = ra.objective_attainment({"status": "resolved", "interval": [0.1, 0.3]},
+                                      {"status": "unresolved", "interval": None})
+        assert got["state"] == ra.ATTAINMENT_UNMEASURED
+        assert got["state"] in ra.ATTAINMENT_STATES
+        got = ra.objective_attainment(None, None)
+        assert got["state"] == ra.ATTAINMENT_UNMEASURED
+
+    def test_the_note_carries_the_base_pool_s_own_disagreement(self):
+        assert "0.9963" in rp.ATTAINMENT_NOTE
+        assert "3,072" in rp.ATTAINMENT_NOTE
+
+
+class TestTheTopStratumSplit:
+    def test_the_split_at_160_is_declared(self):
+        assert 160 in rp.LENGTH_STRATUM_EDGES
+        assert "128-159" in rp.LENGTH_STRATUM_NAMES
+        assert "160-200" in rp.LENGTH_STRATUM_NAMES
+
+    def test_no_stratum_now_spans_more_than_the_split_width(self):
+        widths = [high - low for low, high in zip(rp.LENGTH_STRATUM_EDGES[:-1],
+                                                  rp.LENGTH_STRATUM_EDGES[1:])]
+        assert max(widths) <= 41
+
+    def test_the_stratified_families_widened_with_it(self):
+        for family, size in rp.FAMILY_SIZES.items():
+            if family.endswith("_by_length") or "_by_length__" in family:
+                assert size == len(rp.CONTRAST_POOLS) * len(rp.LENGTH_STRATUM_NAMES)

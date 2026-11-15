@@ -491,6 +491,58 @@ RUNG_UNREACHABLE_BOUND = 0.5
 #: One-sided confidence level of that bound.
 RUNG_CONFIDENCE = 0.95
 
+#: The first rung rule's own selection, kept on the record. It read the
+#: conjunction indicator, which the base pool attains nowhere, so the exact bound
+#: cleared its threshold at the first rung and it selected the declared target.
+RUNG_RULE_FIRST_SELECTION: tuple[float, float] = (8.0, 12.0)
+
+#: The second rule's quantity, level and budget: the first rung whose expected
+#: best-of-k shaped reward over the base pool, at this budget, falls below this
+#: level.
+RUNG_SHAPED_BUDGET = K_GRID[-1]
+RUNG_SHAPED_BOUND = 0.70
+
+RUNG_RULE_VOIDED = (
+    "the first rule is voided and the ground is narrow, because the ground is the "
+    "only thing that makes voiding legitimate. A rule is *not* voidable because "
+    "its answer is unfavourable to a hypothesis. It is voidable when its answer is "
+    "**degenerate by construction**: the rung it selected is the declared target "
+    "itself, which makes this arm a duplicate of arm E, and an arm that duplicates "
+    "another arm answers no question at all. That is a defect in the instrument "
+    "rather than a result about the world, and it is visible without reference to "
+    "any trained pool -- so voiding on it costs the pre-registration nothing, "
+    "where voiding because a number came out the wrong way would cost it "
+    "everything.\n"
+    "The premise that failed is worth stating as a finding. The rule was written "
+    "for a base pool that reaches the declared target and needs a harder one. This "
+    "pool attains the conjunction *never* in 3,072 draws and simultaneously "
+    "reaches 0.9963 on the shaped reward, missing on two razor edges: charge +7.98 "
+    "against a window opening at +8.0, low-complexity fraction 0.252 against a "
+    "limit closing at 0.25. A shaped reward prices a constraint; a conjunction "
+    "enforces it; and the two can disagree completely. The ladder is therefore "
+    "uninformative on the conjunction, which is zero at every rung, and "
+    "discriminating on the shaped reward, whose pool means run 0.3221 down to "
+    "0.1666 and whose R@512 runs 0.9705 down to 0.6231.\n"
+    "A rule has to be posed on a quantity that discriminates. That, and not a "
+    "preference for a rung, is why the second rule is posed where it is."
+)
+
+RUNG_SHAPED_RULE = (
+    f"the chosen rung is the first of the declared ladder whose expected "
+    f"best-of-{RUNG_SHAPED_BUDGET} shaped environment reward over the base pool "
+    f"falls below {RUNG_SHAPED_BOUND}. Declared from base-only data, before any "
+    "trained pool had been read, and applied once.\n"
+    "It selects [32, 36], whose R@512 is 0.6231 against [26, 30]'s 0.7394. That "
+    "rung is a hard target and not an impossible one: the earlier degeneracy sweep "
+    "established it is attainable at reward exactly 1.0 by a lysine-rich, "
+    "non-repeating, full-diversity sequence at a K share of 0.28, and an "
+    "independently constructed witness reaches 1.0 at K shares of 0.350, 0.318 and "
+    "0.325 at lengths 100, 110 and 120 -- the share depending on length, since the "
+    "charge window is absolute. Without that sweep already on the record the "
+    "distinction between a hard rung and an unattainable one could not have been "
+    "drawn at all."
+)
+
 RUNG_RULE = (
     f"the chosen rung is the first of the declared ladder whose one-sided "
     f"{RUNG_CONFIDENCE:.2f} upper bound on the probability that a "
@@ -564,15 +616,22 @@ LADDER_NOTE = (
 #: reason: the rationale written here first described the dependence as monotone
 #: and placed the fine edges where the fall was steepest, not where the turn is.
 #:
-#: The residual this leaves is declared rather than smoothed over, and it is
-#: largest in the top stratum. 128-200 is the widest of the seven at 73 residues
-#: and it sits on the rising limb, where the within-sequence slope between 160 and
-#: 192 residues is about nine pLDDT points; a length change spanning that stratum
-#: could therefore carry up to roughly twenty points, 0.2 in reward units, inside
-#: one stratum. A split at 160 would halve it and is not taken here, because the
-#: edges are declared and no pool has been read: changing them is an amendment
-#: rather than a run-time decision, and it is offered rather than made.
-LENGTH_STRATUM_EDGES: tuple[int, ...] = (16, 24, 32, 48, 64, 96, 128, 201)
+#: The edge at 160 splits what was one 73-residue stratum on the rising limb.
+#: Left whole it could hide up to about twenty pLDDT points -- the within-sequence
+#: slope between 160 and 192 residues is about nine points on its own -- which is
+#: larger than any contrast the stratum is meant to carry, so it would have
+#: defeated the gate in exactly the place the gate matters. Nothing had been read
+#: when it was split, so the correction cost the registration nothing; holding a
+#: declared edge for consistency when it is wrong and nothing has been measured
+#: would be false rigour rather than discipline.
+#:
+#: It is the *only* split, and the reason is the opposite failure. A stratum too
+#: thin for either pool to populate clears the resampling floor on neither side
+#: and yields no verdict at all, which is worse than a bounded residual: an
+#: unresolved column withholds a reading, a wide one still gives a bounded one.
+#: So the residual inside 128-159 and 160-200 is declared and kept rather than
+#: subdivided away.
+LENGTH_STRATUM_EDGES: tuple[int, ...] = (16, 24, 32, 48, 64, 96, 128, 160, 201)
 
 LENGTH_STRATUM_NAMES: tuple[str, ...] = tuple(
     f"{low}-{high - 1}" for low, high in zip(LENGTH_STRATUM_EDGES[:-1],
@@ -679,7 +738,41 @@ STRATIFIED_DIAGNOSTIC_FAMILIES: tuple[str, ...] = (
 )
 FAMILY_CHARGE_RATE = "charge_window_rate"
 FAMILY_CONJUNCTION_RATE = "environment_conjunction_rate"
+FAMILY_HARD_CONJUNCTION_RATE = "environment_hard_conjunction_rate"
+FAMILY_MEMORY_CONJUNCTION_RATE = "memory_conjunction_rate"
 FAMILY_PLDDT_CRITERION_RATE = "plddt_criterion_rate"
+
+#: The family carrying each reward's *own* objective-attainment rate: the share of
+#: a pool's completions that satisfy that reward's declared conjunction outright,
+#: rather than approaching it.
+#:
+#: This is a declared reading for every arm and every pool, beside the shaped
+#: reward, and it is here because of what the base pool showed. A pool can read
+#: 0.9963 on the shaped environment reward while satisfying that objective zero
+#: times in 3,072 draws, so **a reward gain is not evidence that the objective was
+#: attained** -- and the whole inferential chain of this experiment runs through
+#: reward gain. An arm whose shaped reward rises while its attainment rate stays
+#: at zero has learned to approach constraints without meeting them, which is not
+#: a failure of the measurement but very nearly this project's own claim about
+#: redistribution inside a narrower domain. It has to be a quantity rather than
+#: something a later reader reconstructs from two tables side by side.
+OBJECTIVE_ATTAINMENT_FAMILY: Mapping[str, str] = {
+    sr.REWARD_MEMORY: FAMILY_MEMORY_CONJUNCTION_RATE,
+    sr.REWARD_ENVIRONMENT: FAMILY_CONJUNCTION_RATE,
+    sr.REWARD_BOTH: FAMILY_MEMORY_CONJUNCTION_RATE,
+    sr.REWARD_ENVIRONMENT_HARD: FAMILY_HARD_CONJUNCTION_RATE,
+}
+
+ATTAINMENT_NOTE = (
+    "reported for every arm and every pool beside the shaped reward. The shaped "
+    "reward prices a constraint and the conjunction enforces it, and the base pool "
+    "shows how far apart the two can be: 0.9963 shaped against zero attainments in "
+    "3,072 draws, missing on charge +7.98 against a window opening at +8.0 and a "
+    "low-complexity fraction of 0.252 against a limit closing at 0.25. A rising "
+    "shaped reward with a flat attainment rate is a policy approaching constraints "
+    "without meeting them, and it is reported as that rather than as a gain"
+)
+
 
 
 def _reward_family(stem: str, reward: str) -> str:
@@ -725,6 +818,8 @@ FAMILY_SIZES: dict[str, int] = {
     FAMILY_LOW_COMPLEXITY: len(CONTRAST_POOLS),
     FAMILY_CHARGE_RATE: len(CONTRAST_POOLS),
     FAMILY_CONJUNCTION_RATE: len(CONTRAST_POOLS),
+    FAMILY_HARD_CONJUNCTION_RATE: len(CONTRAST_POOLS),
+    FAMILY_MEMORY_CONJUNCTION_RATE: len(CONTRAST_POOLS),
     FAMILY_PLDDT_CRITERION_RATE: len(CONTRAST_POOLS),
 }
 
@@ -1018,6 +1113,16 @@ def contract() -> dict[str, Any]:
                           "names": list(LENGTH_STRATUM_NAMES),
                           "rule": STRATIFICATION_RULE,
                           "structural_rewards": list(structural_rewards())},
+        "objective_attainment": {"families": dict(OBJECTIVE_ATTAINMENT_FAMILY),
+                                 "note": ATTAINMENT_NOTE},
+        "rung_rules": {"first": {"rule": RUNG_RULE,
+                                 "selected": list(RUNG_RULE_FIRST_SELECTION),
+                                 "voided": RUNG_RULE_VOIDED},
+                       "second": {"rule": RUNG_SHAPED_RULE,
+                                  "bound": RUNG_SHAPED_BOUND,
+                                  "budget": RUNG_SHAPED_BUDGET,
+                                  "selected": list(sr.HARD_CHARGE_WINDOW)
+                                  if sr.hard_window_declared() else None}},
         "k_grid": list(K_GRID),
         "k_redistribution": K_REDISTRIBUTION,
         "k_star_rule": K_STAR_RULE,

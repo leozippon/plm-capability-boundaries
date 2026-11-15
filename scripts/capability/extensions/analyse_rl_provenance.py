@@ -57,6 +57,8 @@ QUANTITY_FAMILIES: dict[str, tuple[str, str]] = {
     rp.FAMILY_LOW_COMPLEXITY: ("low_complexity_fraction", "closed_form"),
     rp.FAMILY_CHARGE_RATE: ("hit_charge_window", "closed_form"),
     rp.FAMILY_CONJUNCTION_RATE: ("hit_environment_conjunction", "closed_form"),
+    rp.FAMILY_HARD_CONJUNCTION_RATE: ("hit_environment_hard_conjunction", "closed_form"),
+    rp.FAMILY_MEMORY_CONJUNCTION_RATE: ("hit_memory_conjunction", "A"),
     rp.FAMILY_PLDDT_CRITERION_RATE: ("hit_plddt_criterion", "A"),
 }
 
@@ -391,7 +393,13 @@ def reachability(pools: Path) -> dict[str, Any]:
         )
     curve = ra.reachability_curve(streams)
     attempts = sum(len(values) for values in streams.values())
-    curve["rung_choice"] = ra.choose_hard_rung(curve["rungs"], n=attempts)
+    # Both rules are kept. The first, posed on the conjunction indicator, is
+    # recorded with what it selected and why it was voided; the second, posed on
+    # the shaped reward, is the one the arm trained under.
+    curve["rung_choice_conjunction_rule"] = ra.choose_hard_rung(curve["rungs"],
+                                                                n=attempts)
+    curve["rung_choice"] = ra.choose_shaped_rung(curve["rungs"])
+    curve["rung_rule_voided"] = rp.RUNG_RULE_VOIDED
     curve["base_pool_attempts_scored"] = attempts
     return curve
 
@@ -432,9 +440,19 @@ def read_pool(pool: str, families: Mapping[str, Any], reference: Mapping[str, An
     else:
         verdict = ra.reading(optimised=optimised, k=k, support=support,
                              degeneracy=degeneracy, stratified=stratified)
+    attainment_family = rp.OBJECTIVE_ATTAINMENT_FAMILY.get(own)
+    attainment = None
+    if attainment_family in families:
+        columns = families[attainment_family]["columns"]
+        attainment = ra.objective_attainment(
+            gain, columns.get(pool),
+            base_rate=(columns.get(pool, {}) or {}).get("right_point"),
+        )
     return {
         "pool": pool,
         "own_reward": own,
+        "objective_attainment": attainment,
+        "objective_attainment_family": attainment_family,
         "trained": pool in rp.TRAINED_ARMS,
         "reward_gain": {"point": gain.get("point"), "interval": gain.get("interval"),
                         "status": gain.get("status"), "reason": gain.get("reason")},

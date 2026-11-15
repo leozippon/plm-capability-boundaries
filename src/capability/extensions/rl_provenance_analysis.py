@@ -706,6 +706,121 @@ def choose_hard_rung(ladder_rungs: Sequence[Mapping[str, Any]], *, n: int,
     return out
 
 
+#: Whether a pool satisfied the objective it was paid to approach, or only
+#: approached it. Three states, because the middle one is a finding rather than a
+#: shortfall: a rising shaped reward with a flat attainment rate is a policy
+#: learning to approach constraints without meeting them.
+ATTAINED = "objective_attained"
+APPROACHED = "approached_without_attaining"
+ATTAINMENT_UNMEASURED = "not_measured"
+ATTAINMENT_STATES: tuple[str, ...] = (ATTAINED, APPROACHED, ATTAINMENT_UNMEASURED)
+
+
+def objective_attainment(gain: Mapping[str, Any] | None,
+                         rate: Mapping[str, Any] | None, *,
+                         base_rate: float | None = None) -> dict[str, Any]:
+    """Whether a pool attained its own objective, beside whether its reward rose.
+
+    ``gain`` is the pool's reward-gain column and ``rate`` its own objective's
+    attainment-rate column -- the share of completions satisfying that reward's
+    declared conjunction outright. Both are contrasts against the base pool.
+
+    This is reported for every arm and every pool, not derived on request, because
+    of what the base pool showed: 0.9963 on the shaped environment reward while
+    satisfying that objective zero times in 3,072 draws, missing on charge +7.98
+    against a window opening at +8.0 and a low-complexity fraction of 0.252
+    against a limit closing at 0.25. A shaped reward prices a constraint and a
+    conjunction enforces it, so **a reward gain is not evidence that the objective
+    was attained** -- and every inferential step in this experiment runs through
+    reward gain.
+
+    The middle state is the one worth having a name for. A pool whose shaped
+    reward rose while its attainment rate did not has learned to approach
+    constraints without meeting them, which is not a failure of the measurement
+    but very nearly this project's own claim about redistribution inside a
+    narrower domain.
+    """
+
+    def interval(entry: Mapping[str, Any] | None) -> tuple[float, float] | None:
+        if entry is None or entry.get("status") != "resolved" or entry.get("interval") is None:
+            return None
+        return float(entry["interval"][0]), float(entry["interval"][1])
+
+    gain_interval = interval(gain)
+    rate_interval = interval(rate)
+    out: dict[str, Any] = {
+        "reward_gain_interval": list(gain_interval) if gain_interval else None,
+        "attainment_rate_contrast": list(rate_interval) if rate_interval else None,
+        "attainment_rate_point": None if rate is None else rate.get("point"),
+        "base_attainment_rate": base_rate,
+        "note": rp.ATTAINMENT_NOTE,
+    }
+    if rate_interval is None:
+        out.update(state=ATTAINMENT_UNMEASURED,
+                   reason="the pool's own objective-attainment rate does not resolve, "
+                          "so whether a reward gain corresponds to attaining the "
+                          "objective is not measured")
+        return out
+    if rate_interval[0] > 0.0:
+        out.update(state=ATTAINED,
+                   reason="the attainment rate is bounded above the base pool's: the "
+                          "pool satisfies its own objective outright more often, not "
+                          "only nearer")
+        return out
+    rose = gain_interval is not None and gain_interval[0] > 0.0
+    out.update(
+        state=APPROACHED,
+        reason=("the shaped reward rose while the attainment rate did not: the pool "
+                "learned to approach its objective's constraints without meeting "
+                "them, which is a finding and not a shortfall of the measurement"
+                if rose else
+                "neither the shaped reward nor the attainment rate is bounded above "
+                "the base pool's"),
+    )
+    return out
+
+
+def choose_shaped_rung(ladder_rungs: Sequence[Mapping[str, Any]], *,
+                       budget: int = rp.RUNG_SHAPED_BUDGET,
+                       bound: float = rp.RUNG_SHAPED_BOUND) -> dict[str, Any]:
+    """The first declared rung whose best-of-``budget`` shaped reward is below ``bound``.
+
+    The ladder's second rule, posed on the shaped reward because the first was
+    posed on the conjunction indicator and the base pool attains that nowhere --
+    so the first rule's answer was degenerate by construction rather than merely
+    unwelcome, which is the only ground on which a declared rule may be voided.
+    :data:`..rl_environment_provenance.RUNG_RULE_VOIDED` carries that argument and
+    :data:`..rl_environment_provenance.RUNG_SHAPED_RULE` the replacement.
+
+    A rule has to be posed on a quantity that discriminates, and this one does:
+    the pool means run 0.3221 down to 0.1666 across the ladder and the
+    best-of-512 values 0.9705 down to 0.6231.
+    """
+
+    examined = []
+    chosen = None
+    for rung in ladder_rungs:
+        if rung.get("status") != "resolved":
+            examined.append({"window": rung.get("window"), "status": rung.get("status")})
+            continue
+        value = float(rung["r_at_k"][str(int(budget))]["point"])
+        entry = {"window": list(rung["window"]), "status": "resolved",
+                 f"r_at_k{budget}": value, "below_bound": bool(value < bound)}
+        examined.append(entry)
+        if chosen is None and entry["below_bound"]:
+            chosen = entry
+    out = {"rule": rp.RUNG_SHAPED_RULE, "budget": int(budget), "bound": float(bound),
+            "rungs_examined": examined,
+            "chosen_window": None if chosen is None else chosen["window"]}
+    if chosen is None:
+        out["reason"] = (
+            f"no rung of the declared ladder has a best-of-{budget} shaped reward "
+            f"below {bound}, so selection reaches every charge target on this "
+            "coordinate at that budget and the ladder is not extended"
+        )
+    return out
+
+
 def support_tail_share(pool_nll: Sequence[float], base_pool_nll: Sequence[float], *,
                        quantile: float = rp.SUPPORT_TAIL_QUANTILE) -> dict[str, Any]:
     """Share of a pool's samples the base model finds less probable than its own tail.
