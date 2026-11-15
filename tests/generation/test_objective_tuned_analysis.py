@@ -313,6 +313,19 @@ def test_primary_contrast_on_real_measurements(analysis):
         assert thin["finding"] == ota.UNRESOLVED and thin["margin"] is None
 
 
+def test_an_attempt_is_keyed_by_its_digest_rank_and_not_its_ledger_position(built):
+    """The key breaks a filter rule's ties, so it may not carry generation order."""
+
+    table = aot.assemble(aot.read_campaign(built["campaign"]),
+                         aot.read_structure([built["structure"]]),
+                         aot.read_novelty(aot.novelty_sources([built["novelty"]])))
+    for (arm, stream), pool in table["pools"].items():
+        digests = [row["digest"] for row in pool["rows"]]
+        assert digests == sorted(digests), (arm, stream)
+        assert [row["key"] for row in pool["rows"]] == [
+            f"{arm}|s{stream}|{index}" for index in range(len(digests))], (arm, stream)
+
+
 def test_the_denominator_keeps_empty_and_censored_attempts(analysis):
     for key, cell in analysis["cells"].items():
         factor = aot.builder.CELLS_PER_STREAM[cell["role"]]

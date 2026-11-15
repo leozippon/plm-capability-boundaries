@@ -111,7 +111,10 @@ JOIN_RULE = (
     "on. A recorded digest that disagrees with the bytes is refused. pLDDT, "
     "identity, recognition and selector score are all functions of the "
     "sequence; every attempt remains its own resampling unit under a key of "
-    "this analysis's own"
+    "this analysis's own, its rank in sequence-digest order within its (arm, "
+    "stream) pool, which is how the production drivers key too, so the filter "
+    "rules' tie-break on the key carries neither a cell boundary nor generation "
+    "order"
 )
 
 
@@ -390,8 +393,15 @@ def assemble(campaign: dict[str, Any], structure: dict[str, dict[str, Any]],
     pools: dict[tuple[str, int], dict[str, Any]] = {}
     for key, pool in campaign["pools"].items():
         rows = []
-        for position, (label, row) in enumerate(pool["attempts"]):
-            digest = digest_of(row, label, "ledger attempt")
+        ledger = [(position, label, row, digest_of(row, label, "ledger attempt"))
+                  for position, (label, row) in enumerate(pool["attempts"])]
+        # The key is the attempt's rank in digest order, not its ledger position. A
+        # rule's ties are broken on the key, and the ledger position would carry
+        # the cell boundary and the generation order into the choice. Identical
+        # sequences keep ledger order between themselves, which cannot change any
+        # statistic read off the sequence.
+        for index, (position, label, row, digest) in enumerate(
+                sorted(ledger, key=lambda entry: entry[3])):
             empty = row["stop_status"] == "empty_or_noncanonical"
             fold = structure.get(digest)
             search = novelty.get(digest)
@@ -401,7 +411,7 @@ def assemble(campaign: dict[str, Any], structure: dict[str, dict[str, Any]],
                 fail(f"{label} attempt {position} carries a pLDDT and no identity annotation; "
                      "the primary endpoint is stratified by identity and cannot place it")
             rows.append({
-                "key": f"{pool['arm']}|s{pool['stream']}|{position}",
+                "key": f"{pool['arm']}|s{pool['stream']}|{index}",
                 "cell": label, "digest": digest,
                 "sequence": str(row["sequence"]), "length": int(row["length"]),
                 "stop_status": row["stop_status"], "empty": empty,
