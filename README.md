@@ -8,24 +8,15 @@ The current synthesis is that evolutionary memory carries genuine phenotype-disc
 
 ## Results structure
 
-The results are organised into six sections, not a single capability ranking:
-
-| Result | Evidence-led conclusion |
-|---|---|
-| Protein-specialized or adapted models show mutation-effect gains beyond local and evolutionary controls | Selected released checkpoints retain predictive increments beyond the qualified position-profile and window controls; this is not a universal contrast between protein-exposed and unexposed models. |
-| Mutation-site and downstream likelihood terms carry complementary predictive signals | Mutation-spanning token terms (potentially spanning multiple residues) and downstream terms carry complementary predictive signals in some checkpoints, without identifying a training-objective mechanism. |
-| Predictive gains extend beyond mutation ranking to abundance and, more selectively, stability | Abundance and single-substitution stability provide support, with gains depending on the endpoint, metric and qualified baseline. |
-| Single-mutation signals do not reliably resolve double-mutant interactions | Raw interaction signals are limited, and the cleaned, measured-singles-adjusted panel establishes no positive increment. |
-| Homologous context improves prediction but does not establish remote generalization | Context improves selected interfaces, but remote generalization remains unconfirmed because the required close-stratum positive control failed. |
-| Predictive gains do not guarantee generative advantage over length-matched protein fragments | Generation must be compared directly with length-matched real fragments, and scoring gains can coexist with lower absolute generation yields. |
+The results are organised by question, not into a single capability ranking. [`experiments/`](experiments/README.md) defines the current scientific modules R1–R6 — statistical memory, quantitative readouts, interaction readouts, context access, generative expression and post-training adaptation — with their code entry points, inputs and retained results. The modules are documentation only. No dataset, result tree, schema or campaign identifier moved, and no two experiments inherit a sample, an endpoint or an estimator from being filed together; the grouping is where a reader starts, never the unit a number is read in.
 
 These are checkpoint- and protocol-specific findings, not causal effects of protein exposure or model size. An unresolved interval does not establish equivalence or absent information; a failed endpoint qualification is not a model failure. Sequence recognition and predicted fold confidence do not establish measured folding or function. Small conditional increments and their upper bounds, rather than non-significance alone, support the statistical-overlap interpretation.
 
-## Measurement lanes
+## Legacy storage lanes
 
-`R1`–`R6` are legacy storage and measurement labels retained for provenance and operational references, not the numbering of the six scientific sections. Frozen readouts (`R2`) support the mutation-prediction question; abundance (`R1`) and stability (`R4`) share the cross-phenotype question; contact qualification stays with interactions (`R3`). The code packages and retained result paths keep their existing names.
+Historical storage `results/R1/`–`results/R6/` and historical measurement or campaign labels retain their original identifiers for provenance and operational references. They are separate namespaces from the current scientific modules R1–R6 in [`experiments/`](experiments/README.md), not a numbering of the paper's Results sections. In the historical storage namespace, frozen readouts (`R2`) support current R1, abundance (`R1`) and stability (`R4`) support current R2, and contact qualification (`R3`) is auxiliary to current R3. The table below describes historical storage only; the crosswalk in [`experiments/README.md`](experiments/README.md) changes no code package, path or retained identifier.
 
-| Legacy lane | Quantity |
+| Historical storage lane | Quantity |
 |---|---|
 | `R1` | Held-family rank correlation between native likelihood and measured assay values, a decomposition of that likelihood over sequence positions, and external abundance confirmation |
 | `R2` | Predictive accuracy of readouts fitted on frozen hidden states, compared across readout classes and layer depths against specified sequence controls |
@@ -40,9 +31,10 @@ Each lane keeps its endpoint, support, controls and interval procedure explicit.
 
 | Path | Contents |
 |---|---|
+| `experiments/` | Navigation modules that group the measurements by question, each naming its code, input and result entry points |
 | `src/capability/core/` | Shared numbers, paths, sequences and records |
 | `src/capability/models/` | Checkpoint scoring |
-| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation, forcing, decoding, evaluation; `baselines/` holds the explicit statistical controls (profile and Potts scoring, cohort descriptors), `ladder/` the variant-effect baseline ladder, and `extensions/` the later estimand declarations |
+| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation, forcing, decoding, evaluation; `baselines/` holds the explicit statistical controls (profile and Potts scoring, cohort descriptors), `ladder/` the modification-extent generation ladder, and `extensions/` the later estimand declarations |
 | `scripts/capability/` | Entry points in the same groups, plus `data/` (dataset acquisition and checksum registry), `stages/`, `gates/` and `reporting/` (derived quantities, figure code and plotted source tables) |
 | `scripts/ops/` | Dataset preparation utilities for the composition-matched fold set, the EC-labelled Swiss-Prot corpus and the OpenWebText subset |
 | `configs/` | Declarations read by the entry points: the generation replication manifest and the matched-discrimination manifest, the explicit-statistics cohort descriptors, and the family-conditionals, family-distribution and objective-tuned-prediction contracts |

@@ -1,0 +1,29 @@
+# R1 统计属性 — Statistical memory of natural and measured sequence
+
+Does a checkpoint's sequence score prefer natural family sequence to a column-permuted null and to a training-only profile, and how does its likelihood order measured mutation effects against explicit evolutionary statistics? This module holds every reading that treats the model as an observer of natural and assayed sequence.
+
+## The three readings
+
+They are separable and are never merged. A natural HSP fragment is scored against query-column permutations, which asks about preference for natural continuity and nothing about the learned distribution. With a natural fragment held fixed, the twenty-way conditional the score induces is read at one query position against a training-only Profile and a training-only Markov description, which is conditional predictive quality on that target. Mutation ordering asks how the likelihood ranks supplied variants against measured assay values, and what it adds beyond, or alongside, Profile, Potts and GEMME.
+
+The first two score fixed natural sequences, so neither recovers the natural distribution, ranks generative quality, or locates where knowledge sits. The third is one scalar entering a fitted control set, so its increments are conditional predictive contrasts and not shares of what the parameters contain.
+
+## Code
+
+- Matched candidate discrimination and its cohort expansion: [`src/capability/mutation/matched_discrimination.py`](../../src/capability/mutation/matched_discrimination.py), [`expanded_discrimination.py`](../../src/capability/mutation/expanded_discrimination.py), run through [`scripts/capability/mutation/analyse_matched_discrimination.py`](../../scripts/capability/mutation/analyse_matched_discrimination.py)
+- Position decomposition and the simultaneous panel: [`src/capability/position/position_terms.py`](../../src/capability/position/position_terms.py), [`scripts/capability/position/analyse_position_terms.py`](../../scripts/capability/position/analyse_position_terms.py)
+- Readouts fitted on frozen hidden states: [`src/capability/readouts/readout_analysis.py`](../../src/capability/readouts/readout_analysis.py), with the class sweep and depth panel beside it
+- Explicit statistics: [`src/capability/baselines/msa_baselines.py`](../../src/capability/baselines/msa_baselines.py) and [`cohorts.py`](../../src/capability/baselines/cohorts.py); producers under [`scripts/capability/baselines/`](../../scripts/capability/baselines/r1_msa_baselines.py)
+- The ladder, the fragment study and the conditional layer: [`statistical_ladder.py`](../../src/capability/extensions/statistical_ladder.py), [`family_distribution.py`](../../src/capability/extensions/family_distribution.py), [`family_conditionals.py`](../../src/capability/extensions/family_conditionals.py), with runners of the same names under [`scripts/capability/extensions/`](../../scripts/capability/extensions/fit_statistical_ladder.py)
+
+## Inputs
+
+Local and not distributed: `data/proteingym`, `data/proteingym_raw`, `data/uniref50`, `data/swissprot`, `data/homology_db`. Declarations are tracked: [`configs/explicit_statistics_cohorts.json`](../../configs/explicit_statistics_cohorts.json), [`configs/family_distribution.json`](../../configs/family_distribution.json), [`configs/family_conditionals.json`](../../configs/family_conditionals.json), [`configs/matched_discrimination_manifest.json`](../../configs/matched_discrimination_manifest.json).
+
+## Evidence
+
+Local result trees, read under the statistic each one names: `results/R1/matched_discrimination_20261102`, `results/R1/native_dms_20260913`, `results/R1/position_terms_20260926`, `results/R2/readout_panel_summary_20260923`, `results/extensions/statistical_ladder_20261106/full/contrasts.json`, `results/extensions/family_distribution_20261106/analysis`, `results/extensions/family_conditionals_20261107/analysis`. The retired pair-level ablation stays under `results/R1/explicit_pair_ablation_20261114` as history.
+
+## Shared boundaries
+
+The 33 arms this module scores are the published roster declared once in [`src/capability/interactions/pairwise_epistasis.py`](../../src/capability/interactions/pairwise_epistasis.py) as `ROSTER`, which the explicit-statistics lanes also read as `PANEL_ARMS`; the foundational panel in [`src/capability/core/arms.py`](../../src/capability/core/arms.py) is a different list that belongs to the foundational stage, and the two must not be quoted as one. The ladder's control sets carry GEMME at published wild types it scores at exactly zero, named as a refusal by the declaration and not applied in the ladder, so the exposure travels with every GEMME-bearing number. Two increments in opposite directions have different power and their ratio is not an information measure; the forward bound, not a finding state, is what a small increment supports. `docs/family-distribution.md` and `docs/family-conditionals.md` are the local protocol companions.
