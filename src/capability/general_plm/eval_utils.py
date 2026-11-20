@@ -173,7 +173,7 @@ def nested_group_ridge_eval(
     if outer_k < 2:
         raise ValueError(f"Need at least 2 groups for held-group CV; got {n_groups}")
 
-    weights = row_weights(g, s)
+    weights = row_weights(s, g)
     alpha_grid = tuple(float(a) for a in alphas)
 
     def _concat(block_names: Sequence[str]) -> np.ndarray:
@@ -190,7 +190,7 @@ def nested_group_ridge_eval(
     group_rho_by_design: dict[str, list[np.ndarray]] = {d: [] for d in designs}
 
     for seed in seeds:
-        outer_folds = family_folds(g, n_splits=outer_k, seed=int(seed))
+        outer_folds = family_folds(g, outer_k, int(seed))
         preds_by_design: dict[str, np.ndarray] = {
             d: np.full(n, np.nan, dtype=np.float64) for d in designs
         }
@@ -198,49 +198,50 @@ def nested_group_ridge_eval(
 
         for d_name, block_names in designs.items():
             X = _concat(block_names)
-            for fold_idx in range(outer_k):
-                test_mask = outer_folds == fold_idx
+            for fold_idx, held_groups in enumerate(outer_folds):
+                test_mask = np.isin(g, held_groups)
                 train_mask = ~test_mask
                 if X.shape[1] == 0:
-                    w_tr = weights[train_mask]
+                    w_tr = row_weights(s[train_mask], g[train_mask])
                     pred_val = float(np.sum(w_tr * y[train_mask]) / np.sum(w_tr))
                     preds_by_design[d_name][test_mask] = pred_val
                     chosen_alphas[d_name].append(0.0)
                     continue
 
-                # Inner CV to select alpha on training groups only.
-                train_groups = g[train_mask]
+                train_idx = np.flatnonzero(train_mask)
+                test_idx = np.flatnonzero(test_mask)
+                train_groups = g[train_idx]
                 inner_k = min(int(n_inner), len(set(train_groups.tolist())))
                 if inner_k < 2:
                     best_alpha = float(alpha_grid[len(alpha_grid) // 2])
                 else:
-                    inner_folds = family_folds(train_groups, n_splits=inner_k, seed=int(seed) + 100 + fold_idx)
-                    X_tr = X[train_mask]
-                    y_tr = y[train_mask]
-                    w_tr = weights[train_mask]
-                    best_alpha = alpha_grid[0]
-                    best_loss = float("inf")
-                    for alpha in alpha_grid:
-                        inner_pred = np.empty_like(y_tr)
-                        for infold in range(inner_k):
-                            ival = inner_folds == infold
-                            itr = ~ival
-                            inner_pred[ival] = ridge_predict(
-                                X_tr[itr], y_tr[itr], w_tr[itr], X_tr[ival], alpha=alpha
-                            )
-                        loss = float(np.sum(w_tr * (y_tr - inner_pred) ** 2) / np.sum(w_tr))
-                        if loss < best_loss:
-                            best_loss = loss
-                            best_alpha = alpha
+                    losses = np.zeros(len(alpha_grid), dtype=np.float64)
+                    for val_groups in family_folds(train_groups, inner_k, int(seed) + 100 + fold_idx):
+                        is_val = np.isin(train_groups, val_groups)
+                        fit_idx = train_idx[~is_val]
+                        val_idx = train_idx[is_val]
+                        pred_grid = ridge_predict(
+                            X[fit_idx],
+                            y[fit_idx],
+                            row_weights(s[fit_idx], g[fit_idx]),
+                            X[val_idx],
+                            alphas=alpha_grid,
+                        )
+                        w_val = row_weights(s[val_idx], g[val_idx])
+                        fold_loss = (w_val[:, None] * (pred_grid - y[val_idx, None]) ** 2).sum(axis=0)
+                        losses += len(val_groups) * fold_loss
+                    losses /= max(1, len(set(train_groups.tolist())))
+                    best_idx = len(losses) - 1 - int(np.argmin(losses[::-1]))
+                    best_alpha = float(alpha_grid[best_idx])
 
                 chosen_alphas[d_name].append(float(best_alpha))
-                preds_by_design[d_name][test_mask] = ridge_predict(
-                    X[train_mask],
-                    y[train_mask],
-                    weights[train_mask],
-                    X[test_mask],
-                    alpha=best_alpha,
-                )
+                preds_by_design[d_name][test_idx] = ridge_predict(
+                    X[train_idx],
+                    y[train_idx],
+                    row_weights(s[train_idx], g[train_idx]),
+                    X[test_idx],
+                    alphas=[best_alpha],
+                )[:, 0]
 
         per_seed_designs: dict[str, Any] = {}
         for d_name, pred in preds_by_design.items():

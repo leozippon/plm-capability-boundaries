@@ -270,22 +270,29 @@ def _load_phenotypes(root: Path, max_bgs: int) -> tuple[list[dict[str, Any]], di
                 continue
             r = json.loads(line)
             bg_name = r["background"]
-            wt_key = r.get("wt_name") or r.get("profile_key") or f"{r['cohort']}:{r.get('wt_sha256', '')[:16]}"
+            wt_sha = str(r.get("wildtype_sha256") or r.get("wt_sha256") or "")
+            wt_key = r.get("wt_name") or r.get("profile_key") or f"{r['cohort']}:{wt_sha[:16]}"
             wt_seq = r.get("wildtype") or seq_by_wt.get(wt_key)
             if not wt_seq:
                 continue
             pos = int(r["position"])
             wt_aa = r.get("wt_aa") or wt_seq[pos - 1]
             mt_aa = r["mt_aa"]
-            if wt_seq[pos - 1] != wt_aa:
+            if not (1 <= pos <= len(wt_seq)) or wt_seq[pos - 1] != wt_aa:
                 continue
             mut = f"{wt_aa}{pos}{mt_aa}"
+            label_val = (
+                float(r["oriented_label"])
+                if "oriented_label" in r and r["oriented_label"] is not None
+                else float(r["label"]) * float(r.get("direction", 1))
+            )
+            bg_key = f"{r['cohort']}::{bg_name}"
             entry = grouped.setdefault(
-                bg_name,
+                bg_key,
                 {
                     "name": bg_name,
                     "profile_key": wt_key,
-                    "group": str(r.get("group") or r.get("cluster") or bg_name),
+                    "group": str(r.get("group") or r.get("unit") or r.get("cluster") or bg_key),
                     "wildtype": wt_seq,
                     "mutations": [],
                     "sample_ids": [],
@@ -294,7 +301,7 @@ def _load_phenotypes(root: Path, max_bgs: int) -> tuple[list[dict[str, Any]], di
             )
             entry["mutations"].append(mut)
             entry["sample_ids"].append(f"{bg_name}::{mut}")
-            entry["targets"].append(float(r["oriented_label"]))
+            entry["targets"].append(label_val)
     bgs = [grouped[k] for k in sorted(grouped.keys())]
     if max_bgs > 0:
         bgs = bgs[:max_bgs]

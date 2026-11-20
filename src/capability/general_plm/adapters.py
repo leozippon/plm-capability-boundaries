@@ -157,6 +157,7 @@ def _discover_transformer_blocks(model: torch.nn.Module) -> Sequence[torch.nn.Mo
     """Locate the ordered transformer layer stack for PyTorch forward hooks."""
     candidates = [
         ("esm", "encoder", "layer"),
+        ("esmc", "layers"),
         ("encoder", "layer"),
         ("transformer_encoder",),
         ("model", "layers"),
@@ -415,33 +416,33 @@ class _BaseMaskedAdapter(GeneralPLMAdapter):
     def _encode_sequence(self, sequence: str, structure_3di: str | None = None) -> tuple[list[int], int]:
         """Return ``(token_ids, residue_offset)`` where residue ``j`` is at ``residue_offset + j``."""
         self.validate_sequence(sequence)
-        ids = [int(v) for v in self.tokenizer(sequence)["input_ids"]]
-        if len(ids) == len(sequence) + 2:
-            offset = 1
-        elif len(ids) == len(sequence) + 1:
-            offset = 1
-        elif len(ids) == len(sequence):
-            offset = 0
-        else:
-            # Retry with explicit space-separated residues for word-level tokenizers if needed
-            ids_sp = [int(v) for v in self.tokenizer(" ".join(sequence))["input_ids"]]
-            if len(ids_sp) == len(sequence) + 2:
-                ids, offset = ids_sp, 1
-            elif len(ids_sp) == len(sequence):
-                ids, offset = ids_sp, 0
-            else:
-                raise ValueError(
-                    f"{self.arm}: expected 1 token per residue for length {len(sequence)}, "
-                    f"got {len(ids)} tokens"
-                )
-        # Verify exact 1:1 residue mapping
-        for j, aa in enumerate(sequence):
-            if ids[offset + j] != self.aa_to_id[aa]:
-                raise ValueError(
-                    f"{self.arm}: token id mismatch at residue {j} ({aa}): "
-                    f"got {ids[offset + j]}, expected {self.aa_to_id[aa]}"
-                )
-        return ids, offset
+        expected = [self.aa_to_id[aa] for aa in sequence]
+        length = len(sequence)
+
+        candidates = [
+            [int(v) for v in self.tokenizer(sequence)["input_ids"]],
+        ]
+        if len(candidates[0]) < length:
+            candidates.append([int(v) for v in self.tokenizer(" ".join(sequence))["input_ids"]])
+
+        for ids in candidates:
+            # Handle [CLS]+seq+[EOS] (offset=1), [CLS]+seq (offset=1), seq+[EOS] (offset=0, e.g. ProteinGLM-MLM), or bare seq (offset=0).
+            if len(ids) == length + 2 and ids[1 : 1 + length] == expected:
+                return ids, 1
+            if len(ids) == length + 1:
+                if ids[0:length] == expected:
+                    return ids, 0
+                if ids[1 : 1 + length] == expected:
+                    return ids, 1
+            if len(ids) == length and ids == expected:
+                return ids, 0
+
+        ids = candidates[0]
+        raise ValueError(
+            f"{self.arm}: encoded sequence length {len(ids)} (first tokens={ids[:6]}) "
+            f"does not match 1-token-per-residue AA20 packing for length {length} "
+            f"(expected first tokens={expected[:6]})"
+        )
 
     def _forward_logits(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None

@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from src.capability.general_plm import (
     resolve_checkpoint_dir,
 )
 from src.capability.general_plm.adapters import normalize_dtype_name
-from src.capability.general_plm.eval_utils import project_four_blocks
+from src.capability.general_plm.eval_utils import nested_group_ridge_eval, project_four_blocks
 from src.capability.general_plm.msa_utils import build_query_msa, project_partner_to_query
 from src.capability.interactions.pairwise_epistasis import ROSTER
 
@@ -130,6 +131,91 @@ def test_four_block_projection_matches_frozen_1024_width():
     assert np.isfinite(proj).all()
 
 
+def test_nested_group_ridge_eval_on_full_r1_r2_r3_cohorts_cpu():
+    """Verify row_weights, family_folds, and ridge_predict on FULL R1/R2/R3 cohort metadata."""
+    rng = np.random.default_rng(20261120)
+
+    # 1. FULL 201-assay R1 variant_table (25,728 rows across 163 families, including multi-assay families)
+    vt_path = ROOT / "results/extensions/statistical_ladder_20261106/inputs/variant_table.json"
+    if vt_path.is_file():
+        samples = json.loads(vt_path.read_text(encoding="utf-8"))["samples"]
+        groups = np.asarray([int(s["cluster"]) for s in samples])
+        subunits = np.asarray([str(s["assay"]) for s in samples], dtype="U")
+        n = len(samples)
+        y = rng.normal(size=n)
+        x = y * 0.5 + rng.normal(scale=0.5, size=n)
+        res = nested_group_ridge_eval(
+            y, groups, subunits, {"M": x, "P": rng.normal(size=n)}, {"P": ("P",), "P_M": ("P", "M")}, seeds=(20260923,)
+        )
+        assert res["n_rows"] == 25728
+        assert res["n_groups"] == 163
+        assert res["summary"]["P_M"]["group_mse"]["mean"] < res["summary"]["P"]["group_mse"]["mean"]
+
+    # 2. FULL R2 Domainome abundance (428 domains, 109,568 rows)
+    dom_path = ROOT / "results/R1/external_confirmation_20260924/cohort.json"
+    if dom_path.is_file():
+        domains = json.loads(dom_path.read_text(encoding="utf-8"))["domains"]
+        groups = np.asarray([d["group"] for d in domains for _ in d["variants"]], dtype="U")
+        subunits = np.asarray([f"{d['name']}:{v['position'] - 1}" for d in domains for v in d["variants"]], dtype="U")
+        y = np.asarray([float(v["target"]) for d in domains for v in d["variants"]], dtype=np.float64)
+        x = y * 0.4 + rng.normal(scale=0.5, size=y.size)
+        res = nested_group_ridge_eval(
+            y, groups, subunits, {"M": x}, {"M": ("M",)}, seeds=(20260923,), alphas=(0.1, 1.0, 10.0)
+        )
+        assert res["n_rows"] == 109568
+        assert np.isfinite(res["summary"]["M"]["group_mse"]["mean"])
+
+    # 3. FULL R2 MegaScale stability (101 backgrounds, 25,856 rows)
+    ms_path = ROOT / "results/R4/gate_stability_20260924/cohort/cohort.json"
+    if ms_path.is_file():
+        bgs = json.loads(ms_path.read_text(encoding="utf-8"))["backgrounds"]
+        groups = np.asarray([bg["group"] for bg in bgs for _ in bg["variants"]], dtype="U")
+        subunits = np.asarray([f"{bg['name']}:{v['position'] - 1}" for bg in bgs for v in bg["variants"]], dtype="U")
+        y = np.asarray([float(v["ddg"]) for bg in bgs for v in bg["variants"]], dtype=np.float64)
+        x = y * 0.4 + rng.normal(scale=0.5, size=y.size)
+        res = nested_group_ridge_eval(
+            y, groups, subunits, {"M": x}, {"M": ("M",)}, seeds=(20260923,), alphas=(0.1, 1.0, 10.0)
+        )
+        assert res["n_rows"] == 25856
+        assert np.isfinite(res["summary"]["M"]["group_mse"]["mean"])
+
+    # 4. FULL R2 added phenotypes (qual-3 rows)
+    pb_rows = ROOT / "results/extensions/phenotype_breadth_20261008/qual-3/rows"
+    if pb_rows.is_dir():
+        from scripts.capability.general_plm.run_r2_phenotypes_and_readouts import _load_phenotypes
+
+        bgs, _potts, _gemme, _freqs = _load_phenotypes(ROOT, max_bgs=0)
+        groups = np.asarray([bg["group"] for bg in bgs for _ in bg["mutations"]], dtype="U")
+        subunits = np.asarray(
+            [f"{bg['name']}:{int(m[1:-1]) - 1}" for bg in bgs for m in bg["mutations"]],
+            dtype="U",
+        )
+        y = np.asarray([float(t) for bg in bgs for t in bg["targets"]], dtype=np.float64)
+        x = y * 0.4 + rng.normal(scale=0.5, size=y.size)
+        res = nested_group_ridge_eval(
+            y, groups, subunits, {"M": x}, {"M": ("M",)}, seeds=(20260923,), alphas=(0.1, 1.0, 10.0)
+        )
+        assert res["n_rows"] > 10000
+        assert np.isfinite(res["summary"]["M"]["group_mse"]["mean"])
+
+    # 5. FULL R3 pairwise extraction plan (64 backgrounds, 8,192 cycles)
+    ep_path = ROOT / "archive/logs/R3/pairwise_epistasis_20260924/extraction_plan.json"
+    if ep_path.is_file():
+        bgs = json.loads(ep_path.read_text(encoding="utf-8"))["backgrounds"]
+        groups = np.asarray([bg["group"] for bg in bgs for _ in bg["cycles"]], dtype="U")
+        subunits = np.asarray(
+            [f"{bg['name']}:{c['positions'][0]}_{c['positions'][1]}" for bg in bgs for c in bg["cycles"]],
+            dtype="U",
+        )
+        y = rng.normal(size=groups.size)
+        x = y * 0.4 + rng.normal(scale=0.5, size=groups.size)
+        res = nested_group_ridge_eval(
+            y, groups, subunits, {"M": x}, {"M": ("M",)}, seeds=(20260923,), alphas=(0.1, 1.0, 10.0)
+        )
+        assert res["n_rows"] == 8192
+        assert np.isfinite(res["summary"]["M"]["group_mse"]["mean"])
+
+
 def test_stage_entrypoints_resolve_via_h200_resolver():
     """Verify every new script in scripts/capability/general_plm resolves via entrypoints.py."""
     from scripts.capability.entrypoints import stage_path
@@ -157,6 +243,9 @@ PROTGPT3_112M_DIR = Path("/Data/public/models_R2/ProtGPT3-112M")
 AMPLIFY_120M_DIR = Path("/home/lzp/models/general_plm_20261120/amplify-120m")
 DAYHOFF_170M_DIR = Path("/home/lzp/models/general_plm_20261120/dayhoff-170m")
 PROTGPT3_MSA_DIR = Path("/home/lzp/models/general_plm_20261120/protgpt3-msa")
+PROTEINGLM_1B_MLM_DIR = Path("/home/lzp/models/general_plm_20261120/proteinglm-1b-mlm")
+SAPROT_35M_DIR = Path("/home/lzp/models/general_plm_20261120/saprot-35m")
+PROGEN3_219M_DIR = Path("/home/lzp/models/general_plm_20261120/progen3-219m")
 
 
 @pytest.mark.skipif(
@@ -313,5 +402,78 @@ def test_protgpt3_msa_r4_context_gpu():
     wt = "MKTAYIAKQRQISFVKSHFSRQLEERLG"
     r4 = adapter.score_r4_context(wt, [wt, wt[:22]], budget_tokens=256)
     assert r4["k_items"] == 2 and np.isfinite(r4["nll_sum"])
+    del adapter
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and PROTEINGLM_1B_MLM_DIR.is_dir()),
+    reason="Requires GPU and staged proteinglm-1b-mlm",
+)
+def test_proteinglm_1b_mlm_trailing_eos_encoding_and_hidden_states_gpu():
+    """Verify ProteinGLM-1B-MLM (offset=0, trailing <eos>, time-first hidden states) on GPU."""
+    adapter = load_general_plm(
+        "proteinglm-1b-mlm", device="cuda:0", dtype="float32", model_root=PROTEINGLM_1B_MLM_DIR
+    )
+    wt = "MKTAYIAKQRQISFVKSHFSRQLEERLG"
+    vec = adapter.exact_pll(wt, batch_size=8)
+    assert vec.terms.shape == (len(wt),) and np.isfinite(vec.nll_sum)
+    scores = adapter.score_variants(wt, ["A4V", "I6L"])
+    assert scores.shape == (2,) and np.isfinite(scores).all()
+    q = adapter.native_site_conditional(wt, 3)
+    assert abs(float(np.exp(q).sum()) - 1.0) < 1e-6
+    h = adapter.extract_hidden_states([wt, wt[:18]], batch_size=2, pooling="mean_cls")
+    assert h.shape == (2, 4, 2048) and np.isfinite(h).all()
+    del adapter
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and SAPROT_35M_DIR.is_dir()),
+    reason="Requires GPU and staged saprot-35m",
+)
+def test_saprot_35m_seq_only_and_foldseek_3di_modes_gpu():
+    """Verify SaProt-35M in both seq_only (#-masked 20-3Di marginalization) and foldseek_3di modes."""
+    wt = "MKTAYIAKQRQISFVKSHFSRQLEERLG"
+    s3 = "v" * len(wt)
+
+    ad_seq = load_general_plm(
+        "saprot-35m", device="cuda:0", dtype="float32", model_root=SAPROT_35M_DIR, saprot_mode="seq_only"
+    )
+    v_seq = ad_seq.exact_pll(wt, batch_size=8)
+    assert v_seq.terms.shape == (len(wt),) and np.isfinite(v_seq.nll_sum)
+    h_seq = ad_seq.extract_hidden_states([wt, wt[:20]], batch_size=2, pooling="mean_cls")
+    assert h_seq.shape == (2, 4, 480) and np.isfinite(h_seq).all()
+    del ad_seq
+    torch.cuda.empty_cache()
+
+    ad_3di = load_general_plm(
+        "saprot-35m", device="cuda:0", dtype="float32", model_root=SAPROT_35M_DIR, saprot_mode="foldseek_3di"
+    )
+    v_3di = ad_3di.exact_pll(wt, batch_size=8, structure_3di=s3)
+    assert v_3di.terms.shape == (len(wt),) and np.isfinite(v_3di.nll_sum)
+    assert abs(v_3di.nll_sum - v_seq.nll_sum) > 1.0
+    h_3di = ad_3di.extract_hidden_states([wt], batch_size=1, pooling="mean_cls", structure_3di_list=[s3])
+    assert h_3di.shape == (1, 4, 480) and np.isfinite(h_3di).all()
+    del ad_3di
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and PROGEN3_219M_DIR.is_dir()),
+    reason="Requires GPU and staged progen3-219m",
+)
+def test_progen3_219m_megablocks_eager_strict_gpu():
+    """Verify ProGen3-219M loads via megablocks->eager strict conversion in BF16."""
+    adapter = load_general_plm(
+        "progen3-219m", device="cuda:0", dtype="bfloat16", model_root=PROGEN3_219M_DIR
+    )
+    wt = "MKTAYIAKQRQISFVKSHFSRQLEERLG"
+    vec = adapter.exact_pll(wt)
+    assert vec.terms.shape == (len(wt),) and np.isfinite(vec.nll_sum)
+    h = adapter.extract_hidden_states([wt])
+    assert h.shape == (1, 4, 512) and np.isfinite(h).all()
+    r4 = adapter.score_r4_context(wt, [wt[:20]], budget_tokens=256)
+    assert r4["k_items"] == 1 and np.isfinite(r4["nll_sum"])
     del adapter
     torch.cuda.empty_cache()
