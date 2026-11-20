@@ -120,6 +120,69 @@ CHANCE_READING = (
     'containing zero is a limit on resolution and never evidence that the quantity '
     'carries no contact information; this design declares no equivalence margin')
 
+#: Minimum fraction of eligible residue pairs an arm must cover across admitted
+#: references to enter the full-alphabet secondary summary. Full-alphabet arms
+#: (bidirectional or single-residue causal) cover ~65-88% of pairs; thin BPE
+#: tokenizers cover <13% and both thin the complete-case reference intersection
+#: and inflate the simultaneous band critical value.
+FULL_ALPHABET_MIN_PAIR_FRACTION = 0.50
+
+
+def effective_depth_per_site(work: Path, length: int) -> float:
+    """Neff over modelled columns, from the weight file the fit itself consumed.
+
+    Taken from this fit's own alignment because that is the alignment whose couplings
+    the comparison reads. Another campaign's fit of the same backbone can rest on a
+    different search and a different depth, and quoting that one here would describe a
+    model this stage never used.
+    """
+
+    weights = np.array([float(value) for value in (work / 'full.weights').read_text().split()],
+                       dtype=np.float64)
+    if not len(weights) or not np.isfinite(weights).all() or (weights < 0).any():
+        raise ValueError(f'{work}: the fit\'s weight file is empty, nonfinite or negative')
+    return float(weights.sum()) / length
+
+
+def paired_bands_with_marginal(values, *, draws: int = bidir.DRAWS, seed: int = bidir.SEED,
+                               confidence: float = bidir.CONFIDENCE) -> dict:
+    """Simultaneous native bands plus marginal percentile CIs on the same bootstrap draws."""
+
+    bands = bidir.paired_bands(values, draws=draws, seed=seed, confidence=confidence)
+    resampled = bidir.resample_means(values, draws=draws, seed=seed)
+    alpha = 0.5 * (1.0 - confidence)
+    low = np.quantile(resampled, alpha, axis=0)
+    high = np.quantile(resampled, 1.0 - alpha, axis=0)
+    marginal = np.column_stack([low, high]).tolist()
+    return {**bands, 'marginal_interval': marginal}
+
+
+def pair_coupling_scores(record) -> tuple[list[tuple[int, int]], np.ndarray, np.ndarray, np.ndarray]:
+    """Aligned 0-based pair keys, contact labels, coupling norms and negative separation.
+
+    ``record['pairs']['distance']`` keys come from :func:`structure_sites` and
+    :func:`contact_pairs` and are already 0-based wild-type residue indices
+    (``0 <= i < j < L``), matching the 0-based axes of :func:`apc_frobenius`.
+    """
+
+    keys = sorted(record['pairs']['distance'])
+    length = int(record['length'])
+    couplings = np.asarray(record['couplings'], dtype=float)
+    if couplings.shape != (length, length):
+        raise ValueError(
+            f'{record.get("assay", "<unknown>")}: coupling matrix shape {couplings.shape} '
+            f'disagrees with wild-type length {length}')
+    for low, high in keys:
+        if not (0 <= low < high < length):
+            raise ValueError(
+                f'{record.get("assay", "<unknown>")}: pair key ({low}, {high}) is outside '
+                f'0 <= i < j < {length}')
+    label = np.array([record['pairs']['distance'][key] < record['pairs']['cutoff_angstrom']
+                      for key in keys], dtype=bool)
+    potts = np.array([couplings[key[0], key[1]] for key in keys], dtype=float)
+    gap = np.array([-(key[1] - key[0]) for key in keys], dtype=float)
+    return keys, label, potts, gap
+
 
 def auc_minus_half(score, label) -> float | None:
     """Rank-sum AUC of ``score`` against boolean ``label``, minus one half.
@@ -266,8 +329,16 @@ def main() -> None:
                         help='a posresp_extract_* directory; repeatable, once per arm')
     parser.add_argument('--contact-angstrom', type=float, default=CONTACT_ANGSTROM)
     parser.add_argument('--min-separation', type=int, default=MIN_SEQUENCE_SEPARATION)
+    parser.add_argument('--min-neff-per-site', type=float, default=0.,
+                        help='keep only references whose own fitted alignment reaches this '
+                             'effective depth per site (inclusive); 0 keeps every reference')
+    parser.add_argument('--max-neff-per-site', type=float, default=None,
+                        help='if set, keep only references strictly below this effective depth '
+                             'per site (e.g. 5.0 for the shallow stratum)')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
+    if args.max_neff_per_site is not None and args.max_neff_per_site <= args.min_neff_per_site:
+        raise SystemExit('--max-neff-per-site must exceed --min-neff-per-site')
 
     with gzip.open(args.structures, 'rt', encoding='utf-8') as handle:
         sites = json.load(handle)
@@ -284,6 +355,29 @@ def main() -> None:
     if not admitted:
         raise SystemExit('no reference carries both an admitted structure and a fitted '
                          'coupling model; there is nothing to compare')
+
+    filtered_admitted = {}
+    excluded_below_floor: dict[str, float] = {}
+    excluded_at_or_above_ceiling: dict[str, float] = {}
+    depth_by_assay: dict[str, float] = {}
+    depth_filtering = args.min_neff_per_site > 0. or args.max_neff_per_site is not None
+    for assay, record in sorted(admitted.items()):
+        work = Path(record['params']).parent
+        weights_file = work / 'full.weights'
+        if depth_filtering or weights_file.exists():
+            depth = effective_depth_per_site(work, record['length'])
+            depth_by_assay[assay] = depth
+            if depth < args.min_neff_per_site:
+                excluded_below_floor[assay] = depth
+                continue
+            if args.max_neff_per_site is not None and depth >= args.max_neff_per_site:
+                excluded_at_or_above_ceiling[assay] = depth
+                continue
+        filtered_admitted[assay] = record
+    admitted = filtered_admitted
+    if not admitted:
+        raise SystemExit('no reference remains after the alignment-depth filter; '
+                         'there is nothing to compare')
 
     arms = []
     for directory in args.extraction:
@@ -304,11 +398,7 @@ def main() -> None:
 
     table, support = {}, {}
     for assay, record in sorted(admitted.items()):
-        keys = sorted(record['pairs']['distance'])
-        label = np.array([record['pairs']['distance'][key] < record['pairs']['cutoff_angstrom']
-                          for key in keys])
-        potts = np.array([record['couplings'][key[0] - 1, key[1] - 1] for key in keys])
-        gap = np.array([-(key[1] - key[0]) for key in keys], dtype=float)
+        keys, label, potts, gap = pair_coupling_scores(record)
         row = {'couplings_apc_frobenius': auc_minus_half(potts, label),
                'negative_sequence_separation': auc_minus_half(gap, label)}
         covered = {}
@@ -331,12 +421,53 @@ def main() -> None:
             scores = np.array([measured['values'][keys[position]] for position in seen])
             row[name] = auc_minus_half(scores, label[seen])
         table[assay] = row
-        support[assay] = {'family': record['family'], 'entry': record['entry'],
-                          'length': record['length'], 'pairs': len(keys),
-                          'contacts': int(label.sum()),
-                          'admitted_coordinates': len(record['geometry']),
-                          'params': record['params'], 'params_sha256': record['params_sha256'],
-                          'arm_coverage': covered}
+        support_entry = {'family': record['family'], 'entry': record['entry'],
+                         'length': record['length'], 'pairs': len(keys),
+                         'contacts': int(label.sum()),
+                         'admitted_coordinates': len(record['geometry']),
+                         'params': record['params'], 'params_sha256': record['params_sha256'],
+                         'arm_coverage': covered}
+        if assay in depth_by_assay:
+            support_entry['effective_depth_per_site'] = depth_by_assay[assay]
+        support[assay] = support_entry
+
+    def summarise_columns(selected_columns: list[dict]) -> tuple[list[dict], dict, list[str]]:
+        names = [column['readout'] for column in selected_columns]
+        complete_refs = [assay for assay in sorted(table)
+                         if all(table[assay][name] is not None for name in names)]
+        out_columns = []
+        if len(complete_refs) >= MINIMUM_BOOTSTRAP_UNITS:
+            matrix = np.array([[table[assay][name] for name in names] for assay in complete_refs])
+            bands = paired_bands_with_marginal(matrix)
+            verdicts = bidir.verdict(bands['interval'])
+            marginal_verdicts = bidir.verdict(bands['marginal_interval'])
+            for position, column in enumerate(selected_columns):
+                out_columns.append({
+                    **column,
+                    'point': bands['point'][position],
+                    'interval': bands['interval'][position],
+                    'verdict': verdicts[position],
+                    'marginal_interval': bands['marginal_interval'][position],
+                    'marginal_verdict': marginal_verdicts[position],
+                })
+            record_band = {key: value for key, value in bands.items()
+                           if key not in ('point', 'interval', 'marginal_interval')}
+            record_band.update({
+                'units': 'rank-sum AUC minus one half, dimensionless',
+                'resampling_unit': 'biological family; one reference per family here',
+                'references': complete_refs,
+            })
+        else:
+            record_band = {'refused': (
+                f'{len(complete_refs)} references carry every column against the '
+                f'{MINIMUM_BOOTSTRAP_UNITS}-unit resampling floor; a nominal interval over so few '
+                'units does not realise its stated coverage and is not formed')}
+            for column in selected_columns:
+                out_columns.append({
+                    **column, 'point': None, 'interval': None, 'verdict': 'unresolved',
+                    'marginal_interval': None, 'marginal_verdict': 'unresolved',
+                })
+        return out_columns, record_band, complete_refs
 
     coverage_by_column = {column['readout']: sum(
         1 for assay in table if table[assay][column['readout']] is not None)
@@ -352,35 +483,44 @@ def main() -> None:
                 f'{MINIMUM_BOOTSTRAP_UNITS}-unit resampling floor; the column is named rather '
                 'than estimated, and it is not allowed to thin the complete case of the others')})
     columns = admitted_columns
-    names = [column['readout'] for column in columns]
-    complete = [assay for assay in sorted(table)
-                if all(table[assay][name] is not None for name in names)]
-    payload_columns = []
-    if len(complete) >= MINIMUM_BOOTSTRAP_UNITS:
-        matrix = np.array([[table[assay][name] for name in names] for assay in complete])
-        bands = bidir.paired_bands(matrix)
-        verdicts = bidir.verdict(bands['interval'])
-        for position, column in enumerate(columns):
-            payload_columns.append({**column, 'point': bands['point'][position],
-                                    'interval': bands['interval'][position],
-                                    'verdict': verdicts[position]})
-        band_record = {key: value for key, value in bands.items()
-                       if key not in ('point', 'interval')}
-        band_record.update({'units': 'rank-sum AUC minus one half, dimensionless',
-                            'resampling_unit': 'biological family; one reference per family here',
-                            'references': complete})
-    else:
-        band_record = {'refused': (
-            f'{len(complete)} references carry every column against the '
-            f'{MINIMUM_BOOTSTRAP_UNITS}-unit resampling floor; a nominal interval over so few '
-            'units does not realise its stated coverage and is not formed')}
-        for column in columns:
-            payload_columns.append({**column, 'point': None, 'interval': None,
-                                    'verdict': 'unresolved'})
+    payload_columns, band_record, complete = summarise_columns(columns)
+
+    total_eligible_pairs = sum(entry['pairs'] for entry in support.values())
+    pair_fraction_by_arm = {
+        arm['arm']: (
+            sum(support[assay]['arm_coverage'].get(arm['arm'], {}).get('pairs', 0)
+                for assay in support) / total_eligible_pairs
+            if total_eligible_pairs else 0.0
+        )
+        for arm in arms
+    }
+    full_alpha_columns, thin_bpe_excluded = [], []
+    for column in columns:
+        if column['kind'] != 'model':
+            full_alpha_columns.append(column)
+            continue
+        arm_name = column['readout'].split('propagation:', 1)[1]
+        fraction = pair_fraction_by_arm.get(arm_name, 0.0)
+        if fraction >= FULL_ALPHABET_MIN_PAIR_FRACTION:
+            full_alpha_columns.append(column)
+        else:
+            thin_bpe_excluded.append({'arm': arm_name, 'pair_coverage_fraction': fraction})
+    fa_columns, fa_band, fa_complete = summarise_columns(full_alpha_columns)
+    full_alphabet_secondary = {
+        'rule': (f'admitted non-model columns plus model arms covering at least '
+                 f'{FULL_ALPHABET_MIN_PAIR_FRACTION:.2f} of eligible residue pairs across '
+                 'admitted references, banded on their own complete-case intersection'),
+        'min_pair_fraction': FULL_ALPHABET_MIN_PAIR_FRACTION,
+        'pair_coverage_fraction_by_arm': pair_fraction_by_arm,
+        'thin_bpe_arms_excluded': thin_bpe_excluded,
+        'references_complete': fa_complete,
+        'columns': fa_columns,
+        'native': fa_band,
+    }
 
     write_json(args.out, {
         'schema': 'contact_discrimination_v1',
-        'experiment': 'R2 scope limit: contact localisation by explicit couplings and by propagation',
+        'experiment': 'R2/R3 contact localisation by explicit couplings and by propagation',
         'question': ('whether a residue pair can be identified as a three-dimensional contact '
                      'from the fitted Potts coupling norm, from a model\'s per-pair propagation '
                      'response, or from sequence separation alone'),
@@ -400,6 +540,15 @@ def main() -> None:
         'columns_refused': refused_columns,
         'column_coverage': coverage_by_column,
         'native': band_record,
+        'full_alphabet_secondary': full_alphabet_secondary,
+        'depth': {
+            'min_neff_per_site': float(args.min_neff_per_site),
+            'max_neff_per_site': None if args.max_neff_per_site is None else float(args.max_neff_per_site),
+            'source': 'the full.weights file each selected.params fit consumed',
+            'references_below_floor': excluded_below_floor,
+            'references_at_or_above_ceiling': excluded_at_or_above_ceiling,
+            'realised': {assay: depth_by_assay[assay] for assay in complete if assay in depth_by_assay},
+        },
         'families': sorted({record['family'] for record in admitted.values()}),
         'references_admitted': len(admitted),
         'references_complete': complete,
@@ -416,11 +565,11 @@ def main() -> None:
                              'paradigm': arm['paradigm']} for arm in arms],
         },
         'bounds': (
-            'this is a scope limit on one cohort and not a general statement about either rung. '
-            'Every reference is a 37-to-72-residue domain, so no contact here has sequence '
-            'separation above 72 and nothing is said about long-range contacts; and the coupling '
-            'fits are the interaction lane\'s own, whose alignments are shallow, so a null here '
-            'is consistent with a coupling model being informative on deeper alignments'),
+            'every reference is a 37-to-72-residue domain, so no contact here has sequence '
+            'separation above 72 and nothing is said about long-range contacts in large '
+            'proteins. Realised alignment depth per site (Neff/L) for each fitted Potts '
+            'model is recorded under depth and support, and all pair lookups use 0-based '
+            'wild-type residue indices matching structure_sites() and contact_pairs()'),
     })
 
 
