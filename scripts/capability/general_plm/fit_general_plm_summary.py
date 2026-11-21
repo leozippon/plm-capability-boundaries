@@ -33,6 +33,7 @@ DATA_ROOT = Path(os.environ.get("TRANSFER_DATA_ROOT") or ROOT)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.capability.general_plm.esm3_seqonly_eval import evaluate_esm3_seqonly_dir
 from src.capability.general_plm.eval_utils import (
     atomic_write_json,
     cluster_bootstrap_mean,
@@ -134,6 +135,36 @@ def _evaluate_or_load_r3_cycle_eval(
     return result
 
 
+def _evaluate_or_load_esm3_seqonly(
+    esm3_dir: Path,
+    *,
+    out_dir: Path,
+    ctx_box: list[PairwiseCycleContext | None],
+    data_root: Path,
+    force_refit: bool,
+) -> dict[str, Any]:
+    """Evaluate admitted ``esm3_1_4b_r123_b4`` R1/R2/R3 outputs on CPU with SHA256 caching."""
+    cache_json = out_dir / "esm3_1_4b_seqonly_eval.json"
+    meta_sha = sha256_file(esm3_dir / "esm3_r123_seqonly.json")
+    if not force_refit and cache_json.is_file():
+        try:
+            cached = json.loads(cache_json.read_text(encoding="utf-8"))
+            if cached.get("source_meta_sha256") == meta_sha:
+                if not cache_json.with_name(cache_json.name + ".sha256").is_file():
+                    _write_sha256_sidecar(cache_json)
+                return cached
+        except Exception:
+            pass
+
+    if ctx_box[0] is None:
+        ctx_box[0] = load_pairwise_cycle_context(data_root)
+    result = evaluate_esm3_seqonly_dir(esm3_dir, data_root, ctx=ctx_box[0])
+    atomic_write_json(cache_json, result)
+    _write_sha256_sidecar(cache_json)
+    print(f"[summary:ESM3-eval] fitted esm3-1.4b from {esm3_dir} -> {cache_json}", flush=True)
+    return result
+
+
 def _rel_or_str(path: Path, root: Path) -> str:
     try:
         return str(path.resolve().relative_to(root.resolve()))
@@ -213,6 +244,7 @@ def main() -> None:
     arms_summary: dict[str, dict[str, Any]] = {}
     famdist_shards: dict[str, dict[str, dict[str, Any]]] = {}
     r3_npz_by_arm: dict[str, Path] = {}
+    esm3_seqonly_dirs: list[Path] = []
     companion_artifacts: dict[str, dict[str, Any]] = {}
     scanned_files = 0
     existing_scan_dirs: list[str] = []
@@ -241,7 +273,11 @@ def main() -> None:
                 r3_npz_by_arm[arm_name] = npz_path
 
         for path in sorted(root_dir.rglob("*.json")):
-            if path.name == args.expect_file or path.name.startswith("r3_cycle_eval_"):
+            if (
+                path.name == args.expect_file
+                or path.name.startswith("r3_cycle_eval_")
+                or path.name == "esm3_1_4b_seqonly_eval.json"
+            ):
                 continue
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
@@ -253,6 +289,10 @@ def main() -> None:
             schema = doc.get("schema", "")
             arm = doc.get("arm")
             rel_src = _rel_or_str(path, DATA_ROOT)
+
+            if path.name == "esm3_r123_seqonly.json" and schema == "esm3_r123_seqonly_v1":
+                esm3_seqonly_dirs.append(path.parent)
+                continue
 
             # Index companion non-general-PLM V1/V2 artifacts (ESM3 R4/R5, R5 structure evals).
             if path.name == "esm3_r4_multimodal.json":
@@ -369,6 +409,66 @@ def main() -> None:
                 args.out / f"r3_cycle_eval_{arm}.json", DATA_ROOT
             )
             r3_eval_arms.append(arm)
+
+        # Evaluate admitted ESM3-1.4B sequence-only R1/R2/R3 outputs and include directly in arms.
+        if esm3_seqonly_dirs:
+            esm3_dir = esm3_seqonly_dirs[-1]
+            esm3_eval = _evaluate_or_load_esm3_seqonly(
+                esm3_dir,
+                out_dir=args.out,
+                ctx_box=ctx_box,
+                data_root=DATA_ROOT,
+                force_refit=args.force_refit_r3,
+            )
+            esm3_entry = arms_summary.setdefault(
+                "esm3-1.4b",
+                {
+                    "arm": "esm3-1.4b",
+                    "family": esm3_eval["family"],
+                    "paradigm": esm3_eval["paradigm"],
+                    "approx_params": esm3_eval["approx_params"],
+                    "modules": {},
+                },
+            )
+            r1_e = esm3_eval["r1_ladder_and_conditionals"]
+            esm3_entry["modules"]["r1_ladder_and_conditionals"] = {
+                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", DATA_ROOT),
+                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "dtype_realised": esm3_eval.get("dtype_realised"),
+                "mutation_ladder": r1_e["mutation_ladder"]["summary"],
+                "mutation_ladder_ridge": r1_e["mutation_ladder"]["bidirectional_ridge"],
+                "matched_discrimination": r1_e["matched_discrimination"]["tiers"],
+                "family_conditionals": r1_e["family_conditionals"]["evaluation_summary"],
+                "family_conditionals_quartiles": r1_e["family_conditionals"]["conservation_quartiles_var_to_cons"],
+            }
+            r2_e = esm3_eval["r2_phenotypes_and_readouts"]["lanes"]
+            esm3_entry["modules"]["r2_phenotypes_and_readouts"] = {
+                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", DATA_ROOT),
+                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "dtype_realised": esm3_eval.get("dtype_realised"),
+                "lanes": {
+                    lane: {
+                        "n_variants": ldoc.get("n_variants"),
+                        "zero_shot_spearman": ldoc.get("zero_shot_spearman"),
+                        "readouts_granularity": ldoc.get("readouts_granularity"),
+                        "ridge_summary": (ldoc.get("bidirectional_ridge") or {}).get("summary"),
+                        "paired_increments": (ldoc.get("bidirectional_ridge") or {}).get("paired_increments"),
+                    }
+                    for lane, ldoc in r2_e.items()
+                },
+            }
+            r3_e = esm3_eval["r3_pairwise_and_contacts"]["pairwise_cycles"]
+            esm3_entry["modules"]["r3_pairwise_and_contacts"] = {
+                "source": _rel_or_str(esm3_dir / "r3_cycle_epistasis.jsonl", DATA_ROOT),
+                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "dtype_realised": esm3_eval.get("dtype_realised"),
+                "pairwise_cycles": {
+                    **{k: v for k, v in r3_e.items() if k != "nested_cv_epistasis"},
+                    "nested_cv_epistasis": _compact_r3_eval_summary(r3_e["nested_cv_epistasis"]),
+                },
+                "structural_contacts": None,
+            }
+            r3_eval_arms.append("esm3-1.4b")
 
     ordered_arms = [
         arms_summary[a]

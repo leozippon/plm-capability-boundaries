@@ -84,6 +84,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=ladder_design.CAMPAIGN_SEED)
     parser.add_argument("--score-batch-size", type=int, default=32)
     parser.add_argument("--diffusion-steps", type=int, default=64)
+    parser.add_argument(
+        "--diffusion-sampling-mode",
+        default="max_confidence",
+        choices=("max_confidence", "uniform_random", "gumbel_annealed"),
+        help=(
+            "Unmasking-order rule for 100%-masked diffusion sampling: "
+            "'uniform_random' (canonical DPLM reverse process, prevents homopolymer collapse), "
+            "'gumbel_annealed' (MaskGIT annealed Gumbel), or 'max_confidence' (legacy default)."
+        ),
+    )
     parser.add_argument("--denovo-draws", type=int, default=800)
     parser.add_argument("--max-residues", type=int, default=ladder_design.FULL_GENERATION_MAX_RESIDUES)
     parser.add_argument("--skip-ladder", action="store_true")
@@ -186,6 +196,7 @@ def main() -> None:
                         steps=args.diffusion_steps,
                         temperature=args.temperature,
                         top_p=args.top_p,
+                        sampling_mode=args.diffusion_sampling_mode,
                     )
                     seq = res["sequence"]
                     seq_nll = (
@@ -230,6 +241,7 @@ def main() -> None:
                     steps=args.diffusion_steps,
                     temperature=args.temperature,
                     top_p=args.top_p,
+                    sampling_mode=args.diffusion_sampling_mode,
                 )
                 rec_id = f"{args.arm}__denovo__{idx:04d}"
                 fasta_entries.append((rec_id, res["sequence"]))
@@ -277,9 +289,15 @@ def main() -> None:
                 "n_draws": len(ladder_records),
                 "n_filled": int(sum(1 for r in ladder_records if r["status"] == "filled")),
                 "rungs": sorted({r["rung"] for r in ladder_records}),
+                "diffusion_sampling_mode": args.diffusion_sampling_mode,
             },
             "denovo_summary": {
                 "mode": denovo_mode,
+                "diffusion_sampling_mode": (
+                    args.diffusion_sampling_mode
+                    if denovo_mode == "diffusion_length_matched_denovo"
+                    else None
+                ),
                 "n_draws": len(denovo_records),
                 "mean_length": (
                     float(np.mean([r["length"] for r in denovo_records]))

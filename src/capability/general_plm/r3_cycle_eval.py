@@ -548,30 +548,25 @@ def _summarize_channel_rungs(
     return rungs_summary
 
 
-def evaluate_r3_pairwise_cycles_npz(
-    npz_path: Path,
+def evaluate_r3_pairwise_cycles_arrays(
+    eps_pll_all: np.ndarray,
     arm: str,
     *,
     ctx: PairwiseCycleContext,
+    r_cycle_all: np.ndarray | None = None,
+    source_path: str = "",
+    source_sha256: str = "",
     bootstrap_draws: int = mod.BOOTSTRAP_DRAWS,
-    include_r_cycle: bool = True,
 ) -> dict[str, Any]:
-    """Evaluate a completed ``r3_pairwise_cycles_<arm>.npz`` on CPU against the interaction hierarchy."""
-    with np.load(npz_path, allow_pickle=False) as data:
-        if "cycle_eps_pll" not in data:
-            raise KeyError(f"{npz_path}: missing required array 'cycle_eps_pll'")
-        eps_pll_all = np.asarray(data["cycle_eps_pll"], dtype=np.float64)
-        if eps_pll_all.shape != ctx.raw_all_epsilon.shape:
-            raise ValueError(
-                f"{npz_path}: cycle_eps_pll shape {eps_pll_all.shape} != expected "
-                f"{ctx.raw_all_epsilon.shape}"
-            )
-        has_r_cycle = include_r_cycle and ("R_cycle" in data)
-        r_cycle_all = (
-            np.asarray(data["R_cycle"], dtype=np.float64) if has_r_cycle else None
+    """Evaluate R3 double-mutant epistasis cycle arrays on CPU against the interaction hierarchy."""
+    eps_pll_all = np.asarray(eps_pll_all, dtype=np.float64)
+    if eps_pll_all.shape != ctx.raw_all_epsilon.shape:
+        raise ValueError(
+            f"{arm}: cycle_eps_pll shape {eps_pll_all.shape} != expected {ctx.raw_all_epsilon.shape}"
         )
-        if r_cycle_all is not None:
-            mod.require_projected_width(r_cycle_all.shape[1], arm=arm, source=str(npz_path))
+    if r_cycle_all is not None:
+        r_cycle_all = np.asarray(r_cycle_all, dtype=np.float64)
+        mod.require_projected_width(r_cycle_all.shape[1], arm=arm, source=source_path or arm)
 
     # Extract exact complete-case indel-excluded rows.
     idx = ctx.kept_global_indices
@@ -648,7 +643,6 @@ def evaluate_r3_pairwise_cycles_npz(
     }
     if r_cycle_all is not None:
         channels["R_cycle"] = _summarize_channel_rungs(fit_out, "R", draws=bootstrap_draws)
-        # Joint M + R over top control rung (nuisance+profile+couplings)
         ctrl_top = fit_out["avg_mse"]["ctrl::nuisance+profile+couplings"]
         joint_mr = fit_out["avg_mse"]["joint::nuisance+profile+couplings::MR"]
         ctrl_top_sp = fit_out["avg_spearman"]["ctrl::nuisance+profile+couplings"]
@@ -671,8 +665,8 @@ def evaluate_r3_pairwise_cycles_npz(
     return {
         "schema": SCHEMA,
         "arm": arm,
-        "npz_path": str(npz_path),
-        "npz_sha256": sha256_file(npz_path),
+        "npz_path": source_path,
+        "npz_sha256": source_sha256,
         "support": {
             "name": "complete_case_indel_excluded",
             "support_sha256": ctx.support_sha256,
@@ -695,3 +689,31 @@ def evaluate_r3_pairwise_cycles_npz(
         "nested_cv_channels": channels,
         "design_dimensions": fit_out["dimensions"],
     }
+
+
+def evaluate_r3_pairwise_cycles_npz(
+    npz_path: Path,
+    arm: str,
+    *,
+    ctx: PairwiseCycleContext,
+    bootstrap_draws: int = mod.BOOTSTRAP_DRAWS,
+    include_r_cycle: bool = True,
+) -> dict[str, Any]:
+    """Evaluate a completed ``r3_pairwise_cycles_<arm>.npz`` on CPU against the interaction hierarchy."""
+    with np.load(npz_path, allow_pickle=False) as data:
+        if "cycle_eps_pll" not in data:
+            raise KeyError(f"{npz_path}: missing required array 'cycle_eps_pll'")
+        eps_pll_all = np.asarray(data["cycle_eps_pll"], dtype=np.float64)
+        has_r_cycle = include_r_cycle and ("R_cycle" in data)
+        r_cycle_all = (
+            np.asarray(data["R_cycle"], dtype=np.float64) if has_r_cycle else None
+        )
+    return evaluate_r3_pairwise_cycles_arrays(
+        eps_pll_all,
+        arm,
+        ctx=ctx,
+        r_cycle_all=r_cycle_all,
+        source_path=str(npz_path),
+        source_sha256=sha256_file(npz_path),
+        bootstrap_draws=bootstrap_draws,
+    )

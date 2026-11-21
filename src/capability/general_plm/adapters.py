@@ -344,6 +344,7 @@ class GeneralPLMAdapter:
         steps: int | None = None,
         temperature: float = 1.0,
         top_p: float = 0.95,
+        sampling_mode: str = "max_confidence",
     ) -> dict[str, Any]:
         raise NotImplementedError(
             f"{self.arm}: full-length 100%-masked diffusion sampling is not supported"
@@ -759,8 +760,26 @@ class _BaseMaskedAdapter(GeneralPLMAdapter):
         steps: int | None = None,
         temperature: float = 1.0,
         top_p: float = 0.95,
+        sampling_mode: str = "max_confidence",
     ) -> dict[str, Any]:
-        """100%-masked cosine-schedule iterative unmasking masking out <mask>/X/non-AA20 logits."""
+        """100%-masked iterative unmasking strictly restricted to AA20.
+
+        ``sampling_mode`` selects the unmasking-order rule:
+        - ``"max_confidence"``: cosine schedule with deterministic ``topk(p(sampled))``
+          (legacy default; note that selecting positions by highest sampled-token
+          probability without order noise causes severe homopolymer mode amplification
+          on 100%-masked unconditional generation).
+        - ``"uniform_random"``: exact absorbing-state discrete diffusion reverse process
+          with a linear unmasking schedule and uniform random position order independent
+          of token probability (DPLM canonical ``rdm``/``uniform`` reverse transition).
+        - ``"gumbel_annealed"``: cosine schedule with MaskGIT-style annealed Gumbel noise
+          ``log(p(sampled)) + (1 - (step - 1) / total_steps) * Gumbel(0, 1)``.
+        """
+        valid_modes = ("max_confidence", "uniform_random", "gumbel_annealed")
+        if sampling_mode not in valid_modes:
+            raise ValueError(
+                f"{self.arm}: invalid sampling_mode {sampling_mode!r}; expected one of {valid_modes}"
+            )
         if not 1 <= length <= self.spec.max_residues:
             raise ValueError(f"{self.arm}: invalid length {length}")
         # Build 100%-masked sequence with proper CLS/EOS framing from a dummy template
@@ -780,7 +799,10 @@ class _BaseMaskedAdapter(GeneralPLMAdapter):
             for step in range(1, total_steps + 1):
                 if not pending:
                     break
-                frac_remaining = math.cos(0.5 * math.pi * (step / total_steps))
+                if sampling_mode == "uniform_random":
+                    frac_remaining = 1.0 - (step / total_steps)
+                else:
+                    frac_remaining = math.cos(0.5 * math.pi * (step / total_steps))
                 target_remaining = 0 if step == total_steps else int(math.floor(length * frac_remaining))
                 n_commit = max(1, len(pending) - target_remaining)
                 n_commit = min(n_commit, len(pending))
@@ -794,7 +816,18 @@ class _BaseMaskedAdapter(GeneralPLMAdapter):
                 probs = truncated.exp().cpu()
                 sampled = torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
                 conf = probs.gather(1, sampled.unsqueeze(-1)).squeeze(-1)
-                top_local = torch.topk(conf, k=n_commit, largest=True).indices.tolist()
+
+                if sampling_mode == "uniform_random":
+                    selection_score = torch.rand(len(pending), generator=generator)
+                elif sampling_mode == "gumbel_annealed":
+                    u = torch.rand(len(pending), generator=generator).clamp(1e-6, 1.0 - 1e-6)
+                    gumbel = -torch.log(-torch.log(u))
+                    t_noise = 1.0 - float(step - 1) / float(total_steps)
+                    selection_score = torch.log(conf.clamp_min(1e-12)) + t_noise * gumbel
+                else:
+                    selection_score = conf
+
+                top_local = torch.topk(selection_score, k=n_commit, largest=True).indices.tolist()
                 for local_idx in sorted(top_local, reverse=True):
                     pos = pending.pop(local_idx)
                     aa_idx = int(sampled[local_idx])
@@ -804,12 +837,18 @@ class _BaseMaskedAdapter(GeneralPLMAdapter):
         sequence = "".join(chosen_aas)
         if len(sequence) != length or set(sequence) - AA20_SET:
             raise RuntimeError(f"{self.arm}: diffusion sampling produced invalid sequence")
+        sampler_labels = {
+            "max_confidence": "cosine_schedule_max_confidence_unmasking_aa20_only",
+            "uniform_random": "linear_schedule_uniform_random_unmasking_aa20_only",
+            "gumbel_annealed": "cosine_schedule_gumbel_annealed_unmasking_aa20_only",
+        }
         return {
             "status": "filled",
             "sequence": sequence,
             "length": length,
             "steps": total_steps,
-            "sampler": "cosine_schedule_max_confidence_unmasking_aa20_only",
+            "sampling_mode": sampling_mode,
+            "sampler": sampler_labels[sampling_mode],
             "temperature": float(temperature),
             "top_p": float(top_p),
         }
