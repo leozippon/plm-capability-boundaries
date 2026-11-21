@@ -2286,6 +2286,9 @@ class MsaTransformerAdapter(GeneralPLMAdapter):
         if self.backend == "fair_esm":
             out = self.model(tokens_3d, repr_layers=[], need_head_weights=False)
             return out["logits"].float()
+        if self.backend == "pure_pytorch_esm_msa":
+            out = self.model(tokens_3d)
+            return out["logits"].float()
         out = self.model(input_ids=tokens_3d)
         logits = out.logits if hasattr(out, "logits") else out[0]
         return logits.float()
@@ -2375,33 +2378,56 @@ def _load_msa_transformer(
             extra_provenance={"model_class": type(model).__name__},
         )
 
-    # Fallback: standalone fair-esm .pt checkpoint if staged that way.
+    # Standalone fair-esm .pt checkpoint (e.g. katielink/esm_msa1b_t12_100M_UR50S/esm_msa1b_t12_100M_UR50S.pt).
     pt_files = sorted(checkpoint_dir.glob("*.pt"))
     if pt_files:
         try:
             import esm  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                f"{spec.arm}: directory holds fair-esm .pt checkpoint {pt_files[0].name} "
-                "without config.json, and `fair-esm` is not installed"
-            ) from exc
-        model, alphabet = esm.pretrained.load_model_and_alphabet_local(str(pt_files[0]))
-        model = model.eval().to(device=device, dtype=torch_dt)
-        aa_ids = [int(alphabet.get_idx(aa)) for aa in AA20]
-        return MsaTransformerAdapter(
-            spec,
-            checkpoint_dir,
-            device=device,
-            dtype=dtype,
-            model=model,
-            tokenizer=alphabet,
-            backend="fair_esm",
-            mask_id=int(alphabet.mask_idx),
-            aa20_ids=aa_ids,
-            cls_id=int(alphabet.cls_idx),
-            gap_id=int(alphabet.get_idx("-")),
-            extra_provenance={"pt_file": pt_files[0].name},
-        )
+
+            model, alphabet = esm.pretrained.load_model_and_alphabet_local(str(pt_files[0]))
+            model = model.eval().to(device=device, dtype=torch_dt)
+            aa_ids = [int(alphabet.get_idx(aa)) for aa in AA20]
+            return MsaTransformerAdapter(
+                spec,
+                checkpoint_dir,
+                device=device,
+                dtype=dtype,
+                model=model,
+                tokenizer=alphabet,
+                backend="fair_esm",
+                mask_id=int(alphabet.mask_idx),
+                aa20_ids=aa_ids,
+                cls_id=int(alphabet.cls_idx),
+                gap_id=int(alphabet.get_idx("-")),
+                extra_provenance={"pt_file": pt_files[0].name},
+            )
+        except ImportError:
+            from .msa_transformer_model import (
+                MSA_CLS_IDX,
+                MSA_GAP_IDX,
+                MSA_MASK_IDX,
+                MSA_TOKEN_TO_ID,
+                load_pure_pytorch_msa_transformer,
+            )
+
+            model, meta = load_pure_pytorch_msa_transformer(
+                pt_files[0], device=device, dtype=torch_dt
+            )
+            aa_ids = [int(MSA_TOKEN_TO_ID[aa]) for aa in AA20]
+            return MsaTransformerAdapter(
+                spec,
+                checkpoint_dir,
+                device=device,
+                dtype=dtype,
+                model=model,
+                tokenizer=MSA_TOKEN_TO_ID,
+                backend="pure_pytorch_esm_msa",
+                mask_id=MSA_MASK_IDX,
+                aa20_ids=aa_ids,
+                cls_id=MSA_CLS_IDX,
+                gap_id=MSA_GAP_IDX,
+                extra_provenance={**meta, "model_class": type(model).__name__},
+            )
 
     raise FileNotFoundError(f"{spec.arm}: no config.json or .pt checkpoint under {checkpoint_dir}")
 

@@ -198,21 +198,28 @@ def run_structural_contacts(
 ) -> dict[str, Any]:
     """Extract per-position propagation on the 30 structural E01 assays and compute 0-based contact AUC."""
     sites_path = root / "results/extensions/mutation_structure_20261006/structure/annotation/sites.json.gz"
+    coverage_path = root / "results/extensions/mutation_structure_20261006/structure/annotation/coverage.json"
     cohort_path = root / "results/R5/context_mutation_rescue_20260923/cohort.json"
-    if not (sites_path.is_file() and cohort_path.is_file()):
+    if not (sites_path.is_file() and coverage_path.is_file() and cohort_path.is_file()):
         return {"endpoint": "r3_structural_contact_propagation", "status": "skipped_missing_inputs"}
+
+    coverage_doc = json.loads(coverage_path.read_text(encoding="utf-8"))
+    admitted_assays = {
+        row["assay"]
+        for row in coverage_doc.get("assays", ())
+        if row.get("status") == "admitted"
+    }
 
     with gzip.open(sites_path, "rt", encoding="utf-8") as fh:
         sites_doc = json.load(fh)
     site_rows = sites_doc["sites"] if isinstance(sites_doc, dict) else sites_doc
     sites_by_assay: dict[str, list[dict[str, Any]]] = {}
     for row in site_rows:
-        if row.get("status") == "admitted":
-            sites_by_assay.setdefault(row["assay_id"], []).append(row)
+        sites_by_assay.setdefault(row["assay_id"], []).append(row)
 
     cohort = json.loads(cohort_path.read_text(encoding="utf-8"))
     cohort_by_assay = {row["assay"]: row for row in cohort["assays"]}
-    assay_names = sorted(set(sites_by_assay) & set(cohort_by_assay))
+    assay_names = sorted(admitted_assays & set(sites_by_assay) & set(cohort_by_assay))
     if max_assays > 0:
         assay_names = assay_names[:max_assays]
 
@@ -231,12 +238,14 @@ def run_structural_contacts(
             assay=assay,
             family=int(c_row["cluster"]),
             wildtype=wt,
-            coverage=0.8,
+            coverage=coverage_doc,
         )
-        pairs = contact_pairs(
+        pairs_doc = contact_pairs(
             geom, cutoff=CONTACT_ANGSTROM, min_separation=MIN_SEQUENCE_SEPARATION
         )
-        if not pairs:
+        eligible_pairs: dict[tuple[int, int], float] = pairs_doc["distance"]
+        contact_set: set[tuple[int, int]] = pairs_doc["contacts"]
+        if not eligible_pairs:
             continue
 
         wt_vec = adapter.exact_pll(wt, batch_size=batch_size).terms  # length L (0-based!)
@@ -258,7 +267,7 @@ def run_structural_contacts(
                 if adapter.spec.is_causal and pos_j < pos_i:
                     continue  # Causal upstream is identically zero
                 key = (min(pos_i, pos_j), max(pos_i, pos_j))
-                if key in pairs:
+                if key in eligible_pairs:
                     pair_responses.setdefault(key, []).append(float(delta[pos_j]))
 
         scored_keys = sorted(pair_responses.keys())
@@ -266,7 +275,7 @@ def run_structural_contacts(
             continue
         # Strictly 0-based key lookup (zero off-by-one bug!).
         scores = np.asarray([float(np.mean(pair_responses[k])) for k in scored_keys], dtype=np.float64)
-        labels = np.asarray([bool(pairs[k]["contact"]) for k in scored_keys], dtype=bool)
+        labels = np.asarray([k in contact_set for k in scored_keys], dtype=bool)
         auc_m_half = _auc_minus_half(scores, labels)
         if auc_m_half is not None:
             aucs.append(auc_m_half)

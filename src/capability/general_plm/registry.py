@@ -400,6 +400,7 @@ GENERAL_PLM_REGISTRY: dict[str, GeneralPLMSpec] = dict(
             "dayhoff_causal",
             (
                 "dayhoff-3b-msa",
+                "dayhoff-3b-GR-HM-c",
                 "Dayhoff-3b-GR-HM-c",
                 "Dayhoff-3b-GR-HM",
                 "dayhoff-3b-gr-hm-c",

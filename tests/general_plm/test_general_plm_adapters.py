@@ -246,6 +246,9 @@ PROTGPT3_MSA_DIR = Path("/home/lzp/models/general_plm_20261120/protgpt3-msa")
 PROTEINGLM_1B_MLM_DIR = Path("/home/lzp/models/general_plm_20261120/proteinglm-1b-mlm")
 SAPROT_35M_DIR = Path("/home/lzp/models/general_plm_20261120/saprot-35m")
 PROGEN3_219M_DIR = Path("/home/lzp/models/general_plm_20261120/progen3-219m")
+MSA_100M_DIR = Path("/home/lzp/models/general_plm_20261120/esm-msa1b-100m")
+DAYHOFF_3B_MSA_DIR = Path("/home/lzp/models/general_plm_20261120/dayhoff-3b-GR-HM-c")
+ESM2_8M_DIR = Path("/home/lzp/models/general_plm_20261120/esm2-8m")
 
 
 @pytest.mark.skipif(
@@ -475,5 +478,66 @@ def test_progen3_219m_megablocks_eager_strict_gpu():
     assert h.shape == (1, 4, 512) and np.isfinite(h).all()
     r4 = adapter.score_r4_context(wt, [wt[:20]], budget_tokens=256)
     assert r4["k_items"] == 1 and np.isfinite(r4["nll_sum"])
+    del adapter
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and ESM2_8M_DIR.is_dir()),
+    reason="Requires GPU and staged esm2-8m",
+)
+def test_run_structural_contacts_on_real_assay_gpu(tmp_path: Path):
+    """Verify run_structural_contacts against real sites.json.gz + coverage.json on 1 structural assay."""
+    from scripts.capability.general_plm.run_r3_pairwise_pll_and_contacts import run_structural_contacts
+
+    adapter = load_general_plm("esm2-8m", device="cuda:0", dtype="float32", model_root=ESM2_8M_DIR)
+    res = run_structural_contacts(adapter, ROOT, batch_size=32, max_assays=1, out_dir=tmp_path)
+    assert res["n_assays"] == 1
+    row = res["assays"][0]
+    assert row["n_pairs"] > 100 and row["n_contacts"] > 0
+    assert row["auc_minus_half"] is not None and np.isfinite(row["auc_minus_half"])
+    del adapter
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and (MSA_100M_DIR / "esm_msa1b_t12_100M_UR50S.pt").is_file()),
+    reason="Requires GPU and staged esm_msa1b_t12_100M_UR50S.pt",
+)
+def test_msa_transformer_100m_pure_pytorch_strict_gpu():
+    """Verify pure-PyTorch MSA Transformer strict load and homolog preference on real R4 unit."""
+    ch = json.loads((ROOT / "results/R5/context_homologue_20260826/cohort.json").read_text(encoding="utf-8"))["protein"]
+    u = next(x for x in ch["units"] if x["band"] == "id_70_90" and x["stratum"] == "retained")
+    target = ch["records"][u["target"]]
+    homologs = [ch["records"][p] for p in u["partners"][:4]]
+    unrelated = [ch["records"][(u["target"] + 500 + i) % len(ch["records"])] for i in range(4)]
+
+    adapter = load_general_plm("msa-transformer-100m", device="cuda:0", dtype="float32")
+    r_hom = adapter.score_r4_context(target, homologs, budget_tokens=32, batch_size=16)
+    r_unr = adapter.score_r4_context(target, unrelated, budget_tokens=32, batch_size=16)
+    assert r_hom["k_items"] == 4 and r_unr["k_items"] == 4
+    assert np.isfinite(r_hom["nll_sum"]) and np.isfinite(r_unr["nll_sum"])
+    assert r_hom["nll_per_residue"] < r_unr["nll_per_residue"]
+    del adapter
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and (DAYHOFF_3B_MSA_DIR / "model.safetensors.index.json").is_file()),
+    reason="Requires GPU and staged dayhoff-3b-GR-HM-c",
+)
+def test_dayhoff_3b_msa_bf16_r4_context_gpu():
+    """Verify dayhoff-3b-msa auto-resolves dayhoff-3b-GR-HM-c and scores R4 homolog context."""
+    ch = json.loads((ROOT / "results/R5/context_homologue_20260826/cohort.json").read_text(encoding="utf-8"))["protein"]
+    u = next(x for x in ch["units"] if x["band"] == "id_70_90" and x["stratum"] == "retained")
+    target = ch["records"][u["target"]]
+    homologs = [ch["records"][p] for p in u["partners"][:2]]
+    unrelated = [ch["records"][(u["target"] + 500 + i) % len(ch["records"])] for i in range(2)]
+
+    adapter = load_general_plm("dayhoff-3b-msa", device="cuda:0", dtype="bfloat16")
+    r_hom = adapter.score_r4_context(target, homologs, budget_tokens=512)
+    r_unr = adapter.score_r4_context(target, unrelated, budget_tokens=512)
+    assert r_hom["k_items"] == 2 and np.isfinite(r_hom["nll_sum"]) and np.isfinite(r_unr["nll_sum"])
+    assert r_hom["nll_per_residue"] < r_unr["nll_per_residue"]
     del adapter
     torch.cuda.empty_cache()
