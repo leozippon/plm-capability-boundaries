@@ -48,6 +48,17 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Optional extra directory containing per-arm family_distribution evaluation.json files.",
     )
+    parser.add_argument(
+        "--general-plm-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Optional external_baseline run root(s) containing nested "
+            "r1_ladder_and_conditionals_*.json / r1_family_distribution_*.json files. "
+            "Defaults to results/shared/external_baseline/20261120213246_766da841c1a8 when present."
+        ),
+    )
     parser.add_argument("--bootstrap-draws", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20261120)
     return parser.parse_args()
@@ -55,10 +66,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    general_dirs = list(args.general_plm_dir)
+    if not general_dirs:
+        default_v2 = args.repo_root / "results/shared/external_baseline/20261120213246_766da841c1a8"
+        if default_v2.is_dir():
+            general_dirs.append(default_v2)
+
     report = run_b1_reanalysis(
         args.repo_root,
         extra_fc_score_dirs=args.extra_fc_scores_dir,
         extra_fd_score_dirs=args.extra_fd_scores_dir,
+        general_plm_dirs=general_dirs,
         n_draws=args.bootstrap_draws,
         seed=args.seed,
     )

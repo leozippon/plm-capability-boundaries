@@ -75,6 +75,136 @@ def _discover_score_docs(
     return found
 
 
+def discover_general_plm_family_conditionals(
+    search_roots: Sequence[Path],
+    unit_order: Sequence[str],
+    site_records: Sequence[dict[str, Any]],
+) -> tuple[dict[str, dict[str, float]], dict[str, np.ndarray], dict[str, str]]:
+    """Discover V2 general-PLM family_conditionals JSONs and ESM3 per-site JSONLs.
+
+    Returns:
+        family_bits_by_arm: {arm: {unit_id: bits_per_res}} for all 64 eval units.
+        extra_site_bits_by_arm: {arm: np.ndarray(len(site_records))} when per-site
+            contexts exist (e.g. esm3-1.4b r1_family_conditionals.jsonl).
+        semantics_by_arm: {arm: conditional_semantics_label}.
+    """
+    expected_units = set(unit_order)
+    family_bits_by_arm: dict[str, dict[str, float]] = {}
+    extra_site_bits_by_arm: dict[str, np.ndarray] = {}
+    semantics_by_arm: dict[str, str] = {}
+
+    # Build (unit_id, query_position, row_id) -> site index lookup for per-site JSONL ingestion
+    ctx_to_site: dict[tuple[str, str, str], int] = {}
+    site_n_contexts = [int(s["n_contexts"]) for s in site_records]
+    for s_idx, srec in enumerate(site_records):
+        uid = srec["unit_id"]
+        pos = str(srec["query_position"])
+        for rid in srec.get("row_ids", []):
+            ctx_to_site[(uid, pos, str(rid))] = s_idx
+
+    for root in search_roots:
+        if not root or not root.exists():
+            continue
+        for r1_path in sorted(root.rglob("r1_ladder_and_conditionals_*.json")):
+            doc = load_json_file(r1_path)
+            arm = str(doc.get("arm", "")).strip()
+            fc = doc.get("family_conditionals")
+            if not arm or not isinstance(fc, dict):
+                continue
+            eval_map: dict[str, float] = {}
+            for u in fc.get("units", []):
+                if u.get("partition") != "evaluation":
+                    continue
+                uid = str(u["unit_id"])
+                if uid in expected_units and u.get("model_logp") is not None:
+                    val = float(-float(u["model_logp"]) / LN2)
+                    if math.isfinite(val):
+                        eval_map[uid] = val
+            if len(eval_map) == len(expected_units):
+                family_bits_by_arm[arm] = eval_map
+                semantics_by_arm[arm] = str(
+                    fc.get("conditional_semantics", "general_plm_family_conditional")
+                )
+
+        # Ingest ESM3 per-site/per-context family_conditionals JSONL when present
+        for jsonl_path in sorted(root.rglob("r1_family_conditionals.jsonl")):
+            arm = "esm3-1.4b"
+            per_site_vals: list[list[float]] = [[] for _ in range(len(site_records))]
+            with jsonl_path.open("r", encoding="utf-8") as fh:
+                import json
+
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = json.loads(line)
+                    if row.get("partition") != "evaluation":
+                        continue
+                    key = (str(row["unit_id"]), str(row["query_position"]), str(row["row_id"]))
+                    s_idx = ctx_to_site.get(key)
+                    if s_idx is not None and row.get("observed_logp_nats") is not None:
+                        per_site_vals[s_idx].append(float(-float(row["observed_logp_nats"]) / LN2))
+            if all(len(vs) == n_exp and n_exp > 0 for vs, n_exp in zip(per_site_vals, site_n_contexts)):
+                site_arr = np.asarray([float(np.mean(vs)) for vs in per_site_vals], dtype=np.float64)
+                extra_site_bits_by_arm[arm] = site_arr
+                uids, means, _ = _aggregate_sites_by_family(site_records, site_arr, tier_filter=None)
+                family_bits_by_arm[arm] = dict(zip(uids, means.tolist()))
+                semantics_by_arm[arm] = "esm3_seq_only_1pass_masked_conditional_over_aa20"
+
+    return family_bits_by_arm, extra_site_bits_by_arm, semantics_by_arm
+
+
+def discover_general_plm_family_distribution(
+    search_roots: Sequence[Path],
+    unit_order: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Discover and merge (including multi-shard) general-PLM family_distribution JSONs."""
+    expected_units = set(unit_order)
+    merged: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: {
+            "native_bits": {},
+            "column_null_delta_bits": {},
+            "composition_null_delta_bits": {},
+            "tokens_per_residue": {},
+            "bits_per_token": {},
+        }
+    )
+
+    for root in search_roots:
+        if not root or not root.exists():
+            continue
+        for fd_path in sorted(root.rglob("r1_family_distribution_*.json")):
+            doc = load_json_file(fd_path)
+            arm = str(doc.get("arm", "")).strip()
+            if not arm:
+                continue
+            for u in doc.get("units", []):
+                if u.get("partition") != "evaluation":
+                    continue
+                uid = str(u["unit_id"])
+                if uid not in expected_units:
+                    continue
+                col = u.get("column_contrast") or {}
+                comp = u.get("composition_contrast") or {}
+                tot_len = float(col.get("total_length") or u.get("total_residues") or 0.0)
+                if tot_len <= 0.0:
+                    continue
+                nat_nats = float(col["native_nats"])
+                col_delta_nats = float(col["nats_per_residue"])
+                comp_delta_nats = float(comp.get("nats_per_residue", 0.0))
+                merged[arm]["native_bits"][uid] = float((nat_nats / tot_len) / LN2)
+                merged[arm]["column_null_delta_bits"][uid] = float(col_delta_nats / LN2)
+                merged[arm]["composition_null_delta_bits"][uid] = float(comp_delta_nats / LN2)
+                merged[arm]["tokens_per_residue"][uid] = 1.0
+                merged[arm]["bits_per_token"][uid] = float((nat_nats / tot_len) / LN2)
+
+    complete: dict[str, dict[str, Any]] = {}
+    for arm, rec in sorted(merged.items()):
+        if len(rec["native_bits"]) == len(expected_units):
+            complete[arm] = rec
+    return complete
+
+
 def load_msa_support(
     support_path: Path,
     *,
@@ -169,6 +299,7 @@ def extract_family_conditionals_records(
                     "effective_alphabet": eff_alpha,
                     "top1_prob": top1_prob,
                     "tier": tier,
+                    "row_ids": [str(ctx["row_id"]) for ctx in site["contexts"]],
                     "obs_indices": obs_indices,
                     "profile_bits": float(np.mean(prof_ctx_bits)),
                     "markov_bits": float(np.mean(markov_ctx_bits)),
@@ -1297,11 +1428,152 @@ def compute_parametric_capacity_budget(
     }
 
 
+def compute_family_level_general_plm_scaling(
+    fc_data: dict[str, Any],
+    general_fc_by_arm: Mapping[str, Mapping[str, float]],
+    semantics_by_arm: Mapping[str, str],
+    msa_support: Mapping[str, dict[str, Any]],
+    *,
+    n_draws: int = 2000,
+    seed: int = 20261120,
+) -> dict[str, Any]:
+    """Compute unified 64-family scaling slopes across ALL ladders (original causal + V2 general PLMs).
+
+    Stratifies the 64 evaluation families by:
+      1. Family-mean training-profile entropy H_prof (quartiles Q1_most_conserved .. Q4_most_variable
+         and conserved-family < 1.8b vs moderate 1.8-2.6b vs variable-family >= 2.6b).
+      2. Family MSA evolutionary depth N_eff/L (quartiles Q1_lowest .. Q4_highest, <5 vs >=5,
+         and below vs above median).
+    """
+    unit_order = fc_data["unit_order"]
+    unit_to_wt = fc_data["unit_to_wt"]
+    sites = fc_data["site_records"]
+
+    # Merge original 33 arms (+ profile/markov + esm3-1.4b) with V2 general-PLM family-level arms
+    family_bits: dict[str, dict[str, float]] = {}
+    arm_semantics: dict[str, str] = {}
+    for arm, arr in fc_data["arm_site_bits"].items():
+        uids, means, _ = _aggregate_sites_by_family(sites, arr, tier_filter=None)
+        family_bits[arm] = dict(zip(uids, means.tolist()))
+        arm_semantics[arm] = semantics_by_arm.get(
+            arm,
+            "baseline" if arm in ("profile", "markov") else "canonical_20_string_causal_conditional",
+        )
+    for arm, umap in general_fc_by_arm.items():
+        if arm not in family_bits:
+            family_bits[arm] = {u: float(umap[u]) for u in unit_order}
+            arm_semantics[arm] = semantics_by_arm.get(arm, "general_plm_family_conditional")
+
+    # Compute per-family mean H_prof and profile cross-entropy
+    h_by_fam: dict[str, list[float]] = defaultdict(list)
+    for s in sites:
+        h_by_fam[s["unit_id"]].append(float(s["h_prof_bits"]))
+    fam_h_prof = np.asarray([float(np.mean(h_by_fam[u])) for u in unit_order], dtype=np.float64)
+    hq25, hq50, hq75 = [float(x) for x in np.quantile(fam_h_prof, [0.25, 0.50, 0.75])]
+
+    depths = np.asarray(
+        [msa_support[unit_to_wt[u]]["effective_depth_per_site"] for u in unit_order],
+        dtype=np.float64,
+    )
+    dq25, dq50, dq75 = [float(x) for x in np.quantile(depths, [0.25, 0.50, 0.75])]
+
+    conservation_family_strata: dict[str, list[str]] = {
+        "all": list(unit_order),
+        "Q1_most_conserved": [u for u, h in zip(unit_order, fam_h_prof) if h <= hq25],
+        "Q2_conserved_mid": [u for u, h in zip(unit_order, fam_h_prof) if hq25 < h <= hq50],
+        "Q3_variable_mid": [u for u, h in zip(unit_order, fam_h_prof) if hq50 < h <= hq75],
+        "Q4_most_variable": [u for u, h in zip(unit_order, fam_h_prof) if h > hq75],
+        "conserved_fam_lt_1_8b": [u for u, h in zip(unit_order, fam_h_prof) if h < 1.8],
+        "moderate_fam_1_8_to_2_6b": [u for u, h in zip(unit_order, fam_h_prof) if 1.8 <= h < 2.6],
+        "variable_fam_ge_2_6b": [u for u, h in zip(unit_order, fam_h_prof) if h >= 2.6],
+    }
+    density_family_strata: dict[str, list[str]] = {
+        "all": list(unit_order),
+        "neff_lt_5": [u for u, d in zip(unit_order, depths) if d < 5.0],
+        "neff_ge_5": [u for u, d in zip(unit_order, depths) if d >= 5.0],
+        "neff_below_median": [u for u, d in zip(unit_order, depths) if d < dq50],
+        "neff_ge_median": [u for u, d in zip(unit_order, depths) if d >= dq50],
+        "Q1_lowest": [u for u, d in zip(unit_order, depths) if d <= dq25],
+        "Q2": [u for u, d in zip(unit_order, depths) if dq25 < d <= dq50],
+        "Q3": [u for u, d in zip(unit_order, depths) if dq50 < d <= dq75],
+        "Q4_highest": [u for u, d in zip(unit_order, depths) if d > dq75],
+    }
+
+    prof_map = family_bits["profile"]
+    per_arm_levels: dict[str, Any] = {}
+    for arm in sorted(family_bits.keys()):
+        if arm in ("profile", "markov"):
+            continue
+        amap = family_bits[arm]
+        cons_out: dict[str, Any] = {}
+        for sname, suids in conservation_family_strata.items():
+            a_v = [amap[u] for u in suids]
+            p_v = [prof_map[u] for u in suids]
+            cons_out[sname] = {
+                "loss_bits": cluster_bootstrap_mean(a_v, n_draws=n_draws, seed=seed),
+                "minus_profile_bits": paired_cluster_bootstrap_diff(
+                    a_v, p_v, n_draws=n_draws, seed=seed
+                ),
+            }
+        per_arm_levels[arm] = {
+            "params": MODEL_PARAM_COUNTS.get(arm),
+            "modality": MODEL_MODALITY.get(arm, "unknown"),
+            "conditional_semantics": arm_semantics.get(arm),
+            "by_family_conservation": cons_out,
+        }
+
+    ladders_out: dict[str, Any] = {}
+    for lname, rungs in SCALING_LADDERS.items():
+        present = [r for r in rungs if r in family_bits and r in MODEL_PARAM_COUNTS]
+        if len(present) < 2:
+            continue
+        log10_n = np.asarray([math.log10(MODEL_PARAM_COUNTS[r]) for r in present], dtype=np.float64)
+
+        by_cons: dict[str, Any] = {}
+        for sname, suids in conservation_family_strata.items():
+            if len(suids) < 2:
+                continue
+            mat = np.asarray([[family_bits[r][u] for u in suids] for r in present], dtype=np.float64)
+            by_cons[sname] = cluster_bootstrap_scaling_slope(log10_n, mat, n_draws=n_draws, seed=seed)
+
+        by_dens: dict[str, Any] = {}
+        for sname, suids in density_family_strata.items():
+            if len(suids) < 2:
+                continue
+            mat = np.asarray([[family_bits[r][u] for u in suids] for r in present], dtype=np.float64)
+            by_dens[sname] = cluster_bootstrap_scaling_slope(log10_n, mat, n_draws=n_draws, seed=seed)
+
+        ladders_out[lname] = {
+            "rungs": present,
+            "params": [MODEL_PARAM_COUNTS[r] for r in present],
+            "span_ratio": float(MODEL_PARAM_COUNTS[present[-1]] / MODEL_PARAM_COUNTS[present[0]]),
+            "conditional_semantics": sorted({arm_semantics[r] for r in present}),
+            "by_family_conservation": by_cons,
+            "by_msa_density": by_dens,
+        }
+
+    return {
+        "n_arms_total": len(per_arm_levels),
+        "family_conservation_summary": {
+            "metric": "mean training-profile Shannon entropy H_prof (bits) across the 8 sites of each family",
+            "quartiles_bits": {"q25": hq25, "q50": hq50, "q75": hq75},
+            "strata_counts": {k: len(v) for k, v in conservation_family_strata.items()},
+        },
+        "family_msa_depth_summary": {
+            "quartiles": {"q25": dq25, "q50": dq50, "q75": dq75},
+            "strata_counts": {k: len(v) for k, v in density_family_strata.items()},
+        },
+        "per_arm_family_conservation": per_arm_levels,
+        "ladders": ladders_out,
+    }
+
+
 def run_b1_reanalysis(
     repo_root: Path,
     *,
     extra_fc_score_dirs: Sequence[Path] = (),
     extra_fd_score_dirs: Sequence[Path] = (),
+    general_plm_dirs: Sequence[Path] = (),
     n_draws: int = 2000,
     seed: int = 20261120,
 ) -> dict[str, Any]:
@@ -1320,6 +1592,20 @@ def run_b1_reanalysis(
     fc_data = extract_family_conditionals_records(fc_root, extra_score_dirs=extra_fc_score_dirs)
     fd_data = extract_family_distribution_records(fd_root, extra_score_dirs=extra_fd_score_dirs)
 
+    # Auto-ingest nested V2 general-PLM R1 conditionals & family_distribution artifacts if provided
+    general_fc_by_arm, extra_site_bits, semantics_by_arm = discover_general_plm_family_conditionals(
+        general_plm_dirs, fc_data["unit_order"], fc_data["site_records"]
+    )
+    for arm, site_arr in extra_site_bits.items():
+        if arm not in fc_data["arm_site_bits"]:
+            fc_data["arm_site_bits"][arm] = site_arr
+    fc_data["scored_arms"] = sorted(a for a in fc_data["arm_site_bits"] if a not in ("profile", "markov"))
+
+    general_fd_by_arm = discover_general_plm_family_distribution(general_plm_dirs, fd_data["unit_order"])
+    for arm, fd_rec in general_fd_by_arm.items():
+        if arm not in fd_data["arms"]:
+            fd_data["arms"][arm] = fd_rec
+
     part_a = compute_site_conservation_stratification(fc_data, n_draws=n_draws, seed=seed)
     part_b = compute_density_and_conservation_scaling(
         fc_data,
@@ -1327,6 +1613,14 @@ def run_b1_reanalysis(
         msa_support,
         sl_root,
         otp_result_path=otp_path if otp_path.is_file() else None,
+        n_draws=n_draws,
+        seed=seed,
+    )
+    part_b_general = compute_family_level_general_plm_scaling(
+        fc_data,
+        general_fc_by_arm,
+        semantics_by_arm,
+        msa_support,
         n_draws=n_draws,
         seed=seed,
     )
@@ -1357,11 +1651,14 @@ def run_b1_reanalysis(
         "schema": "memory_theory_b1_capacity_starvation_v1",
         "bootstrap": {"method": "paired_family_cluster_bootstrap", "n_draws": int(n_draws), "seed": int(seed)},
         "scored_arms_discovered": {
-            "family_conditionals": fc_data["scored_arms"],
+            "family_conditionals_site_level": fc_data["scored_arms"],
+            "family_conditionals_family_level_all": sorted(part_b_general["per_arm_family_conservation"].keys()),
+            "general_plm_family_conditionals": sorted(general_fc_by_arm.keys()),
             "family_distribution": sorted(fd_data["arms"].keys()),
         },
         "a_site_conservation_stratification": part_a,
         "b_family_evolutionary_density_stratification": part_b,
+        "b_general_plm_family_level_scaling": part_b_general,
         "c_protein_entropy_budget_decomposition": part_c,
         "d_matched_scale_tokenization_experiment": part_d,
         "d_aux_r4_and_r6_memory_anchors": r4_r6,

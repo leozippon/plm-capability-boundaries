@@ -212,3 +212,69 @@ def test_proteinglm_no_deepspeed_derivation_regression() -> None:
     assert model_cls.__name__ == "ProteinGLMForCasualLM"
     derived_text = (pkg.path / "modeling_proteinglm.py").read_text(encoding="utf-8")
     assert "import torch, deepspeed" not in derived_text
+
+
+def test_discover_general_plm_nested_v2_scores(tmp_path: Path) -> None:
+    """Verify nested V2 r1_ladder_and_conditionals & r1_family_distribution ingestion."""
+    import json
+    from src.capability.memory_theory.capacity_scaling import (
+        discover_general_plm_family_conditionals,
+        discover_general_plm_family_distribution,
+    )
+
+    unit_order = ["u000", "u001"]
+    site_records = [
+        {"unit_id": "u000", "query_position": "1", "n_contexts": 1, "row_ids": ["r0"]},
+        {"unit_id": "u001", "query_position": "2", "n_contexts": 1, "row_ids": ["r1"]},
+    ]
+    sub = tmp_path / "esm2_8m_r1"
+    sub.mkdir()
+    (sub / "r1_ladder_and_conditionals_esm2-8m.json").write_text(
+        json.dumps(
+            {
+                "arm": "esm2-8m",
+                "family_conditionals": {
+                    "conditional_semantics": "native_1pass_masked_conditional_over_aa20",
+                    "units": [
+                        {"unit_id": "u000", "partition": "evaluation", "model_logp": -2.0 * math.log(2.0)},
+                        {"unit_id": "u001", "partition": "evaluation", "model_logp": -3.0 * math.log(2.0)},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Multi-shard FD merge check (2 shards -> complete 2 eval units)
+    for idx, uid in enumerate(unit_order):
+        sd = tmp_path / f"esm2_15b_fd_s{idx}"
+        sd.mkdir()
+        (sd / f"r1_family_distribution_esm2-15b_s{idx}of2.json").write_text(
+            json.dumps(
+                {
+                    "arm": "esm2-15b",
+                    "units": [
+                        {
+                            "unit_id": uid,
+                            "partition": "evaluation",
+                            "column_contrast": {
+                                "native_nats": 100.0 * math.log(2.0),
+                                "total_length": 50.0,
+                                "nats_per_residue": 0.5 * math.log(2.0),
+                            },
+                            "composition_contrast": {"nats_per_residue": 1.0 * math.log(2.0)},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    fc_map, _, sem_map = discover_general_plm_family_conditionals([tmp_path], unit_order, site_records)
+    assert math.isclose(fc_map["esm2-8m"]["u000"], 2.0, rel_tol=1e-9)
+    assert math.isclose(fc_map["esm2-8m"]["u001"], 3.0, rel_tol=1e-9)
+    assert sem_map["esm2-8m"] == "native_1pass_masked_conditional_over_aa20"
+
+    fd_map = discover_general_plm_family_distribution([tmp_path], unit_order)
+    assert "esm2-15b" in fd_map
+    assert math.isclose(fd_map["esm2-15b"]["native_bits"]["u000"], 2.0, rel_tol=1e-9)
+    assert math.isclose(fd_map["esm2-15b"]["column_null_delta_bits"]["u001"], 0.5, rel_tol=1e-9)
