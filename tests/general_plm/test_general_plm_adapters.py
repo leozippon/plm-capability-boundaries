@@ -594,3 +594,60 @@ def test_dayhoff_jamba_config_disables_output_router_logits_cpu(monkeypatch, tmp
     assert seen["num_logits_before_load"] == 0
     assert adapter.model.config.output_router_logits is False
     assert adapter.provenance()["output_router_logits_overridden_to"] is False
+
+
+def test_esm_optional_contact_head_missing_keys_policy_cpu():
+    """Only unused esm.contact_head.regression.{weight,bias} may be omitted; other keys fail fast."""
+    from src.capability.general_plm.adapters import _check_strict_esm_loading_info
+
+    ignored = _check_strict_esm_loading_info(
+        "saprot-1.3b",
+        "SaProt weight mismatch",
+        {
+            "missing_keys": [
+                "esm.contact_head.regression.bias",
+                "esm.contact_head.regression.weight",
+            ],
+            "mismatched_keys": [],
+        },
+    )
+    assert set(ignored) == {
+        "esm.contact_head.regression.bias",
+        "esm.contact_head.regression.weight",
+    }
+
+    with pytest.raises(RuntimeError, match="lm_head.decoder.weight"):
+        _check_strict_esm_loading_info(
+            "saprot-1.3b",
+            "SaProt weight mismatch",
+            {
+                "missing_keys": [
+                    "esm.contact_head.regression.bias",
+                    "lm_head.decoder.weight",
+                ],
+                "mismatched_keys": [],
+            },
+        )
+
+
+SAPROT_1_3B_DIR = Path("/home/lzp/models/general_plm_20261120/saprot-1.3b")
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and (SAPROT_1_3B_DIR / "pytorch_model.bin").is_file()),
+    reason="Requires GPU and staged saprot-1.3b",
+)
+def test_saprot_1_3b_loads_without_contact_head_gpu():
+    """Verify real SaProt-1.3B loads cleanly (omitting unused contact_head) and scores on GPU."""
+    adapter = load_general_plm(
+        "saprot-1.3b", device="cuda:0", dtype="bfloat16", model_root=SAPROT_1_3B_DIR
+    )
+    prov = adapter.provenance()
+    assert set(prov["ignored_optional_missing_keys"]) == {
+        "esm.contact_head.regression.weight",
+        "esm.contact_head.regression.bias",
+    }
+    vec = adapter.exact_pll("MKTAYIAKQRQISFVKSHFS", batch_size=10)
+    assert vec.terms.shape == (20,) and np.isfinite(vec.nll_sum)
+    del adapter
+    torch.cuda.empty_cache()

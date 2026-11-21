@@ -883,6 +883,32 @@ def _resolve_mask_id(tokenizer: Any, arm: str) -> int:
     return int(mid)
 
 
+_OPTIONAL_ESM_AUX_MISSING_KEYS: frozenset[str] = frozenset(
+    {
+        "esm.contact_head.regression.weight",
+        "esm.contact_head.regression.bias",
+    }
+)
+
+
+def _check_strict_esm_loading_info(
+    arm: str, label: str, info: Mapping[str, Any]
+) -> list[str]:
+    """Fail fast on any missing/mismatched weight except unused ESM contact-head regression keys."""
+    raw_missing = list(info.get("missing_keys", ()))
+    ignored = [k for k in raw_missing if k in _OPTIONAL_ESM_AUX_MISSING_KEYS]
+    hard_missing = [k for k in raw_missing if k not in _OPTIONAL_ESM_AUX_MISSING_KEYS]
+    mismatched = list(info.get("mismatched_keys", ()))
+    unmatched: dict[str, list[str]] = {}
+    if hard_missing:
+        unmatched["missing_keys"] = hard_missing
+    if mismatched:
+        unmatched["mismatched_keys"] = mismatched
+    if unmatched:
+        raise RuntimeError(f"{arm}: {label}: {unmatched}")
+    return ignored
+
+
 def _load_esm_mlm(
     spec: GeneralPLMSpec, checkpoint_dir: Path, *, device: str, dtype: str
 ) -> _BaseMaskedAdapter:
@@ -903,9 +929,9 @@ def _load_esm_mlm(
     if use_auto and spec.trust_remote_code:
         kwargs["trust_remote_code"] = True
     model, info = cls.from_pretrained(str(checkpoint_dir), **kwargs)
-    unmatched = {k: info[k] for k in ("missing_keys", "mismatched_keys") if info.get(k)}
-    if unmatched:
-        raise RuntimeError(f"{spec.arm}: checkpoint failed strict weight check: {unmatched}")
+    ignored_missing = _check_strict_esm_loading_info(
+        spec.arm, "checkpoint failed strict weight check", info
+    )
     model = model.eval().to(device)
     return _BaseMaskedAdapter(
         spec,
@@ -917,6 +943,7 @@ def _load_esm_mlm(
         mask_id=_resolve_mask_id(tokenizer, spec.arm),
         aa20_ids=_resolve_aa20_ids(tokenizer, spec.arm),
         extra_provenance={
+            "ignored_optional_missing_keys": ignored_missing,
             "unexpected_keys": list(info.get("unexpected_keys", ())),
             "model_class": type(model).__name__,
         },
@@ -1454,9 +1481,9 @@ def _load_saprot_mlm(
         output_loading_info=True,
         **_from_pretrained_dtype_kwarg(EsmForMaskedLM, torch_dt),
     )
-    unmatched = {k: info[k] for k in ("missing_keys", "mismatched_keys") if info.get(k)}
-    if unmatched:
-        raise RuntimeError(f"{spec.arm}: SaProt weight mismatch: {unmatched}")
+    ignored_missing = _check_strict_esm_loading_info(
+        spec.arm, "SaProt weight mismatch", info
+    )
     model = model.eval().to(device)
     return SaProtAdapter(
         spec,
@@ -1467,6 +1494,7 @@ def _load_saprot_mlm(
         tokenizer=tokenizer,
         saprot_mode=saprot_mode,
         extra_provenance={
+            "ignored_optional_missing_keys": ignored_missing,
             "unexpected_keys": list(info.get("unexpected_keys", ())),
             "model_class": type(model).__name__,
         },
