@@ -104,8 +104,14 @@ def _load_protein_gradient_batches(
                 tier = classify_conservation_tier(h_prof)
                 ctx = site["contexts"][0]
                 seq = format_sequence_for_arm(ctx["native"], arm, saprot_mode=saprot_mode)
-                # Offset by +1 if ProGen2 prepended '1' or ESM added BOS; exact single-char token index
-                offset = 1 if (arm.lower().startswith("progen2") or arm.lower().startswith(("esm2", "dplm", "esmc", "amplify", "saprot"))) else 0
+                # Offset by prefix token count (+3 for ProteinGLM CLM, +1 for ProGen2/ESM/SaProt)
+                low_arm = arm.lower()
+                if low_arm.startswith("proteinglm") and low_arm.endswith("clm"):
+                    offset = 3
+                elif low_arm.startswith(("progen2", "esm2", "dplm", "esmc", "amplify", "saprot")):
+                    offset = 1
+                else:
+                    offset = 0
                 tok_pos = int(ctx["native_index"]) + offset
                 # BPE (ProtGPT2) does not map 1:1 to AA residue index -> evaluate whole sequence for BPE
                 if arm.lower().startswith("protgpt2"):

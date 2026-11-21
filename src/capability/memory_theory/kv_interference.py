@@ -157,16 +157,21 @@ def extract_sequence_kv_features(
         raw_blk_out: dict[int, torch.Tensor] = {}
         handles = []
 
+        def _to_batch_first(t: torch.Tensor) -> torch.Tensor:
+            if bundle.seq_first_hidden and t.ndim == 3 and t.shape[0] == seq_len and t.shape[1] == 1:
+                return t.transpose(0, 1).contiguous()
+            return t
+
         for li, spec in specs.items():
             if spec.kv_mode == "separate":
                 def _k_hook(layer_id: int):
                     def _fn(_m: Any, _i: Any, o: torch.Tensor) -> None:
-                        raw_k[layer_id] = o.detach()
+                        raw_k[layer_id] = _to_batch_first(o.detach())
                     return _fn
 
                 def _v_hook(layer_id: int):
                     def _fn(_m: Any, _i: Any, o: torch.Tensor) -> None:
-                        raw_v[layer_id] = o.detach()
+                        raw_v[layer_id] = _to_batch_first(o.detach())
                     return _fn
 
                 handles.append(spec.k_module.register_forward_hook(_k_hook(li)))
@@ -175,7 +180,10 @@ def extract_sequence_kv_features(
                 def _qkv_hook(layer_id: int, mode: str):
                     def _fn(_m: Any, _i: Any, o: torch.Tensor) -> None:
                         k_t, v_t = split_packed_kv(
-                            o.detach(), mode, n_heads=bundle.n_heads, head_dim=bundle.head_dim
+                            _to_batch_first(o.detach()),
+                            mode,
+                            n_heads=bundle.n_heads,
+                            head_dim=bundle.head_dim,
                         )
                         raw_k[layer_id] = k_t
                         raw_v[layer_id] = v_t
@@ -187,7 +195,7 @@ def extract_sequence_kv_features(
                 def _mlp_hook(layer_id: int):
                     def _fn(_m: Any, _i: Any, o: torch.Tensor) -> None:
                         # Apply GELU nonlinearity so MLP key reflects active neuron pattern
-                        raw_mlp_k[layer_id] = F.gelu(o.detach().float())
+                        raw_mlp_k[layer_id] = F.gelu(_to_batch_first(o.detach()).float())
                     return _fn
 
                 handles.append(spec.mlp_act_module.register_forward_hook(_mlp_hook(li)))
@@ -195,7 +203,7 @@ def extract_sequence_kv_features(
             def _blk_hook(layer_id: int):
                 def _fn(_m: Any, _i: Any, o: Any) -> None:
                     t = o[0] if isinstance(o, (tuple, list)) else o
-                    raw_blk_out[layer_id] = t.detach()
+                    raw_blk_out[layer_id] = _to_batch_first(t.detach())
                 return _fn
 
             handles.append(blocks[li].register_forward_hook(_blk_hook(li)))

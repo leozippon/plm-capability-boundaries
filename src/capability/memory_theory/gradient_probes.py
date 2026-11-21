@@ -281,7 +281,10 @@ def measure_residual_gradient_rank_and_snr(
                     t = captured.get(li)
                     if t is None or t.grad is None:
                         continue
-                    g = t.grad[0, grad_read_indices, :].detach().to(torch.float64).cpu().numpy()
+                    grad_t = t.grad
+                    if bundle.seq_first_hidden and grad_t.ndim == 3 and grad_t.shape[0] == seq_len and grad_t.shape[1] == 1:
+                        grad_t = grad_t.transpose(0, 1)
+                    g = grad_t[0, grad_read_indices, :].detach().to(torch.float64).cpu().numpy()
                     if not np.isfinite(g).all():
                         continue
                     grams[li] += g.T @ g

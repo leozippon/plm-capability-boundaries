@@ -45,22 +45,25 @@ ARM_DIR_CANDIDATES: dict[str, list[str]] = {
     "galactica-1.3b": ["galactica-1.3b"],
     "galactica-6.7b": ["galactica-6.7b"],
     "galactica-30b": ["galactica-30b"],
-    "esm2-8m": ["esm2_t6_8M_UR50D", "esm2-8m"],
-    "esm2-35m": ["esm2_t12_35M_UR50D", "esm2-35m"],
-    "esm2-150m": ["esm2_t30_150M_UR50D", "esm2-150m"],
-    "esm2-650m": ["esm2_t33_650M_UR50D", "esm2-650m"],
-    "esm2-3b": ["esm2_t36_3B_UR50D", "esm2-3b"],
-    "esm2-15b": ["esm2_t48_15B_UR50D", "esm2-15b"],
+    "esm2-8m": ["esm2_t6_8M_UR50D", "esm2-8m", "esm2_8m"],
+    "esm2-35m": ["esm2_t12_35M_UR50D", "esm2-35m", "esm2_35m"],
+    "esm2-150m": ["esm2_t30_150M_UR50D", "esm2-150m", "esm2_150m"],
+    "esm2-650m": ["esm2_t33_650M_UR50D", "esm2-650m", "esm2_650m"],
+    "esm2-3b": ["esm2_t36_3B_UR50D", "esm2-3b", "esm2_3b"],
+    "esm2-15b": ["esm2_t48_15B_UR50D", "esm2-15b", "esm2_15b"],
     "dplm-150m": ["dplm_150m", "dplm-150m"],
     "dplm-650m": ["dplm_650m", "dplm-650m"],
     "dplm-3b": ["dplm_3b", "dplm-3b"],
-    "saprot-35m": ["SaProt_35M_AF2", "saprot-35m"],
-    "saprot-650m": ["SaProt_650M_AF2", "saprot-650m"],
-    "saprot-1.3b": ["SaProt_1.3B_AF2", "saprot-1.3b"],
-    "esmc-300m": ["esmc-300m", "esmc_300m"],
-    "esmc-600m": ["esmc-600m", "esmc_600m"],
-    "amplify-120m": ["AMPLIFY_120M", "amplify-120m"],
-    "amplify-350m": ["AMPLIFY_350M", "amplify-350m"],
+    "saprot-35m": ["SaProt_35M_AF2", "saprot-35m", "saprot_35m"],
+    "saprot-650m": ["SaProt_650M_AF2", "saprot-650m", "saprot_650m"],
+    "saprot-1.3b": ["SaProt_1.3B_AF2", "saprot-1.3b", "saprot_1.3b"],
+    "esmc-300m": ["esmc-300m-hf", "esmc-300m", "esmc_300m"],
+    "esmc-600m": ["esmc-600m-hf", "esmc-600m", "esmc_600m"],
+    "amplify-120m": ["AMPLIFY_120M", "amplify-120m", "amplify_120m"],
+    "amplify-350m": ["AMPLIFY_350M", "amplify-350m", "amplify_350m"],
+    "proteinglm-1b-mlm": ["proteinglm-1b-mlm", "proteinglm_1b_mlm"],
+    "proteinglm-3b-mlm": ["proteinglm-3b-mlm", "proteinglm_3b_mlm"],
+    "proteinglm-10b-mlm": ["proteinglm-10b-mlm", "proteinglm_10b_mlm"],
 }
 
 MASKED_ARMS_PREFIXES = ("esm2", "dplm", "saprot", "esmc", "amplify", "pepmlm", "proteinglm-1b-mlm", "proteinglm-3b-mlm", "proteinglm-10b-mlm")
@@ -101,7 +104,10 @@ def resolve_model_dir(arm: str, explicit_dir: Path | None = None) -> Path:
         ]
     )
 
-    candidates = ARM_DIR_CANDIDATES.get(arm, [arm])
+    candidates = list(ARM_DIR_CANDIDATES.get(arm, [arm]))
+    for variant in (arm.replace("-", "_"), arm.replace("_", "-")):
+        if variant not in candidates:
+            candidates.append(variant)
     for root in roots:
         if not root.is_dir():
             continue
@@ -129,6 +135,7 @@ class LoadedModelBundle:
     vocab_size: int
     dtype: torch.dtype
     device: torch.device
+    seq_first_hidden: bool = False
 
 
 def _resolve_dtype(dtype_name: str) -> torch.dtype:
@@ -184,33 +191,56 @@ def load_model_bundle(
     masked = is_masked_arm(arm)
     mod = modality or infer_arm_modality(arm)
 
-    # Check if custom code is needed (e.g., ProGen2, ProteinGLM, RITA, AMPLIFY)
-    cfg = AutoConfig.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
-    model_type = str(getattr(cfg, "model_type", "")).lower()
-    if model_type in ("esm", "roberta", "bert", "amplify", "dplm"):
-        masked = True
+    # ProteinGLM checkpoints ship modeling_proteinglm.py with a top-level `import torch, deepspeed`;
+    # reuse src/capability/models/proteinglm.py's derived inference-only package (no deepspeed needed).
+    seq_first_hidden = False
+    if (ckpt_dir / "modeling_proteinglm.py").is_file():
+        from ..models.proteinglm import _import_derived_module, derive_serving_package
 
-    tok = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
-    if tok.pad_token is None:
-        if tok.eos_token is not None:
+        seq_first_hidden = True
+        pkg = derive_serving_package(ckpt_dir)
+        _import_derived_module(pkg, "configuration_proteinglm")
+        _import_derived_module(pkg, "quantization")
+        pglm_mod = _import_derived_module(pkg, "modeling_proteinglm")
+        cfg = pglm_mod.ProteinGLMConfig.from_pretrained(str(ckpt_dir), local_files_only=True)
+        tok = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
+        if tok.pad_token is None and tok.eos_token is not None:
             tok.pad_token = tok.eos_token
-        elif getattr(tok, "mask_token", None) is not None:
-            tok.pad_token = tok.mask_token
-
-    if masked:
-        model = AutoModelForMaskedLM.from_pretrained(
+        model_cls = pglm_mod.ProteinGLMForMaskedLM if masked else pglm_mod.ProteinGLMForCasualLM
+        model = model_cls.from_pretrained(
             str(ckpt_dir),
+            config=cfg,
             local_files_only=True,
-            trust_remote_code=True,
             torch_dtype=torch_dtype,
         )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            str(ckpt_dir),
-            local_files_only=True,
-            trust_remote_code=True,
-            torch_dtype=torch_dtype,
-        )
+        # Check if custom code is needed (e.g., ProGen2, RITA, AMPLIFY)
+        cfg = AutoConfig.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
+        model_type = str(getattr(cfg, "model_type", "")).lower()
+        if model_type in ("esm", "roberta", "bert", "amplify", "dplm"):
+            masked = True
+
+        tok = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
+        if tok.pad_token is None:
+            if tok.eos_token is not None:
+                tok.pad_token = tok.eos_token
+            elif getattr(tok, "mask_token", None) is not None:
+                tok.pad_token = tok.mask_token
+
+        if masked:
+            model = AutoModelForMaskedLM.from_pretrained(
+                str(ckpt_dir),
+                local_files_only=True,
+                trust_remote_code=True,
+                torch_dtype=torch_dtype,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                str(ckpt_dir),
+                local_files_only=True,
+                trust_remote_code=True,
+                torch_dtype=torch_dtype,
+            )
 
     model.to(dev)
     model.eval()
@@ -229,6 +259,7 @@ def load_model_bundle(
         vocab_size=vocab_size,
         dtype=torch_dtype,
         device=dev,
+        seq_first_hidden=seq_first_hidden,
     )
 
 
@@ -340,7 +371,7 @@ class BlockKVHookSpec:
 
 def inspect_block_kv_modules(block: nn.Module, layer_idx: int) -> BlockKVHookSpec:
     """Locate attention K/V projection and MLP up/intermediate projection inside a block."""
-    attn = _find_first_attr(block, ("attn", "self_attn", "attention"))
+    attn = _find_first_attr(block, ("attn", "self_attn", "self_attention", "attention"))
     if attn is None:
         raise RuntimeError(f"Layer {layer_idx}: cannot find attention submodule on {type(block).__name__}")
 
@@ -371,7 +402,7 @@ def inspect_block_kv_modules(block: nn.Module, layer_idx: int) -> BlockKVHookSpe
     elif hasattr(attn_inner, "query_key_value"):
         k_mod = getattr(attn_inner, "query_key_value")
         v_mod = k_mod
-        kv_mode = "qkv_packed"
+        kv_mode = "proteinglm_qkv" if hasattr(attn_inner, "num_attention_heads_per_partition") else "qkv_packed"
     else:
         raise RuntimeError(
             f"Layer {layer_idx}: unrecognized attention projection structure on {type(attn_inner).__name__}: "
@@ -434,6 +465,15 @@ def split_packed_kv(
         chunk = tensor.view(b, t, mp_num, total // mp_num)
         q, v, k = torch.chunk(chunk, 3, dim=-1)
         return k.reshape(b, t, -1), v.reshape(b, t, -1)
+    if mode == "proteinglm_qkv":
+        # ProteinGLM reshapes (..., n_heads, 3 * head_dim) and splits along the last dim
+        b, t, total = tensor.shape
+        if total != 3 * n_heads * head_dim:
+            q, k, v = torch.chunk(tensor, 3, dim=-1)
+            return k, v
+        chunk = tensor.view(b, t, n_heads, 3 * head_dim)
+        q, k, v = torch.chunk(chunk, 3, dim=-1)
+        return k.reshape(b, t, -1), v.reshape(b, t, -1)
     raise ValueError(f"Unsupported packed kv mode: {mode}")
 
 
@@ -456,6 +496,8 @@ def format_sequence_for_arm(
         raise ValueError(f"Unknown saprot_mode={saprot_mode!r}")
     if low.startswith("progen2"):
         return "1" + seq + "2"
+    if low.startswith("proteinglm") and low.endswith("clm"):
+        return "<gmask><sop><eos>" + seq
     if low.startswith("protgpt2"):
         return seq
     if low.startswith("galactica"):

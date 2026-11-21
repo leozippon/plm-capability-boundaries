@@ -36,9 +36,12 @@ from src.capability.memory_theory.kv_interference import (
     compute_pair_kv_geometry,
 )
 from src.capability.memory_theory.model_hooks import (
+    ARM_DIR_CANDIDATES,
     format_sequence_for_arm,
     is_masked_arm,
+    resolve_model_dir,
     select_depth_quantiles,
+    split_packed_kv,
 )
 
 
@@ -162,6 +165,30 @@ def test_helpers_and_atomic_write(tmp_path: Path) -> None:
     assert make_saprot_string("ACD", "VDP") == "AvCdDp"
     assert format_sequence_for_arm("ACD", "saprot-650m", saprot_mode="aa_only") == "A#C#D#"
     assert format_sequence_for_arm("ACD", "progen2-small") == "1ACD2"
+    assert format_sequence_for_arm("ACD", "proteinglm-7b-clm") == "<gmask><sop><eos>ACD"
+    assert "esm2_650m" in ARM_DIR_CANDIDATES["esm2-650m"]
+
+    # Verify underscore alias resolution via MODEL_ROOT
+    fake_models = tmp_path / "models"
+    (fake_models / "esm2_650m").mkdir(parents=True)
+    import os
+    old_root = os.environ.get("MODEL_ROOT")
+    os.environ["MODEL_ROOT"] = str(fake_models)
+    try:
+        assert resolve_model_dir("esm2-650m") == fake_models / "esm2_650m"
+    finally:
+        if old_root is None:
+            os.environ.pop("MODEL_ROOT", None)
+        else:
+            os.environ["MODEL_ROOT"] = old_root
+
+    # Verify proteinglm_qkv head-interleaved split
+    import torch
+    x = torch.arange(2 * 3 * 2 * 3 * 4, dtype=torch.float32).view(2, 3, 2, 3, 4)
+    packed = x.reshape(2, 3, 24)
+    k, v = split_packed_kv(packed, "proteinglm_qkv", n_heads=2, head_dim=4)
+    assert torch.equal(k, x[:, :, :, 1, :].reshape(2, 3, 8))
+    assert torch.equal(v, x[:, :, :, 2, :].reshape(2, 3, 8))
 
     out = tmp_path / "sample.json"
     digest = write_json_with_sha256(out, {"ok": True, "val": 1.25})
@@ -171,3 +198,17 @@ def test_helpers_and_atomic_write(tmp_path: Path) -> None:
     assert digest in sidecar.read_text(encoding="utf-8")
     with pytest.raises(ValueError):
         write_json_with_sha256(tmp_path / "bad.json", {"nan": float("nan")})
+
+
+def test_proteinglm_no_deepspeed_derivation_regression() -> None:
+    """Verify ProteinGLM checkpoints derive without requiring deepspeed to be installed."""
+    pglm_dir = Path("/Data/public/models_R2/proteinglm-7b-clm")
+    if not (pglm_dir / "modeling_proteinglm.py").is_file():
+        pytest.skip("local proteinglm-7b-clm checkpoint absent")
+    from src.capability.models.proteinglm import load_derived_classes
+
+    cfg_cls, model_cls, pkg = load_derived_classes(pglm_dir)
+    assert cfg_cls.__name__ == "ProteinGLMConfig"
+    assert model_cls.__name__ == "ProteinGLMForCasualLM"
+    derived_text = (pkg.path / "modeling_proteinglm.py").read_text(encoding="utf-8")
+    assert "import torch, deepspeed" not in derived_text
