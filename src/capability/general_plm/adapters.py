@@ -1937,6 +1937,10 @@ def _load_dayhoff_causal(
     # Dayhoff JambaForCausalLM sets num_logits_to_keep=1 in config.json; override to 0 for full-sequence NLL.
     if hasattr(config, "num_logits_to_keep"):
         config.num_logits_to_keep = 0
+    # Disable MoE router-logit aux loss during inference (config.json sets output_router_logits=true,
+    # which can crash inside Jamba load_balancing_loss_func during label-free forward passes).
+    if hasattr(config, "output_router_logits"):
+        config.output_router_logits = False
     # Fall back to PyTorch naive Mamba implementation when fast CUDA mamba_ssm/causal_conv1d kernels are absent.
     mamba_fast_available = False
     try:
@@ -1959,6 +1963,8 @@ def _load_dayhoff_causal(
     unmatched = {k: info[k] for k in ("missing_keys", "mismatched_keys") if info.get(k)}
     if unmatched:
         raise RuntimeError(f"{spec.arm}: Dayhoff weight mismatch: {unmatched}")
+    if hasattr(model.config, "output_router_logits"):
+        model.config.output_router_logits = False
     model = model.eval().to(device)
 
     bos_id = getattr(config, "bos_token_id", None)
@@ -1990,6 +1996,7 @@ def _load_dayhoff_causal(
             "eos_token_id": int(eos_id) if eos_id is not None else None,
             "separator_ids": sep_ids,
             "num_logits_to_keep_overridden_to": 0,
+            "output_router_logits_overridden_to": False,
             "unexpected_keys": list(info.get("unexpected_keys", ())),
             "model_class": type(model).__name__,
         },

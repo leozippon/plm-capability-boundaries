@@ -384,8 +384,9 @@ def test_amplify_120m_xformers_shim_and_additive_mask_gpu():
     reason="Requires GPU and staged dayhoff-170m",
 )
 def test_dayhoff_170m_full_logits_and_explicit_bos_gpu():
-    """Verify Dayhoff-170M overrides num_logits_to_keep=0 and scores full sequence cleanly."""
+    """Verify Dayhoff-170M overrides num_logits_to_keep=0 and output_router_logits=False."""
     adapter = load_general_plm("dayhoff-170m", device="cuda:0", dtype="float32", model_root=DAYHOFF_170M_DIR)
+    assert adapter.model.config.output_router_logits is False
     wt = "MKTAYIAKQRQISFVKSHFSRQLEERLG"
     vec = adapter.exact_pll(wt)
     assert vec.terms.shape == (len(wt),) and np.isfinite(vec.nll_sum)
@@ -535,9 +536,61 @@ def test_dayhoff_3b_msa_bf16_r4_context_gpu():
     unrelated = [ch["records"][(u["target"] + 500 + i) % len(ch["records"])] for i in range(2)]
 
     adapter = load_general_plm("dayhoff-3b-msa", device="cuda:0", dtype="bfloat16")
+    assert adapter.model.config.output_router_logits is False
     r_hom = adapter.score_r4_context(target, homologs, budget_tokens=512)
     r_unr = adapter.score_r4_context(target, unrelated, budget_tokens=512)
     assert r_hom["k_items"] == 2 and np.isfinite(r_hom["nll_sum"]) and np.isfinite(r_unr["nll_sum"])
     assert r_hom["nll_per_residue"] < r_unr["nll_per_residue"]
     del adapter
     torch.cuda.empty_cache()
+
+
+def test_dayhoff_jamba_config_disables_output_router_logits_cpu(monkeypatch, tmp_path: Path):
+    """Fast CPU unit test ensuring _load_dayhoff_causal enforces output_router_logits=False."""
+    import transformers
+
+    from src.capability.general_plm.adapters import _load_dayhoff_causal
+    from src.capability.general_plm.registry import GENERAL_PLM_REGISTRY
+
+    class _FakeConfig:
+        num_logits_to_keep = 1
+        output_router_logits = True
+        use_mamba_kernels = True
+        bos_token_id = 29
+        eos_token_id = 27
+
+    class _FakeTokenizer:
+        unk_token_id = 0
+
+        def convert_tokens_to_ids(self, tok: str) -> int:
+            if tok == "/":
+                return 28
+            return 1 + (AA20.index(tok) if tok in AA20 else 30)
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.config = cfg
+
+        def to(self, _device):
+            return self
+
+    seen: dict[str, object] = {}
+
+    def _fake_from_pretrained(_path, **kwargs):
+        cfg = kwargs["config"]
+        seen["cfg_before_load"] = cfg.output_router_logits
+        seen["num_logits_before_load"] = cfg.num_logits_to_keep
+        return _FakeModel(cfg), {"missing_keys": [], "mismatched_keys": [], "unexpected_keys": []}
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *_a, **_k: _FakeTokenizer())
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: _FakeConfig())
+    monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", _fake_from_pretrained)
+
+    adapter = _load_dayhoff_causal(
+        GENERAL_PLM_REGISTRY["dayhoff-3b-msa"], tmp_path, device="cpu", dtype="float32"
+    )
+    assert seen["cfg_before_load"] is False
+    assert seen["num_logits_before_load"] == 0
+    assert adapter.model.config.output_router_logits is False
+    assert adapter.provenance()["output_router_logits_overridden_to"] is False
