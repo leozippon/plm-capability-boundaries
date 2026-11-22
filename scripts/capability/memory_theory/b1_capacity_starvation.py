@@ -68,9 +68,11 @@ def main() -> None:
     args = parse_args()
     general_dirs = list(args.general_plm_dir)
     if not general_dirs:
-        default_v2 = args.repo_root / "results/shared/external_baseline/20261120213246_766da841c1a8"
-        if default_v2.is_dir():
-            general_dirs.append(default_v2)
+        eb_root = args.repo_root / "results/shared/external_baseline"
+        if eb_root.is_dir():
+            general_dirs.extend(
+                sorted(p for p in eb_root.glob("2026112*") if p.is_dir())
+            )
 
     report = run_b1_reanalysis(
         args.repo_root,
