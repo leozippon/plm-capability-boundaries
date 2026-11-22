@@ -48,12 +48,16 @@ from src.capability.general_plm.registry import GENERAL_PLM_REGISTRY
 
 SCHEMA = "general_plm_aggregated_summary_v2"
 
-DEFAULT_SCAN_DIRS: tuple[str, ...] = (
-    "results/shared/external_baseline/20261120133411_4956b7c48429",
-    "results/shared/external_baseline/20261120213246_766da841c1a8",
-    "results/shared/external_baseline/20261121082340_98f636d7b594",
-    "results/extensions/general_plm_20261120",
-)
+def _default_scan_dirs(root: Path) -> list[Path]:
+    """Auto-discover all ``results/shared/external_baseline/2026112*`` campaigns + local extension dir."""
+    ext_base = root / "results/shared/external_baseline"
+    discovered = (
+        sorted(p for p in ext_base.glob("2026112*") if p.is_dir())
+        if ext_base.is_dir()
+        else []
+    )
+    discovered.append(root / "results/extensions/general_plm_20261120")
+    return discovered
 
 
 def _load_frozen_33_arm_reference(root: Path) -> dict[str, Any]:
@@ -235,11 +239,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    scan_dirs = (
-        list(args.results_dir)
-        if args.results_dir
-        else [DATA_ROOT / rel for rel in DEFAULT_SCAN_DIRS]
-    )
+    scan_dirs = list(args.results_dir) if args.results_dir else _default_scan_dirs(DATA_ROOT)
 
     args.out.mkdir(parents=True, exist_ok=True)
     arms_summary: dict[str, dict[str, Any]] = {}

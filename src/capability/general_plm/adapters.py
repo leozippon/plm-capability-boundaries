@@ -19,6 +19,7 @@ import hashlib
 import inspect
 import json
 import math
+import re
 import sys
 import tempfile
 from contextlib import nullcontext
@@ -911,10 +912,57 @@ def _check_strict_esm_loading_info(
     return ignored
 
 
+def _patch_deprecated_transformers_imports(source: str) -> str:
+    """Relocate ``find_pruneable_heads_and_indices`` and ``prune_linear_layer`` from
+    ``transformers.modeling_utils`` to ``transformers.pytorch_utils`` for transformers>=4.50.
+    """
+    if (
+        "transformers.modeling_utils" not in source
+        or ("find_pruneable_heads_and_indices" not in source and "prune_linear_layer" not in source)
+    ):
+        return source
+    pattern = re.compile(
+        r"from\s+transformers\.modeling_utils\s+import\s*\(([^)]*)\)",
+        flags=re.MULTILINE,
+    )
+    moved = {"find_pruneable_heads_and_indices", "prune_linear_layer"}
+
+    def _repl(match: re.Match[str]) -> str:
+        items = [tok.strip() for tok in match.group(1).split(",") if tok.strip()]
+        keep = [tok for tok in items if tok not in moved]
+        reloc = [tok for tok in items if tok in moved]
+        if not reloc:
+            return match.group(0)
+        lines: list[str] = []
+        if keep:
+            lines.append(f"from transformers.modeling_utils import {', '.join(keep)}")
+        lines.append(f"from transformers.pytorch_utils import {', '.join(reloc)}")
+        return "\n".join(lines)
+
+    patched = pattern.sub(_repl, source)
+    # Also handle single-line non-parenthesized form.
+    single_pat = re.compile(r"from\s+transformers\.modeling_utils\s+import\s+([^\n(]+)")
+
+    def _repl_single(match: re.Match[str]) -> str:
+        items = [tok.strip() for tok in match.group(1).split(",") if tok.strip()]
+        keep = [tok for tok in items if tok not in moved]
+        reloc = [tok for tok in items if tok in moved]
+        if not reloc:
+            return match.group(0)
+        lines: list[str] = []
+        if keep:
+            lines.append(f"from transformers.modeling_utils import {', '.join(keep)}")
+        lines.append(f"from transformers.pytorch_utils import {', '.join(reloc)}")
+        return "\n".join(lines)
+
+    return single_pat.sub(_repl_single, patched)
+
+
 def _maybe_derive_local_automap_dir(checkpoint_dir: Path) -> Path:
     """Derive a temp checkpoint dir stripping stale external HF repo prefixes from ``auto_map``
     when the target ``.py`` module exists locally beside ``config.json`` (e.g., ``Prime_690M``),
-    and disabling ``flash_attention`` when set to ``True`` so ``output_attentions=True`` is safe.
+    disabling ``flash_attention`` when set to ``True`` so ``output_attentions=True`` is safe,
+    and patching deprecated ``transformers.modeling_utils`` prune-helper imports.
     """
     cfg_path = checkpoint_dir / "config.json"
     if not cfg_path.is_file():
@@ -936,6 +984,15 @@ def _maybe_derive_local_automap_dir(checkpoint_dir: Path) -> Path:
     disable_flash = bool(cfg.get("flash_attention") is True)
     if disable_flash:
         needs_rewrite = True
+
+    patched_py: dict[str, str] = {}
+    for py_file in checkpoint_dir.glob("*.py"):
+        raw = py_file.read_text(encoding="utf-8")
+        fixed = _patch_deprecated_transformers_imports(raw)
+        if fixed != raw:
+            patched_py[py_file.name] = fixed
+            needs_rewrite = True
+
     if not needs_rewrite:
         return checkpoint_dir
 
@@ -949,6 +1006,8 @@ def _maybe_derive_local_automap_dir(checkpoint_dir: Path) -> Path:
         target = dest / item.name
         if item.name == "config.json":
             target.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        elif item.name in patched_py:
+            target.write_text(patched_py[item.name], encoding="utf-8")
         else:
             target.symlink_to(item.resolve())
     return dest

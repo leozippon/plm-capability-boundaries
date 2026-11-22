@@ -679,7 +679,8 @@ def test_proteinglm_10b_synthesizes_missing_safetensors_index_cpu(tmp_path: Path
 
 
 def test_prime_690m_strips_external_automap_prefix_and_disables_flash_attention_cpu(tmp_path: Path):
-    """Verify _maybe_derive_local_automap_dir strips stale HF repo prefix & sets flash_attention=False."""
+    """Verify _maybe_derive_local_automap_dir strips stale HF prefix, disables flash_attention,
+    and relocates deprecated transformers.modeling_utils prune imports cleanly."""
     from src.capability.general_plm.adapters import _maybe_derive_local_automap_dir
 
     src = tmp_path / "Prime_690M"
@@ -692,7 +693,14 @@ def test_prime_690m_strips_external_automap_prefix_and_disables_flash_attention_
         },
     }
     (src / "config.json").write_text(json.dumps(orig_cfg), encoding="utf-8")
-    (src / "modeling_proprime.py").write_text("# local module\n", encoding="utf-8")
+    (src / "modeling_proprime.py").write_text(
+        "from transformers.modeling_utils import (\n"
+        "    PreTrainedModel,\n"
+        "    find_pruneable_heads_and_indices,\n"
+        "    prune_linear_layer,\n"
+        ")\n",
+        encoding="utf-8",
+    )
 
     derived = _maybe_derive_local_automap_dir(src)
     assert derived != src
@@ -702,4 +710,11 @@ def test_prime_690m_strips_external_automap_prefix_and_disables_flash_attention_
     new_cfg = json.loads((derived / "config.json").read_text(encoding="utf-8"))
     assert new_cfg["auto_map"]["AutoModelForMaskedLM"] == "modeling_proprime.ProPrimeForMaskedLM"
     assert new_cfg["flash_attention"] is False
-    assert (derived / "modeling_proprime.py").is_symlink()
+    # Patched modeling_proprime.py executes cleanly under installed transformers 4.57+
+    patched_src = (derived / "modeling_proprime.py").read_text(encoding="utf-8")
+    assert "from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer" in patched_src
+    ns: dict[str, object] = {}
+    exec(compile(patched_src, str(derived / "modeling_proprime.py"), "exec"), ns)
+    assert callable(ns["find_pruneable_heads_and_indices"])
+    assert callable(ns["prune_linear_layer"])
+    assert ns["PreTrainedModel"] is not None
