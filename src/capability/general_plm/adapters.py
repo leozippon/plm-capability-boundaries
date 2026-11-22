@@ -157,6 +157,7 @@ def _discover_transformer_blocks(model: torch.nn.Module) -> Sequence[torch.nn.Mo
     """Locate the ordered transformer layer stack for PyTorch forward hooks."""
     candidates = [
         ("esm", "encoder", "layer"),
+        ("pro_prime", "encoder", "layer"),
         ("proprime", "encoder", "layer"),
         ("esmc", "layers"),
         ("encoder", "layer"),
