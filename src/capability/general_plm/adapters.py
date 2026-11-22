@@ -157,6 +157,7 @@ def _discover_transformer_blocks(model: torch.nn.Module) -> Sequence[torch.nn.Mo
     """Locate the ordered transformer layer stack for PyTorch forward hooks."""
     candidates = [
         ("esm", "encoder", "layer"),
+        ("proprime", "encoder", "layer"),
         ("esmc", "layers"),
         ("encoder", "layer"),
         ("transformer_encoder",),
@@ -909,16 +910,60 @@ def _check_strict_esm_loading_info(
     return ignored
 
 
+def _maybe_derive_local_automap_dir(checkpoint_dir: Path) -> Path:
+    """Derive a temp checkpoint dir stripping stale external HF repo prefixes from ``auto_map``
+    when the target ``.py`` module exists locally beside ``config.json`` (e.g., ``Prime_690M``),
+    and disabling ``flash_attention`` when set to ``True`` so ``output_attentions=True`` is safe.
+    """
+    cfg_path = checkpoint_dir / "config.json"
+    if not cfg_path.is_file():
+        return checkpoint_dir
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    auto_map = cfg.get("auto_map")
+    needs_rewrite = False
+    new_auto_map: dict[str, Any] = {}
+    if isinstance(auto_map, dict):
+        for k, v in auto_map.items():
+            if isinstance(v, str) and "--" in v:
+                local_ref = v.split("--", 1)[1]
+                mod_stem = local_ref.split(".", 1)[0]
+                if (checkpoint_dir / f"{mod_stem}.py").is_file():
+                    new_auto_map[k] = local_ref
+                    needs_rewrite = True
+                    continue
+            new_auto_map[k] = v
+    disable_flash = bool(cfg.get("flash_attention") is True)
+    if disable_flash:
+        needs_rewrite = True
+    if not needs_rewrite:
+        return checkpoint_dir
+
+    if isinstance(auto_map, dict):
+        cfg["auto_map"] = new_auto_map
+    if disable_flash:
+        cfg["flash_attention"] = False
+
+    dest = Path(tempfile.mkdtemp(prefix="esm_mlm_derived_"))
+    for item in checkpoint_dir.iterdir():
+        target = dest / item.name
+        if item.name == "config.json":
+            target.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        else:
+            target.symlink_to(item.resolve())
+    return dest
+
+
 def _load_esm_mlm(
     spec: GeneralPLMSpec, checkpoint_dir: Path, *, device: str, dtype: str
 ) -> _BaseMaskedAdapter:
     from transformers import AutoModelForMaskedLM, AutoTokenizer, EsmForMaskedLM
 
-    cfg = json.loads((checkpoint_dir / "config.json").read_text(encoding="utf-8"))
+    load_dir = _maybe_derive_local_automap_dir(checkpoint_dir)
+    cfg = json.loads((load_dir / "config.json").read_text(encoding="utf-8"))
     torch_dt = torch_dtype_of(dtype)
     use_auto = bool(cfg.get("auto_map")) or cfg.get("model_type") != "esm"
     tokenizer = AutoTokenizer.from_pretrained(
-        str(checkpoint_dir), local_files_only=True, trust_remote_code=spec.trust_remote_code
+        str(load_dir), local_files_only=True, trust_remote_code=spec.trust_remote_code
     )
     cls = AutoModelForMaskedLM if use_auto else EsmForMaskedLM
     kwargs: dict[str, Any] = {
@@ -928,7 +973,7 @@ def _load_esm_mlm(
     }
     if use_auto and spec.trust_remote_code:
         kwargs["trust_remote_code"] = True
-    model, info = cls.from_pretrained(str(checkpoint_dir), **kwargs)
+    model, info = cls.from_pretrained(str(load_dir), **kwargs)
     ignored_missing = _check_strict_esm_loading_info(
         spec.arm, "checkpoint failed strict weight check", info
     )
@@ -1107,28 +1152,54 @@ def _load_amplify_mlm(
 
 
 def _maybe_derive_proteinglm_mlm_dir(checkpoint_dir: Path) -> Path:
-    """If modeling_proteinglm.py imports deepspeed and deepspeed is absent, patch in a temp dir."""
+    """Derive a temp ProteinGLM-MLM dir when ``deepspeed`` patching or a missing
+    ``model.safetensors.index.json`` (e.g. ``proteinglm-10b-mlm``) is required.
+    """
     modeling_py = checkpoint_dir / "modeling_proteinglm.py"
-    if not modeling_py.is_file():
+    source = modeling_py.read_text(encoding="utf-8") if modeling_py.is_file() else ""
+    needs_deepspeed_patch = False
+    if "deepspeed" in source:
+        try:
+            import deepspeed  # noqa: F401
+        except ImportError:
+            needs_deepspeed_patch = True
+
+    shards = sorted(checkpoint_dir.glob("model-*-of-*.safetensors"))
+    needs_safetensors_index = (
+        bool(shards)
+        and not (checkpoint_dir / "model.safetensors.index.json").is_file()
+        and not (checkpoint_dir / "model.safetensors").is_file()
+    )
+    if not needs_deepspeed_patch and not needs_safetensors_index:
         return checkpoint_dir
-    source = modeling_py.read_text(encoding="utf-8")
-    if "deepspeed" not in source:
-        return checkpoint_dir
-    try:
-        import deepspeed  # noqa: F401
-        return checkpoint_dir
-    except ImportError:
-        pass
 
     dest = Path(tempfile.mkdtemp(prefix="proteinglm_mlm_derived_"))
     for item in checkpoint_dir.iterdir():
         target = dest / item.name
-        if item.name == "modeling_proteinglm.py":
+        if needs_deepspeed_patch and item.name == "modeling_proteinglm.py":
             patched = source.replace("import torch, deepspeed", "import torch")
             patched = patched.replace("import deepspeed", "deepspeed = None")
             target.write_text(patched, encoding="utf-8")
         else:
             target.symlink_to(item.resolve())
+
+    if needs_safetensors_index:
+        from safetensors import safe_open
+
+        weight_map: dict[str, str] = {}
+        total_size = 0
+        for shard in shards:
+            total_size += int(shard.stat().st_size)
+            with safe_open(str(shard), framework="pt", device="cpu") as fh:
+                for key in fh.keys():
+                    weight_map[str(key)] = shard.name
+        index_payload = {
+            "metadata": {"total_size": total_size},
+            "weight_map": weight_map,
+        }
+        (dest / "model.safetensors.index.json").write_text(
+            json.dumps(index_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     return dest
 
 
