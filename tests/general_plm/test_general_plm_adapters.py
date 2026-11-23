@@ -718,3 +718,67 @@ def test_prime_690m_strips_external_automap_prefix_and_disables_flash_attention_
     assert callable(ns["find_pruneable_heads_and_indices"])
     assert callable(ns["prune_linear_layer"])
     assert ns["PreTrainedModel"] is not None
+
+
+def test_jamba_cached_sample_tokens_and_batched_generation_cpu(tmp_path: Path):
+    """Verify Jamba initializes HybridMambaAttentionDynamicCache for O(L) cached & batched decoding."""
+    from transformers.models.jamba.configuration_jamba import JambaConfig
+    from transformers.models.jamba.modeling_jamba import (
+        HybridMambaAttentionDynamicCache,
+        JambaForCausalLM,
+    )
+
+    from src.capability.general_plm.adapters import _BaseCausalAdapter
+    from src.capability.general_plm.registry import GENERAL_PLM_REGISTRY
+
+    cfg = JambaConfig(
+        vocab_size=40,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_experts=4,
+        num_experts_per_tok=2,
+        attn_layer_offset=1,
+        attn_layer_period=2,
+        expert_layer_offset=1,
+        expert_layer_period=2,
+        mamba_d_state=8,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        mamba_dt_rank=8,
+        use_mamba_kernels=False,
+        output_router_logits=False,
+        num_logits_to_keep=0,
+        bos_token_id=29,
+        eos_token_id=27,
+    )
+    torch.manual_seed(0)
+    model = JambaForCausalLM(cfg).eval()
+
+    class _Tok:
+        eos_token_id = 27
+        pad_token_id = 30
+
+    adapter = _BaseCausalAdapter(
+        GENERAL_PLM_REGISTRY["dayhoff-170m"],
+        tmp_path,
+        device="cpu",
+        dtype="float32",
+        model=model,
+        tokenizer=_Tok(),
+        bos_prefix_ids=[29],
+        eos_suffix_ids=[],
+        separator_ids=[28],
+        aa20_ids=list(range(1, 21)),
+    )
+
+    cache = adapter._init_causal_cache(batch_size=2)
+    assert isinstance(cache, HybridMambaAttentionDynamicCache)
+
+    # Cached single-step sampling must match single-step draws in batched generation identically.
+    draws_b1 = adapter.generate_causal_free(4, seed=99, max_residues=10, batch_size=1)
+    draws_b2 = adapter.generate_causal_free(4, seed=99, max_residues=10, batch_size=2)
+    assert [d["sequence"] for d in draws_b2] == [d["sequence"] for d in draws_b1]
+    assert [d["terminated_eos"] for d in draws_b2] == [d["terminated_eos"] for d in draws_b1]

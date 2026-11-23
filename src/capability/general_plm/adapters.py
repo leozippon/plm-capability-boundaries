@@ -1870,6 +1870,29 @@ class _BaseCausalAdapter(GeneralPLMAdapter):
             "k_items": used_k,
         }
 
+    def _init_causal_cache(self, batch_size: int) -> Any:
+        """Instantiate an explicit cache object for architectures that require one (e.g., Jamba)."""
+        cfg = getattr(self.model, "config", None)
+        if getattr(cfg, "model_type", None) == "jamba":
+            try:
+                from transformers.models.jamba.modeling_jamba import (
+                    HybridMambaAttentionDynamicCache,
+                )
+
+                return HybridMambaAttentionDynamicCache(
+                    cfg, batch_size=int(batch_size), dtype=self.torch_dtype, device=self.device
+                )
+            except ImportError:
+                return None
+        return None
+
+    def _supports_cache_position(self) -> bool:
+        try:
+            sig = inspect.signature(self.model.forward)
+            return "cache_position" in sig.parameters
+        except (TypeError, ValueError):
+            return False
+
     @torch.no_grad()
     def _sample_tokens(
         self,
@@ -1885,16 +1908,36 @@ class _BaseCausalAdapter(GeneralPLMAdapter):
         cur = torch.as_tensor([prompt_ids], dtype=torch.long, device=self.device)
         produced: list[int] = []
         eos_set = set(stop_ids or ())
+        supports_cpos = self._supports_cache_position()
         with self._precision_ctx():
-            past = None
-            for step in range(max_new_tokens):
-                inp = cur if past is None else cur[:, -1:]
+            past = self._init_causal_cache(batch_size=1)
+            prefilled = False
+            seq_pos = 0
+            for _step in range(max_new_tokens):
+                inp = cur if not prefilled else cur[:, -1:]
                 try:
-                    out = self.model(input_ids=inp, past_key_values=past, use_cache=True)
+                    fwd_kwargs: dict[str, Any] = {
+                        "input_ids": inp,
+                        "past_key_values": past,
+                        "use_cache": True,
+                    }
+                    if supports_cpos:
+                        fwd_kwargs["cache_position"] = torch.arange(
+                            seq_pos, seq_pos + inp.shape[1], dtype=torch.long, device=self.device
+                        )
+                    out = self.model(**fwd_kwargs)
                     past = out.past_key_values
+                    if past is not None:
+                        prefilled = True
+                        seq_pos += int(inp.shape[1])
+                    else:
+                        prefilled = False
+                        seq_pos = 0
                 except Exception:
                     out = self.model(input_ids=cur, use_cache=False)
                     past = None
+                    prefilled = False
+                    seq_pos = 0
                 logits = out.logits[0, -1].float() / float(temperature)
                 lp = F.log_softmax(logits, dim=-1)
                 trunc = _nucleus_logprobs(lp, float(top_p))
@@ -1905,6 +1948,90 @@ class _BaseCausalAdapter(GeneralPLMAdapter):
                     [cur, torch.tensor([[nxt]], dtype=torch.long, device=self.device)], dim=1
                 )
                 if nxt in eos_set:
+                    break
+        return produced
+
+    @torch.no_grad()
+    def _sample_tokens_batch(
+        self,
+        prompt_ids: list[int],
+        *,
+        seeds: Sequence[int],
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_p: float = 0.95,
+        stop_ids: set[int] | None = None,
+    ) -> list[list[int]]:
+        """Batched cached causal sampling with independent per-draw deterministic seeds."""
+        bsz = len(seeds)
+        if bsz == 0:
+            return []
+        if bsz == 1:
+            return [
+                self._sample_tokens(
+                    prompt_ids,
+                    max_new_tokens=max_new_tokens,
+                    seed=int(seeds[0]),
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop_ids=stop_ids,
+                )
+            ]
+        gens = [torch.Generator(device="cpu").manual_seed(int(s)) for s in seeds]
+        cur = torch.as_tensor([prompt_ids] * bsz, dtype=torch.long, device=self.device)
+        produced: list[list[int]] = [[] for _ in range(bsz)]
+        finished = [False] * bsz
+        eos_set = set(stop_ids or ())
+        pad_tok = next(iter(eos_set)) if eos_set else int(prompt_ids[-1])
+        supports_cpos = self._supports_cache_position()
+        with self._precision_ctx():
+            past = self._init_causal_cache(batch_size=bsz)
+            prefilled = False
+            seq_pos = 0
+            for _step in range(max_new_tokens):
+                inp = cur if not prefilled else cur[:, -1:]
+                try:
+                    fwd_kwargs: dict[str, Any] = {
+                        "input_ids": inp,
+                        "past_key_values": past,
+                        "use_cache": True,
+                    }
+                    if supports_cpos:
+                        fwd_kwargs["cache_position"] = torch.arange(
+                            seq_pos, seq_pos + inp.shape[1], dtype=torch.long, device=self.device
+                        )
+                    out = self.model(**fwd_kwargs)
+                    past = out.past_key_values
+                    if past is not None:
+                        prefilled = True
+                        seq_pos += int(inp.shape[1])
+                    else:
+                        prefilled = False
+                        seq_pos = 0
+                except Exception:
+                    out = self.model(input_ids=cur, use_cache=False)
+                    past = None
+                    prefilled = False
+                    seq_pos = 0
+                step_logits = out.logits[:, -1, :].float() / float(temperature)
+                step_lp = F.log_softmax(step_logits, dim=-1)
+                step_trunc = _nucleus_logprobs(step_lp, float(top_p))
+                step_probs = step_trunc.exp().cpu()
+                next_ids: list[int] = []
+                for i in range(bsz):
+                    if finished[i]:
+                        next_ids.append(pad_tok)
+                        continue
+                    nxt = int(torch.multinomial(step_probs[i], num_samples=1, generator=gens[i]).item())
+                    produced[i].append(nxt)
+                    next_ids.append(nxt)
+                    if nxt in eos_set:
+                        finished[i] = True
+                cur = torch.cat(
+                    [cur, torch.tensor(next_ids, dtype=torch.long, device=self.device).unsqueeze(1)],
+                    dim=1,
+                )
+                if all(finished):
                     break
         return produced
 
@@ -1972,48 +2099,54 @@ class _BaseCausalAdapter(GeneralPLMAdapter):
         max_residues: int = 400,
         temperature: float = 1.0,
         top_p: float = 0.95,
-        batch_size: int = 1,
+        batch_size: int = 16,
     ) -> list[dict[str, Any]]:
         """Unconditional free-length causal sequence generation up to ``max_residues``."""
         eos_set = set(self.eos_suffix_ids)
         if getattr(self.tokenizer, "eos_token_id", None) is not None:
             eos_set.add(int(self.tokenizer.eos_token_id))
+        bs = max(1, int(batch_size))
+        total = int(n_draws)
         draws: list[dict[str, Any]] = []
-        for idx in range(int(n_draws)):
-            draw_seed = int(seed) + idx
-            tokens = self._sample_tokens(
+        for start_idx in range(0, total, bs):
+            chunk_indices = list(range(start_idx, min(start_idx + bs, total)))
+            chunk_seeds = [int(seed) + idx for idx in chunk_indices]
+            token_lists = self._sample_tokens_batch(
                 list(self.bos_prefix_ids),
+                seeds=chunk_seeds,
                 max_new_tokens=int(max_residues) + 16,
-                seed=draw_seed,
                 temperature=temperature,
                 top_p=top_p,
                 stop_ids=eos_set,
             )
-            residues: list[str] = []
-            terminated = False
-            off_alphabet = False
-            for tid in tokens:
-                if tid in eos_set:
-                    terminated = True
-                    break
-                if tid in self.id_to_aa:
-                    residues.append(self.id_to_aa[tid])
-                    if len(residues) >= max_residues:
+            for idx, draw_seed, tokens in zip(chunk_indices, chunk_seeds, token_lists):
+                residues: list[str] = []
+                terminated = False
+                off_alphabet = False
+                for tid in tokens:
+                    if tid in eos_set:
+                        terminated = True
                         break
-                else:
-                    off_alphabet = True
-                    break
-            seq = "".join(residues)
-            draws.append(
-                {
-                    "draw_index": idx,
-                    "seed": draw_seed,
-                    "sequence": seq,
-                    "length": len(seq),
-                    "terminated_eos": terminated,
-                    "off_alphabet": off_alphabet,
-                }
-            )
+                    if tid in self.id_to_aa:
+                        residues.append(self.id_to_aa[tid])
+                        if len(residues) >= max_residues:
+                            break
+                    else:
+                        off_alphabet = True
+                        break
+                seq = "".join(residues)
+                draws.append(
+                    {
+                        "draw_index": idx,
+                        "seed": draw_seed,
+                        "sequence": seq,
+                        "length": len(seq),
+                        "terminated_eos": terminated,
+                        "off_alphabet": off_alphabet,
+                    }
+                )
+            if len(draws) % 64 == 0 or len(draws) == total:
+                print(f"[R5-denovo:{self.arm}] {len(draws)}/{total} causal draws", flush=True)
         return draws
 
 
