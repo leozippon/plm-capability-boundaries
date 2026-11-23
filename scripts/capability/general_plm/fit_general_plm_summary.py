@@ -82,20 +82,58 @@ def _load_frozen_33_arm_reference(root: Path) -> dict[str, Any]:
     return ref
 
 
+def _dtype_rank(dtype_realised: Any) -> int:
+    """Precision preference rank: float32/float64 (2) > bfloat16 (1) > unknown/other (0)."""
+    val = str(dtype_realised or "").strip().lower()
+    if "float32" in val or "float64" in val:
+        return 2
+    if "bfloat16" in val or "bf16" in val:
+        return 1
+    return 0
+
+
+def _should_replace_module(existing: dict[str, Any] | None, candidate_dtype: Any) -> bool:
+    """Prefer higher precision (float32 over bfloat16), breaking ties by newest run."""
+    if existing is None:
+        return True
+    return _dtype_rank(candidate_dtype) >= _dtype_rank(existing.get("dtype_realised"))
+
+
+def _r3_sibling_dtype(npz_path: Path, arm: str) -> str | None:
+    """Read ``provenance.dtype_realised`` from the sibling R3 JSON next to an ``.npz`` archive."""
+    sibling_json = npz_path.parent / f"r3_pairwise_and_contacts_{arm}.json"
+    if not sibling_json.is_file():
+        return None
+    try:
+        doc = json.loads(sibling_json.read_text(encoding="utf-8"))
+        if isinstance(doc, dict):
+            return doc.get("provenance", {}).get("dtype_realised")
+    except Exception:
+        return None
+    return None
+
+
 def _merge_family_distribution_shards(docs: list[dict[str, Any]]) -> dict[str, Any]:
     """Combine 1 or more family-distribution shards for one arm into one deduplicated summary."""
     by_unit: dict[str, dict[str, Any]] = {}
+    unit_dtype: dict[str, Any] = {}
     for doc in docs:
+        doc_dtype = doc.get("provenance", {}).get("dtype_realised")
         for u in doc.get("units", ()):
-            by_unit[u["unit_id"]] = u
+            uid = u["unit_id"]
+            if uid not in by_unit or _dtype_rank(doc_dtype) >= _dtype_rank(unit_dtype.get(uid)):
+                by_unit[uid] = u
+                unit_dtype[uid] = doc_dtype
     eval_units = [u for u in by_unit.values() if u.get("partition") == "evaluation"]
     col_vals = [float(u["column_contrast"]["nats_per_residue"]) for u in eval_units]
     comp_vals = [float(u["composition_contrast"]["nats_per_residue"]) for u in eval_units]
     ids = [u["unit_id"] for u in eval_units]
+    realised_dtypes = sorted({str(dt) for dt in unit_dtype.values() if dt})
     return {
         "n_shards_merged": len(docs),
         "n_units_total": len(by_unit),
         "n_eval_units": len(eval_units),
+        "dtype_realised": realised_dtypes[0] if len(realised_dtypes) == 1 else (realised_dtypes or None),
         "score_semantics": docs[0].get("score_semantics"),
         "column_null_delta_nats_per_res": cluster_bootstrap_mean(col_vals, ids, seed=20261106),
         "composition_null_delta_nats_per_res": cluster_bootstrap_mean(comp_vals, ids, seed=20261107),
@@ -208,43 +246,20 @@ def _compact_r3_eval_summary(eval_doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--results-dir",
-        type=Path,
-        action="append",
-        default=None,
-        help=(
-            "Root directory to scan recursively for per-arm general-PLM outputs. "
-            "May be passed multiple times. Defaults to V1 + V2 external_baseline dirs "
-            "plus results/extensions/general_plm_20261120."
-        ),
-    )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=DATA_ROOT / "results/extensions/general_plm_20261120",
-    )
-    parser.add_argument("--expect-file", default="general_plm_summary.json")
-    parser.add_argument(
-        "--skip-r3-cycle-fit",
-        action="store_true",
-        help="Skip CPU nested-CV fitting of R3 r3_pairwise_cycles_<arm>.npz files.",
-    )
-    parser.add_argument(
-        "--force-refit-r3",
-        action="store_true",
-        help="Re-run CPU nested-CV fitting even when a SHA256-matched r3_cycle_eval_<arm>.json exists.",
-    )
-    args = parser.parse_args()
-
-    scan_dirs = list(args.results_dir) if args.results_dir else _default_scan_dirs(DATA_ROOT)
-
-    args.out.mkdir(parents=True, exist_ok=True)
+def aggregate_general_plm_summary(
+    scan_dirs: list[Path],
+    out_dir: Path,
+    *,
+    data_root: Path = DATA_ROOT,
+    expect_file: str = "general_plm_summary.json",
+    skip_r3_cycle_fit: bool = False,
+    force_refit_r3: bool = False,
+) -> dict[str, Any]:
+    """Aggregate per-arm general-PLM outputs, preferring float32 over bfloat16 on duplicates."""
+    out_dir.mkdir(parents=True, exist_ok=True)
     arms_summary: dict[str, dict[str, Any]] = {}
     famdist_shards: dict[str, dict[str, dict[str, Any]]] = {}
-    r3_npz_by_arm: dict[str, Path] = {}
+    r3_npz_by_arm: dict[str, tuple[Path, Any]] = {}
     esm3_seqonly_dirs: list[Path] = []
     companion_artifacts: dict[str, dict[str, Any]] = {}
     scanned_files = 0
@@ -263,19 +278,25 @@ def main() -> None:
             },
         )
 
+    def _register_r3_npz(arm_name: str, npz_path: Path, cand_dtype: Any) -> None:
+        if arm_name not in r3_npz_by_arm or _dtype_rank(cand_dtype) >= _dtype_rank(
+            r3_npz_by_arm[arm_name][1]
+        ):
+            r3_npz_by_arm[arm_name] = (npz_path, cand_dtype)
+
     for root_dir in scan_dirs:
         if not root_dir.is_dir():
             continue
-        existing_scan_dirs.append(_rel_or_str(root_dir, DATA_ROOT))
-        # Discover R3 cycle npz archives directly (in case a run has npz beside JSON or standalone).
+        existing_scan_dirs.append(_rel_or_str(root_dir, data_root))
+        # Discover R3 cycle npz archives directly (checking sibling JSON precision).
         for npz_path in sorted(root_dir.rglob("r3_pairwise_cycles_*.npz")):
             arm_name = npz_path.stem.removeprefix("r3_pairwise_cycles_")
             if arm_name:
-                r3_npz_by_arm[arm_name] = npz_path
+                _register_r3_npz(arm_name, npz_path, _r3_sibling_dtype(npz_path, arm_name))
 
         for path in sorted(root_dir.rglob("*.json")):
             if (
-                path.name == args.expect_file
+                path.name == expect_file
                 or path.name.startswith("r3_cycle_eval_")
                 or path.name == "esm3_1_4b_seqonly_eval.json"
             ):
@@ -289,13 +310,13 @@ def main() -> None:
 
             schema = doc.get("schema", "")
             arm = doc.get("arm")
-            rel_src = _rel_or_str(path, DATA_ROOT)
+            rel_src = _rel_or_str(path, data_root)
 
             if path.name == "esm3_r123_seqonly.json" and schema == "esm3_r123_seqonly_v1":
                 esm3_seqonly_dirs.append(path.parent)
                 continue
 
-            # Index companion non-general-PLM V1/V2 artifacts (ESM3 R4/R5, R5 structure evals).
+            # Index companion non-general-PLM artifacts (ESM3 R4/R5, R5 structure evals).
             if path.name == "esm3_r4_multimodal.json":
                 companion_artifacts["esm3_1_4b_r4_route_a"] = {
                     "source": rel_src,
@@ -328,55 +349,70 @@ def main() -> None:
 
             scanned_files += 1
             entry = _ensure_arm(arm)
+            cand_dtype = doc.get("provenance", {}).get("dtype_realised")
 
             if schema == "general_plm_r1_ladder_and_conditionals_v1":
-                entry["modules"]["r1_ladder_and_conditionals"] = {
-                    "source": rel_src,
-                    "dtype_realised": doc.get("provenance", {}).get("dtype_realised"),
-                    "mutation_ladder": doc.get("mutation_ladder", {}).get("summary"),
-                    "matched_discrimination": doc.get("matched_discrimination", {}).get("tiers"),
-                    "family_conditionals": doc.get("family_conditionals", {}).get("evaluation_summary"),
-                }
+                if _should_replace_module(
+                    entry["modules"].get("r1_ladder_and_conditionals"), cand_dtype
+                ):
+                    entry["modules"]["r1_ladder_and_conditionals"] = {
+                        "source": rel_src,
+                        "dtype_realised": cand_dtype,
+                        "mutation_ladder": doc.get("mutation_ladder", {}).get("summary"),
+                        "matched_discrimination": doc.get("matched_discrimination", {}).get("tiers"),
+                        "family_conditionals": doc.get("family_conditionals", {}).get(
+                            "evaluation_summary"
+                        ),
+                    }
             elif schema == "general_plm_r1_family_distribution_pll_v1":
                 famdist_shards.setdefault(arm, {})[rel_src] = doc
             elif schema == "general_plm_r2_phenotypes_and_readouts_v1":
-                entry["modules"]["r2_phenotypes_and_readouts"] = {
-                    "source": rel_src,
-                    "dtype_realised": doc.get("provenance", {}).get("dtype_realised"),
-                    "lanes": {
-                        lane: {
-                            "n_variants": ldoc.get("n_variants"),
-                            "zero_shot_spearman": ldoc.get("zero_shot_spearman"),
-                            "ridge_summary": (ldoc.get("bidirectional_ridge") or {}).get("summary"),
-                        }
-                        for lane, ldoc in doc.get("lanes", {}).items()
-                    },
-                }
+                if _should_replace_module(
+                    entry["modules"].get("r2_phenotypes_and_readouts"), cand_dtype
+                ):
+                    entry["modules"]["r2_phenotypes_and_readouts"] = {
+                        "source": rel_src,
+                        "dtype_realised": cand_dtype,
+                        "lanes": {
+                            lane: {
+                                "n_variants": ldoc.get("n_variants"),
+                                "zero_shot_spearman": ldoc.get("zero_shot_spearman"),
+                                "ridge_summary": (ldoc.get("bidirectional_ridge") or {}).get(
+                                    "summary"
+                                ),
+                            }
+                            for lane, ldoc in doc.get("lanes", {}).items()
+                        },
+                    }
             elif schema == "general_plm_r3_pairwise_pll_and_contacts_v1":
                 sibling_npz = path.parent / f"r3_pairwise_cycles_{arm}.npz"
                 if sibling_npz.is_file():
-                    r3_npz_by_arm[arm] = sibling_npz
-                entry["modules"]["r3_pairwise_and_contacts"] = {
-                    "source": rel_src,
-                    "dtype_realised": doc.get("provenance", {}).get("dtype_realised"),
-                    "pairwise_cycles": {
-                        k: v
-                        for k, v in (doc.get("pairwise_cycles") or {}).items()
-                        if k != "assays"
-                    },
-                    "structural_contacts": (doc.get("structural_contacts") or {}).get(
-                        "summary_auc_minus_half"
-                    ),
-                }
+                    _register_r3_npz(arm, sibling_npz, cand_dtype)
+                if _should_replace_module(
+                    entry["modules"].get("r3_pairwise_and_contacts"), cand_dtype
+                ):
+                    entry["modules"]["r3_pairwise_and_contacts"] = {
+                        "source": rel_src,
+                        "dtype_realised": cand_dtype,
+                        "pairwise_cycles": {
+                            k: v
+                            for k, v in (doc.get("pairwise_cycles") or {}).items()
+                            if k != "assays"
+                        },
+                        "structural_contacts": (doc.get("structural_contacts") or {}).get(
+                            "summary_auc_minus_half"
+                        ),
+                    }
             elif schema == "general_plm_r4_multiseq_context_v1":
                 key = f"r4_b{doc.get('budget_tokens')}" + (
                     "_unaligned" if not doc.get("aligned_msa", True) else ""
                 )
-                entry["modules"][key] = {
-                    "source": rel_src,
-                    "dtype_realised": doc.get("provenance", {}).get("dtype_realised"),
-                    "bands": doc.get("bands"),
-                }
+                if _should_replace_module(entry["modules"].get(key), cand_dtype):
+                    entry["modules"][key] = {
+                        "source": rel_src,
+                        "dtype_realised": cand_dtype,
+                        "bands": doc.get("bands"),
+                    }
             elif schema == "general_plm_r5_infill_and_diffusion_gen_v1":
                 d_mode = (doc.get("denovo_summary") or {}).get("diffusion_sampling_mode") or (
                     doc.get("ladder_summary") or {}
@@ -386,12 +422,13 @@ def main() -> None:
                     if d_mode and d_mode != "max_confidence"
                     else "r5_infill_and_gen"
                 )
-                entry["modules"][r5_key] = {
-                    "source": rel_src,
-                    "dtype_realised": doc.get("provenance", {}).get("dtype_realised"),
-                    "ladder_summary": doc.get("ladder_summary"),
-                    "denovo_summary": doc.get("denovo_summary"),
-                }
+                if _should_replace_module(entry["modules"].get(r5_key), cand_dtype):
+                    entry["modules"][r5_key] = {
+                        "source": rel_src,
+                        "dtype_realised": cand_dtype,
+                        "ladder_summary": doc.get("ladder_summary"),
+                        "denovo_summary": doc.get("denovo_summary"),
+                    }
 
     for arm, doc_map in famdist_shards.items():
         arms_summary[arm]["modules"]["r1_family_distribution_pll"] = _merge_family_distribution_shards(
@@ -401,27 +438,27 @@ def main() -> None:
     # Evaluate completed R3 double-mutant cycle .npz archives on CPU.
     ctx_box: list[PairwiseCycleContext | None] = [None]
     r3_eval_arms: list[str] = []
-    if not args.skip_r3_cycle_fit:
-        for arm, npz_path in sorted(r3_npz_by_arm.items()):
+    if not skip_r3_cycle_fit:
+        for arm, (npz_path, _npz_dtype) in sorted(r3_npz_by_arm.items()):
             entry = _ensure_arm(arm)
             r3_mod = entry["modules"].setdefault(
                 "r3_pairwise_and_contacts",
-                {"source": _rel_or_str(npz_path, DATA_ROOT), "pairwise_cycles": {}},
+                {"source": _rel_or_str(npz_path, data_root), "pairwise_cycles": {}},
             )
             eval_doc = _evaluate_or_load_r3_cycle_eval(
                 npz_path,
                 arm,
-                out_dir=args.out,
+                out_dir=out_dir,
                 ctx_box=ctx_box,
-                data_root=DATA_ROOT,
-                force_refit=args.force_refit_r3,
+                data_root=data_root,
+                force_refit=force_refit_r3,
             )
             r3_mod["pairwise_cycles"]["nested_cv_epistasis"] = _compact_r3_eval_summary(eval_doc)
             r3_mod["pairwise_cycles"]["zero_shot_spearman_vs_measured_epsilon"] = (
                 eval_doc["zero_shot"]["all_64_groups_raw_epsilon"]["within_background_spearman"]
             )
             r3_mod["pairwise_cycles"]["eval_detail_file"] = _rel_or_str(
-                args.out / f"r3_cycle_eval_{arm}.json", DATA_ROOT
+                out_dir / f"r3_cycle_eval_{arm}.json", data_root
             )
             r3_eval_arms.append(arm)
 
@@ -430,10 +467,10 @@ def main() -> None:
             esm3_dir = esm3_seqonly_dirs[-1]
             esm3_eval = _evaluate_or_load_esm3_seqonly(
                 esm3_dir,
-                out_dir=args.out,
+                out_dir=out_dir,
                 ctx_box=ctx_box,
-                data_root=DATA_ROOT,
-                force_refit=args.force_refit_r3,
+                data_root=data_root,
+                force_refit=force_refit_r3,
             )
             esm3_entry = arms_summary.setdefault(
                 "esm3-1.4b",
@@ -447,19 +484,21 @@ def main() -> None:
             )
             r1_e = esm3_eval["r1_ladder_and_conditionals"]
             esm3_entry["modules"]["r1_ladder_and_conditionals"] = {
-                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", DATA_ROOT),
-                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", data_root),
+                "eval_detail_file": _rel_or_str(out_dir / "esm3_1_4b_seqonly_eval.json", data_root),
                 "dtype_realised": esm3_eval.get("dtype_realised"),
                 "mutation_ladder": r1_e["mutation_ladder"]["summary"],
                 "mutation_ladder_ridge": r1_e["mutation_ladder"]["bidirectional_ridge"],
                 "matched_discrimination": r1_e["matched_discrimination"]["tiers"],
                 "family_conditionals": r1_e["family_conditionals"]["evaluation_summary"],
-                "family_conditionals_quartiles": r1_e["family_conditionals"]["conservation_quartiles_var_to_cons"],
+                "family_conditionals_quartiles": r1_e["family_conditionals"][
+                    "conservation_quartiles_var_to_cons"
+                ],
             }
             r2_e = esm3_eval["r2_phenotypes_and_readouts"]["lanes"]
             esm3_entry["modules"]["r2_phenotypes_and_readouts"] = {
-                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", DATA_ROOT),
-                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "source": _rel_or_str(esm3_dir / "esm3_r123_seqonly.json", data_root),
+                "eval_detail_file": _rel_or_str(out_dir / "esm3_1_4b_seqonly_eval.json", data_root),
                 "dtype_realised": esm3_eval.get("dtype_realised"),
                 "lanes": {
                     lane: {
@@ -467,15 +506,17 @@ def main() -> None:
                         "zero_shot_spearman": ldoc.get("zero_shot_spearman"),
                         "readouts_granularity": ldoc.get("readouts_granularity"),
                         "ridge_summary": (ldoc.get("bidirectional_ridge") or {}).get("summary"),
-                        "paired_increments": (ldoc.get("bidirectional_ridge") or {}).get("paired_increments"),
+                        "paired_increments": (ldoc.get("bidirectional_ridge") or {}).get(
+                            "paired_increments"
+                        ),
                     }
                     for lane, ldoc in r2_e.items()
                 },
             }
             r3_e = esm3_eval["r3_pairwise_and_contacts"]["pairwise_cycles"]
             esm3_entry["modules"]["r3_pairwise_and_contacts"] = {
-                "source": _rel_or_str(esm3_dir / "r3_cycle_epistasis.jsonl", DATA_ROOT),
-                "eval_detail_file": _rel_or_str(args.out / "esm3_1_4b_seqonly_eval.json", DATA_ROOT),
+                "source": _rel_or_str(esm3_dir / "r3_cycle_epistasis.jsonl", data_root),
+                "eval_detail_file": _rel_or_str(out_dir / "esm3_1_4b_seqonly_eval.json", data_root),
                 "dtype_realised": esm3_eval.get("dtype_realised"),
                 "pairwise_cycles": {
                     **{k: v for k, v in r3_e.items() if k != "nested_cv_epistasis"},
@@ -497,7 +538,7 @@ def main() -> None:
         "schema": SCHEMA,
         "roster": "general_plm_20261120_exploratory",
         "frozen_33_arm_panel_mutated": False,
-        "frozen_33_arm_reference": _load_frozen_33_arm_reference(DATA_ROOT),
+        "frozen_33_arm_reference": _load_frozen_33_arm_reference(data_root),
         "scanned_directories": existing_scan_dirs,
         "scanned_files": scanned_files,
         "r3_cycle_evaluated_arms": r3_eval_arms,
@@ -506,13 +547,56 @@ def main() -> None:
         "companion_artifacts": companion_artifacts,
         "generated_utc": datetime.now(timezone.utc).isoformat(),
     }
-    out_path = args.out / args.expect_file
+    out_path = out_dir / expect_file
     atomic_write_json(out_path, payload)
     _write_sha256_sidecar(out_path)
     print(
         f"[summary] aggregated {scanned_files} files across {len(ordered_arms)} arms "
         f"(R3 cycle evals: {r3_eval_arms}) -> {out_path}",
         flush=True,
+    )
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        action="append",
+        default=None,
+        help=(
+            "Root directory to scan recursively for per-arm general-PLM outputs. "
+            "May be passed multiple times. Defaults to external_baseline 2026112* dirs "
+            "plus results/extensions/general_plm_20261120."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DATA_ROOT / "results/extensions/general_plm_20261120",
+    )
+    parser.add_argument("--expect-file", default="general_plm_summary.json")
+    parser.add_argument(
+        "--skip-r3-cycle-fit",
+        action="store_true",
+        help="Skip CPU nested-CV fitting of R3 r3_pairwise_cycles_<arm>.npz files.",
+    )
+    parser.add_argument(
+        "--force-refit-r3",
+        action="store_true",
+        help="Re-run CPU nested-CV fitting even when a SHA256-matched r3_cycle_eval_<arm>.json exists.",
+    )
+    args = parser.parse_args()
+
+    scan_dirs = list(args.results_dir) if args.results_dir else _default_scan_dirs(DATA_ROOT)
+    aggregate_general_plm_summary(
+        scan_dirs,
+        args.out,
+        data_root=DATA_ROOT,
+        expect_file=args.expect_file,
+        skip_r3_cycle_fit=args.skip_r3_cycle_fit,
+        force_refit_r3=args.force_refit_r3,
     )
 
 

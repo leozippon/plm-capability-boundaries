@@ -34,11 +34,11 @@ Each lane keeps its endpoint, support, controls and interval procedure explicit.
 | `experiments/` | Navigation modules that group the measurements by question, each naming its code, input and result entry points |
 | `src/capability/core/` | Shared numbers, paths, sequences and records |
 | `src/capability/models/` | Checkpoint scoring |
-| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation, forcing, decoding, evaluation; `baselines/` holds the explicit statistical controls (profile and Potts scoring, cohort descriptors), `ladder/` the modification-extent generation ladder, and `extensions/` the later estimand declarations |
-| `scripts/capability/` | Entry points in the same groups, plus `data/` (dataset acquisition and checksum registry), `stages/`, `gates/` and `reporting/` (derived quantities, figure code and plotted source tables) |
+| `src/capability/` | One package per measurement: mutation, position, readouts, interactions, stability, context, generation, forcing, decoding, evaluation; `baselines/` holds the explicit statistical controls (profile and Potts scoring, cohort descriptors), `ladder/` the modification-extent generation ladder, `extensions/` the later estimand declarations, and `general_plm/`, `esm3_ext/` and `memory_theory/` the exploratory multi-paradigm, multimodal and associative-memory suites |
+| `scripts/capability/` | Entry points in the same groups (including `general_plm/`, `esm3_ext/` and `memory_theory/`), plus `data/` (dataset acquisition and checksum registry), `stages/`, `gates/` and `reporting/` (derived quantities, figure code and plotted source tables) |
 | `scripts/ops/` | Dataset preparation utilities for the composition-matched fold set, the EC-labelled Swiss-Prot corpus and the OpenWebText subset |
 | `configs/` | Declarations read by the entry points: the generation replication manifest and the matched-discrimination manifest, the explicit-statistics cohort descriptors, and the family-conditionals, family-distribution and objective-tuned-prediction contracts |
-| `tests/` | Test suite, grouped like the library |
+| `tests/` | Test suite, grouped like the library (including `general_plm/`, `esm3_ext/` and `memory_theory/`) |
 | `requirements.txt` | Direct Python dependencies |
 
 ## Requirements
