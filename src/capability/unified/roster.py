@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 #: Default output root for unified single-yardstick artifacts (created by runners, never on import).
 UNIFIED_OUTPUT_DIR = Path("results/extensions/unified_yardstick_20261124")
 
-#: Canonical display ordering of model paradigms for tables and figures.
+#: Canonical display ordering of model paradigms for tables and figures (65-arm core).
 PARADIGM_ORDER: tuple[str, ...] = (
     "causal_text",
     "causal_joint",
@@ -44,15 +44,43 @@ PARADIGM_ORDER: tuple[str, ...] = (
     "multiseq_msa",
 )
 
-_PARADIGM_RANK: Mapping[str, int] = MappingProxyType(
-    {paradigm: idx for idx, paradigm in enumerate(PARADIGM_ORDER)}
+#: Extended paradigm ordering across the full 80-arm universe (65 core + DPLM-2 + ProteinMPNN).
+PARADIGM_ORDER_80: tuple[str, ...] = (
+    *PARADIGM_ORDER,
+    "multimodal_diffusion",
+    "inverse_folding_gnn",
 )
 
-VALID_MODALITIES = frozenset({"text", "joint", "protein", "protein_multimodal"})
-VALID_VOCAB_TYPES = frozenset(
-    {"bpe", "byte", "aa20", "aa20_bpe", "aa20_3di", "aa20_vqvae"}
+#: Extended paradigm ordering across the full 84-arm universe (80 + 4 DiMA continuous latent diffusion).
+PARADIGM_ORDER_84: tuple[str, ...] = (
+    *PARADIGM_ORDER_80,
+    "continuous_latent_diffusion",
 )
-VALID_ORIGIN_COHORTS = frozenset({"preregistered_33", "expanded_32"})
+
+_PARADIGM_RANK: Mapping[str, int] = MappingProxyType(
+    {paradigm: idx for idx, paradigm in enumerate(PARADIGM_ORDER_84)}
+)
+
+VALID_MODALITIES = frozenset(
+    {"text", "joint", "protein", "protein_multimodal", "structure_to_sequence"}
+)
+VALID_VOCAB_TYPES = frozenset(
+    {
+        "bpe",
+        "byte",
+        "aa20",
+        "aa20_bpe",
+        "aa20_3di",
+        "aa20_vqvae",
+        "aa20_lfq8192",
+        "aa20_lfq13bit",
+        "aa20_backbone3d",
+        "aa20_continuous_latent",
+    }
+)
+VALID_ORIGIN_COHORTS = frozenset(
+    {"preregistered_33", "expanded_32", "expanded_15_struct", "expanded_4_dima"}
+)
 
 
 @dataclass(frozen=True)
@@ -187,9 +215,31 @@ _ALL_METADATA_LIST: tuple[ArmMetadata, ...] = (
     _arm("msa-transformer-100m", "MSA-Transformer-100M", "MSA-Transformer", "multiseq_msa", "protein", "msa_transformer", 100.0, "aa20", is_single_sequence=False, has_r1_raw_readout_1024=False, origin_cohort="expanded_32"),
     _arm("protgpt3-msa", "ProtGPT3-MSA", "ProtGPT3-MSA", "multiseq_msa", "protein", "mixtral_moe", 1300.0, "aa20", is_single_sequence=False, has_r1_raw_readout_1024=False, origin_cohort="expanded_32"),
     _arm("dayhoff-3b-msa", "Dayhoff-3B-MSA", "Dayhoff-MSA", "multiseq_msa", "protein", "jamba_hybrid", 3000.0, "aa20", is_single_sequence=False, has_r1_raw_readout_1024=False, origin_cohort="expanded_32"),
+    # ------------------------------------------------- multimodal_diffusion (4)
+    _arm("dplm2-150m", "DPLM-2-150M", "DPLM-2", "multimodal_diffusion", "protein_multimodal", "dplm2_esm", 150.0, "aa20_lfq8192", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("dplm2-650m", "DPLM-2-650M", "DPLM-2", "multimodal_diffusion", "protein_multimodal", "dplm2_esm", 650.0, "aa20_lfq8192", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("dplm2-bit-650m", "DPLM-2-Bit-650M", "DPLM-2-Bit", "multimodal_diffusion", "protein_multimodal", "dplm2_bit_esm", 650.0, "aa20_lfq13bit", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("dplm2-3b", "DPLM-2-3B", "DPLM-2", "multimodal_diffusion", "protein_multimodal", "dplm2_esm", 3000.0, "aa20_lfq8192", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    # ------------------------------------------------- inverse_folding_gnn (11)
+    _arm("proteinmpnn-v-002", "ProteinMPNN-v48-0.02A", "ProteinMPNN-Vanilla", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-v-010", "ProteinMPNN-v48-0.10A", "ProteinMPNN-Vanilla", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-v-020", "ProteinMPNN-v48-0.20A", "ProteinMPNN-Vanilla", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-v-030", "ProteinMPNN-v48-0.30A", "ProteinMPNN-Vanilla", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-s-002", "ProteinMPNN-Soluble-0.02A", "ProteinMPNN-Soluble", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-s-010", "ProteinMPNN-Soluble-0.10A", "ProteinMPNN-Soluble", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-s-020", "ProteinMPNN-Soluble-0.20A", "ProteinMPNN-Soluble", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-s-030", "ProteinMPNN-Soluble-0.30A", "ProteinMPNN-Soluble", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn", 1.66, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-ca-002", "ProteinMPNN-CA-0.02A", "ProteinMPNN-CA", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn_ca", 1.65, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-ca-010", "ProteinMPNN-CA-0.10A", "ProteinMPNN-CA", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn_ca", 1.65, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    _arm("proteinmpnn-ca-020", "ProteinMPNN-CA-0.20A", "ProteinMPNN-CA", "inverse_folding_gnn", "structure_to_sequence", "proteinmpnn_ca", 1.65, "aa20_backbone3d", has_r1_raw_readout_1024=True, origin_cohort="expanded_15_struct"),
+    # ------------------------------------------ continuous_latent_diffusion (4)
+    _arm("dima-esm2-8m", "DiMA-ESM2-8M", "DiMA", "continuous_latent_diffusion", "protein", "dima_unet_esm2", 43.0, "aa20_continuous_latent", has_r1_raw_readout_1024=True, origin_cohort="expanded_4_dima"),
+    _arm("dima-saprot-35m", "DiMA-SaProt-35M", "DiMA", "continuous_latent_diffusion", "protein_multimodal", "dima_unet_saprot", 70.0, "aa20_continuous_latent", has_r1_raw_readout_1024=True, origin_cohort="expanded_4_dima"),
+    _arm("dima-esm2-3b", "DiMA-ESM2-3B", "DiMA", "continuous_latent_diffusion", "protein", "dima_unet_esm2", 2875.0, "aa20_continuous_latent", has_r1_raw_readout_1024=True, origin_cohort="expanded_4_dima"),
+    _arm("dima-cheap-1024", "DiMA-CHEAP-1024", "DiMA", "continuous_latent_diffusion", "protein", "dima_unet_cheap", 2880.0, "aa20_continuous_latent", has_r1_raw_readout_1024=True, origin_cohort="expanded_4_dima"),
 )
 
-#: Immutable arm-id -> ArmMetadata mapping over all 65 arms.
+#: Immutable arm-id -> ArmMetadata mapping over all 84 arms (65 core + 15 DPLM-2/ProteinMPNN + 4 DiMA).
 ARM_METADATA: Mapping[str, ArmMetadata] = MappingProxyType(
     {meta.arm_id: meta for meta in _ALL_METADATA_LIST}
 )
@@ -210,12 +260,46 @@ PREREGISTERED_33_ARMS: tuple[str, ...] = tuple(
 EXPANDED_32_ARMS: tuple[str, ...] = tuple(
     sorted(meta.arm_id for meta in _ALL_METADATA_LIST if meta.origin_cohort == "expanded_32")
 )
-
-#: All 65 unique arms ordered by (paradigm, family, parameter scale).
-UNIFIED_65_ARMS: tuple[str, ...] = tuple(
-    sorted(ARM_METADATA.keys(), key=_paradigm_scale_key)
+DPLM2_4_ARMS: tuple[str, ...] = (
+    "dplm2-150m",
+    "dplm2-650m",
+    "dplm2-bit-650m",
+    "dplm2-3b",
 )
-#: All 62 unique single-sequence arms (33 pre-registered + 29 expanded).
+PROTEINMPNN_11_ARMS: tuple[str, ...] = (
+    "proteinmpnn-v-002",
+    "proteinmpnn-v-010",
+    "proteinmpnn-v-020",
+    "proteinmpnn-v-030",
+    "proteinmpnn-s-002",
+    "proteinmpnn-s-010",
+    "proteinmpnn-s-020",
+    "proteinmpnn-s-030",
+    "proteinmpnn-ca-002",
+    "proteinmpnn-ca-010",
+    "proteinmpnn-ca-020",
+)
+EXPANDED_15_STRUCT_ARMS: tuple[str, ...] = (*DPLM2_4_ARMS, *PROTEINMPNN_11_ARMS)
+DIMA_4_ARMS: tuple[str, ...] = (
+    "dima-esm2-8m",
+    "dima-esm2-3b",
+    "dima-saprot-35m",
+    "dima-cheap-1024",
+)
+EXPANDED_19_NEW_ARMS: tuple[str, ...] = (*EXPANDED_15_STRUCT_ARMS, *DIMA_4_ARMS)
+
+#: Core 65 unique arms ordered by (paradigm, family, parameter scale) — preserved intact.
+UNIFIED_65_ARMS: tuple[str, ...] = tuple(
+    sorted(
+        (
+            meta.arm_id
+            for meta in _ALL_METADATA_LIST
+            if meta.origin_cohort in ("preregistered_33", "expanded_32")
+        ),
+        key=_paradigm_scale_key,
+    )
+)
+#: Core 62 unique single-sequence arms (33 pre-registered + 29 expanded).
 UNIFIED_62_SINGLE_SEQUENCE_ARMS: tuple[str, ...] = tuple(
     arm_id for arm_id in UNIFIED_65_ARMS if ARM_METADATA[arm_id].is_single_sequence
 )
@@ -226,10 +310,43 @@ UNIFIED_3_MSA_CONTEXT_ARMS: tuple[str, ...] = (
     "dayhoff-3b-msa",
 )
 
+#: Full 80 unique arms ordered by (paradigm, family, parameter scale) — preserved intact.
+UNIFIED_80_ARMS: tuple[str, ...] = tuple(
+    sorted(
+        (
+            meta.arm_id
+            for meta in _ALL_METADATA_LIST
+            if meta.origin_cohort != "expanded_4_dima"
+        ),
+        key=_paradigm_scale_key,
+    )
+)
+#: Full 77 unique single-target arms (62 core single-sequence + 4 DPLM-2 + 11 ProteinMPNN).
+UNIFIED_77_SINGLE_TARGET_ARMS: tuple[str, ...] = tuple(
+    arm_id for arm_id in UNIFIED_80_ARMS if ARM_METADATA[arm_id].is_single_sequence
+)
+
+#: Full 84 unique arms ordered by (paradigm, family, parameter scale) (80 + 4 DiMA).
+UNIFIED_84_ARMS: tuple[str, ...] = tuple(
+    sorted(ARM_METADATA.keys(), key=_paradigm_scale_key)
+)
+#: Full 81 unique single-target arms (77 + 4 DiMA).
+UNIFIED_81_SINGLE_TARGET_ARMS: tuple[str, ...] = tuple(
+    arm_id for arm_id in UNIFIED_84_ARMS if ARM_METADATA[arm_id].is_single_sequence
+)
+
 #: Alphabetical ordering helpers for deterministic serialization & diffing.
 UNIFIED_65_ARMS_ALPHA: tuple[str, ...] = tuple(sorted(UNIFIED_65_ARMS))
 UNIFIED_62_SINGLE_SEQUENCE_ARMS_ALPHA: tuple[str, ...] = tuple(
     sorted(UNIFIED_62_SINGLE_SEQUENCE_ARMS)
+)
+UNIFIED_80_ARMS_ALPHA: tuple[str, ...] = tuple(sorted(UNIFIED_80_ARMS))
+UNIFIED_77_SINGLE_TARGET_ARMS_ALPHA: tuple[str, ...] = tuple(
+    sorted(UNIFIED_77_SINGLE_TARGET_ARMS)
+)
+UNIFIED_84_ARMS_ALPHA: tuple[str, ...] = tuple(sorted(UNIFIED_84_ARMS))
+UNIFIED_81_SINGLE_TARGET_ARMS_ALPHA: tuple[str, ...] = tuple(
+    sorted(UNIFIED_81_SINGLE_TARGET_ARMS)
 )
 
 # Structural invariants verified once at import time.
@@ -238,33 +355,69 @@ assert tuple(sorted(_PREREGISTERED_ROSTER)) == PREREGISTERED_33_ARMS, (
 )
 assert len(PREREGISTERED_33_ARMS) == 33
 assert len(EXPANDED_32_ARMS) == 32
+assert len(DPLM2_4_ARMS) == 4
+assert len(PROTEINMPNN_11_ARMS) == 11
+assert len(EXPANDED_15_STRUCT_ARMS) == 15
+assert len(DIMA_4_ARMS) == 4
+assert len(EXPANDED_19_NEW_ARMS) == 19
 assert not (set(PREREGISTERED_33_ARMS) & set(EXPANDED_32_ARMS)), (
     "Pre-registered 33 and expanded 32 rosters must be strictly disjoint"
 )
+assert not (set(UNIFIED_65_ARMS) & set(EXPANDED_15_STRUCT_ARMS)), (
+    "Core 65 and expanded 15 DPLM-2/ProteinMPNN rosters must be strictly disjoint"
+)
+assert not (set(UNIFIED_80_ARMS) & set(DIMA_4_ARMS)), (
+    "80-arm roster and expanded 4 DiMA roster must be strictly disjoint"
+)
 assert len(UNIFIED_65_ARMS) == 65
 assert len(UNIFIED_62_SINGLE_SEQUENCE_ARMS) == 62
+assert len(UNIFIED_77_SINGLE_TARGET_ARMS) == 77
+assert len(UNIFIED_80_ARMS) == 80
+assert len(UNIFIED_81_SINGLE_TARGET_ARMS) == 81
+assert len(UNIFIED_84_ARMS) == 84
 assert set(UNIFIED_62_SINGLE_SEQUENCE_ARMS) | set(UNIFIED_3_MSA_CONTEXT_ARMS) == set(
     UNIFIED_65_ARMS
 )
+assert set(UNIFIED_77_SINGLE_TARGET_ARMS) | set(UNIFIED_3_MSA_CONTEXT_ARMS) == set(
+    UNIFIED_80_ARMS
+)
+assert set(UNIFIED_81_SINGLE_TARGET_ARMS) | set(UNIFIED_3_MSA_CONTEXT_ARMS) == set(
+    UNIFIED_84_ARMS
+)
 assert not (set(UNIFIED_62_SINGLE_SEQUENCE_ARMS) & set(UNIFIED_3_MSA_CONTEXT_ARMS))
+assert not (set(UNIFIED_77_SINGLE_TARGET_ARMS) & set(UNIFIED_3_MSA_CONTEXT_ARMS))
+assert not (set(UNIFIED_81_SINGLE_TARGET_ARMS) & set(UNIFIED_3_MSA_CONTEXT_ARMS))
 
 
 def get_arm_metadata(arm_id: str) -> ArmMetadata:
     """Return authoritative ``ArmMetadata`` for ``arm_id`` or raise KeyError."""
     if arm_id not in ARM_METADATA:
         raise KeyError(
-            f"Unknown arm_id {arm_id!r}; expected one of the 65 unified arms."
+            f"Unknown arm_id {arm_id!r}; expected one of the 84 unified arms."
         )
     return ARM_METADATA[arm_id]
 
 
-def arms_by_paradigm(paradigm: str) -> tuple[str, ...]:
-    """Return arms belonging to ``paradigm`` in canonical paradigm-scale order."""
+def arms_by_paradigm(
+    paradigm: str, *, include_80: bool = False, include_84: bool = False
+) -> tuple[str, ...]:
+    """Return arms belonging to ``paradigm`` in canonical paradigm-scale order.
+
+    Defaults to the core 65-arm universe (matching ``PARADIGM_ORDER``); pass
+    ``include_80=True`` / ``include_84=True`` (or query one of the expanded
+    paradigms directly) to span the 80- or 84-arm universe.
+    """
     if paradigm not in _PARADIGM_RANK:
         raise ValueError(
-            f"Unknown paradigm {paradigm!r}; expected one of {list(PARADIGM_ORDER)}"
+            f"Unknown paradigm {paradigm!r}; expected one of {list(PARADIGM_ORDER_84)}"
         )
-    return tuple(a for a in UNIFIED_65_ARMS if ARM_METADATA[a].paradigm == paradigm)
+    if include_84 or paradigm not in PARADIGM_ORDER_80:
+        universe = UNIFIED_84_ARMS
+    elif include_80 or paradigm not in PARADIGM_ORDER:
+        universe = UNIFIED_80_ARMS
+    else:
+        universe = UNIFIED_65_ARMS
+    return tuple(a for a in universe if ARM_METADATA[a].paradigm == paradigm)
 
 
 def sort_arms(arm_ids: Iterable[str], *, by: str = "paradigm_scale") -> tuple[str, ...]:

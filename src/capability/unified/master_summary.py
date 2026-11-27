@@ -1,9 +1,9 @@
 """Unified Master Index & Provenance Builder for ``results/extensions/unified_yardstick_20261124/``.
 
-Verifies SHA-256 sidecars across all 17 canonical JSON artifacts spanning Results 1–4,
-validates completion gates (including ``r5_experiment_4_1_unified_generation.json`` and
-full 25-arm ``r6_experiment_4_2_phase_space_unified.json`` with ``n_pending_plms == 0``
-in strict mode), and writes:
+Verifies SHA-256 sidecars and completion/reproduction gates across all 41 canonical JSON artifacts
+spanning BOTH the untouched core 62/65-model tier (24 artifacts) AND the expanded 81/84-model full
+tier (+DPLM-2 x4, +ProteinMPNN x11, +DiMA x4; 17 semantic ``*_full.json`` / adaptation artifacts),
+and writes:
 
   - ``results/extensions/unified_yardstick_20261124/unified_master_summary.json`` (+ ``.sha256``)
   - ``results/extensions/unified_yardstick_20261124/PROVENANCE.md``
@@ -23,13 +23,24 @@ from typing import Any
 from src.capability.core.io import sha256_file
 from src.capability.unified.roster import (
     ARM_METADATA,
+    DIMA_4_ARMS,
+    DPLM2_4_ARMS,
+    EXPANDED_15_STRUCT_ARMS,
+    EXPANDED_19_NEW_ARMS,
     EXPANDED_32_ARMS,
     PARADIGM_ORDER,
+    PARADIGM_ORDER_80,
+    PARADIGM_ORDER_84,
     PREREGISTERED_33_ARMS,
+    PROTEINMPNN_11_ARMS,
     REPO_ROOT,
     UNIFIED_3_MSA_CONTEXT_ARMS,
     UNIFIED_62_SINGLE_SEQUENCE_ARMS,
     UNIFIED_65_ARMS,
+    UNIFIED_77_SINGLE_TARGET_ARMS,
+    UNIFIED_80_ARMS,
+    UNIFIED_81_SINGLE_TARGET_ARMS,
+    UNIFIED_84_ARMS,
     UNIFIED_OUTPUT_DIR,
     arms_by_paradigm,
 )
@@ -50,9 +61,10 @@ class ArtifactSpec:
     role: str
     producer: str
     required_complete: bool = True
+    tier: str = "core_65"
 
 
-CANONICAL_ARTIFACTS: tuple[ArtifactSpec, ...] = (
+CANONICAL_ARTIFACTS_65: tuple[ArtifactSpec, ...] = (
     # Result 1: ProteinGym DMS Yardstick & Adversarial Pairs
     ArtifactSpec(
         "r1_proteingym_unified_62.json",
@@ -78,6 +90,12 @@ CANONICAL_ARTIFACTS: tuple[ArtifactSpec, ...] = (
         "result_2",
         "Unified 62/62 M vs R biophysical transfer, calibration MSE, and 13-ladder scaling divergence on MegaScale & Human Domainome",
         "scripts/capability/unified/run_r2_experiment_2_1.py",
+    ),
+    ArtifactSpec(
+        "r2_r3_middle_vs_last_representation_62.json",
+        "result_2_3_mid_vs_last",
+        "Unified 62/62 paired middle-layer (R_mid) vs final-layer (R_last) vs joint (R_joint) contrast across MegaScale, Domainome & R3 Epistasis",
+        "scripts/capability/unified/run_r2_r3_mid_vs_last_62.py",
     ),
     # Result 3: Double-Mutant Epistasis & E01 Contact Propagation
     ArtifactSpec(
@@ -136,6 +154,13 @@ CANONICAL_ARTIFACTS: tuple[ArtifactSpec, ...] = (
         "scripts/capability/unified/run_memory_and_generation_yardstick.py",
     ),
     ArtifactSpec(
+        "r4_saprot_3di_aa_target_causal_control.json",
+        "result_4_memory",
+        "Fixed-20-AA-target SaProt (35M/650M/1.3B) 3Di structural correspondence causal control (aa_only vs correct_3di vs shuffled_3di) on CATH-3D",
+        "scripts/capability/unified/run_saprot_3di_causal_control.py",
+        tier="core_65",
+    ),
+    ArtifactSpec(
         "r4_r5_r6_unified_summary.json",
         "result_4_context_and_alignment",
         "Unified R4 sequence/3D/SS8 context access, R5 summary, and R6 post-training alignment contrasts",
@@ -159,6 +184,169 @@ CANONICAL_ARTIFACTS: tuple[ArtifactSpec, ...] = (
         "Experiment 4.3: 30-checkpoint (33-pool) native self-likelihood ranking, repetitiveness trap & adverse selection inside <20%/<30% novel pools",
         "scripts/capability/unified/run_r6_experiment_4_3.py",
     ),
+    # Result 5: Merged Unified Homologous-Context Horizontal Benchmark (Core 65-Model Tier)
+    ArtifactSpec(
+        "r4_scoring_unified_65.json",
+        "result_5_main_table",
+        "Result 5 Main Table: 65/65 unified unaligned/aligned homologous-prefix scoring across 800 units (4 identity bands + explicit alignment tags)",
+        "scripts/capability/unified/run_r4_scoring_unified_65.py",
+    ),
+    ArtifactSpec(
+        "r5_dms_context_ranking_unified.json",
+        "result_5_downstream_1",
+        "Result 5 Downstream 1: Unified cross-paradigm DMS homolog-context ranking (30-80% main + 5-band 90-100%/self_copy)",
+        "scripts/capability/unified/run_r5_dms_context_unified.py",
+    ),
+    ArtifactSpec(
+        "r4_continuation_unified.json",
+        "result_5_downstream_2",
+        "Result 5 Downstream 2: Unified 12-family homologous-prefix continuation, Pfam recall & length-stratified ESMFold2 folding",
+        "scripts/capability/unified/run_r4_continuation_unified.py",
+    ),
+    ArtifactSpec(
+        "r5_homologous_context_merged.json",
+        "result_5_merged",
+        "Merged Result 5 master horizontal benchmark combining Main Table (65/65), Downstream 1 (DMS), and Downstream 2 (Continuation/Folding)",
+        "scripts/capability/unified/run_r5_homologous_context_merged.py",
+    ),
+    # Result 6: Full 68/68-Shard Objective-Tuned ESMFold2 & Confounding Audit
+    ArtifactSpec(
+        "r6_objective_tuned_full_esmfold2_unified.json",
+        "result_6_objective_tuned_full",
+        "Full 68/68-shard (47,778 + 2,000 long-cap) objective-tuned ESMFold2 novelty stratification, Pfam/filter controls & length/tie audit",
+        "scripts/capability/unified/run_r6_objective_tuned_full_unified.py",
+    ),
+)
+
+CANONICAL_ARTIFACTS_FULL: tuple[ArtifactSpec, ...] = (
+    # Expanded 81/84-Model Scoring Tier (+DPLM-2 x4 [seq_only & |struct] + ProteinMPNN x11 + DiMA x4)
+    ArtifactSpec(
+        "r1_proteingym_unified_full.json",
+        "expanded_84_result_1",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) ProteinGym DMS zero-shot & bidirectional P/PEG benchmark with explicit conditioning_regime separation",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r1_supplementary_c0_ladder_full.json",
+        "expanded_84_result_1",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) ProteinGym C0/BPL supplementary ladder",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r1_adversarial_pairs_full.json",
+        "expanded_84_result_1",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) ProteinGym adversarial pair contrasts",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "family_memory_unified_full.json",
+        "expanded_84_result_4_memory",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) family conditionals & family distribution associative memory benchmark",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r2_biophysical_unified_full.json",
+        "expanded_84_result_2",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) MegaScale & Domainome biophysical transfer, calibration & scaling benchmark",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r2_r3_middle_vs_last_representation_full.json",
+        "expanded_84_result_2_3_mid_vs_last",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) middle-layer (R_mid) vs final-layer (R_last) vs joint (R_joint) benchmark",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r3_epistasis_and_contacts_unified_full.json",
+        "expanded_84_result_3",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) double-mutant thermodynamic cycle epistasis & contact summary",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "contacts_unified_full.json",
+        "expanded_84_result_3",
+        "Expanded 81-checkpoint (+4 DPLM-2|struct) E01 contact propagation summary separating 70 sequence-only vs 15 3D-backbone oracle entries",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r4_scoring_unified_full.json",
+        "expanded_84_result_5_main_table",
+        "Expanded 84-checkpoint (+4 DPLM-2|struct) 800-unit 4-band homologous-prefix target scoring benchmark",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r5_dms_context_ranking_unified_full.json",
+        "expanded_84_result_5_downstream_1",
+        "Expanded 91-entry (84-model tier) DMS homolog-context ranking benchmark (30-80% main + 5-band E09)",
+        "scripts/capability/unified/assemble_77_80_scoring_benchmarks.py",
+        tier="expanded_84",
+    ),
+    # Expanded Generation, Infilling, Phase-Space, Native Likelihood & R6 Adaptation Tier
+    ArtifactSpec(
+        "r5_experiment_4_1_unified_generation_full.json",
+        "expanded_84_result_4_exp_4_1",
+        "Expanded Experiment 4.1 unconditional sequence/co-generation/continuous-diffusion vs 3D-backbone inverse-folding novelty, Pfam & ESMFold2 census",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r5a_local_infilling_full.json",
+        "expanded_84_result_4_r5a",
+        "Expanded R5a local infilling progressive anchoring ladder (18 sealed + DPLM-2/ProteinMPNN/DiMA arm-modes)",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r6_experiment_4_2_phase_space_full.json",
+        "expanded_84_result_4_exp_4_2",
+        "Expanded Experiment 4.2 eight-domain family phase-space benchmark (23 sealed PLMs + P/H + 19 DPLM-2/ProteinMPNN/DiMA checkpoints)",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r6_experiment_4_3_native_likelihood_full.json",
+        "expanded_84_result_4_exp_4_3",
+        "Expanded Experiment 4.3 native self-likelihood ranking & adverse-selection benchmark (33 sealed + DPLM-2/ProteinMPNN/DiMA pools)",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r4_continuation_unified_full.json",
+        "expanded_84_result_5_downstream_2",
+        "Expanded Result 5 Downstream 2 continuation & ESMFold2 folding (35 sealed unaligned prefix + DPLM-2/ProteinMPNN/DiMA entries)",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r6_dplm2_mpnn_adaptation_unified.json",
+        "expanded_84_result_6_adaptation",
+        "Result 6 structural, continuous-vs-discrete diffusion & objective adaptation contrasts (ProteinMPNN, DPLM-2, DiMA)",
+        "scripts/capability/unified/assemble_77_80_generation_benchmarks.py",
+        tier="expanded_84",
+    ),
+    ArtifactSpec(
+        "r5_homologous_context_merged_full.json",
+        "expanded_84_result_5_merged",
+        "Merged Result 5 (Full 84-model tier) horizontal benchmark combining 84-model Main Table, 91-entry DMS, and Full Continuation/Folding",
+        "scripts/capability/unified/run_r5_homologous_context_merged.py",
+        tier="expanded_84",
+    ),
+)
+
+CANONICAL_ARTIFACTS_80: tuple[ArtifactSpec, ...] = CANONICAL_ARTIFACTS_FULL
+
+CANONICAL_ARTIFACTS: tuple[ArtifactSpec, ...] = (
+    *CANONICAL_ARTIFACTS_65,
+    *CANONICAL_ARTIFACTS_FULL,
 )
 
 
@@ -406,33 +594,68 @@ def _summarize_exp4_3(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_provenance_markdown(payload: dict[str, Any]) -> str:
+    ru65 = payload["roster_universe"]
+    ru84 = payload["expanded_roster_universe_84"]
+    tc = payload["tier_summary"]
     lines: list[str] = [
         "# Unified Cross-Paradigm Yardstick Provenance (`unified_yardstick_20261124`)",
         "",
         f"Generated UTC: `{payload['generated_utc']}`  ",
-        f"Completion status: `{payload['completion_status']}` (`{payload['n_artifacts_complete']}/{payload['n_artifacts_total']}` canonical artifacts complete, `{payload['n_sidecars_verified']}/{payload['n_artifacts_present']}` SHA-256 sidecars verified).",
+        (
+            f"Completion status: `{payload['completion_status']}` "
+            f"(`{payload['n_artifacts_complete']}/{payload['n_artifacts_total']}` canonical artifacts complete "
+            f"[core_65: `{tc['core_65']['n_complete']}/{tc['core_65']['n_total']}`, "
+            f"expanded_84: `{tc['expanded_84']['n_complete']}/{tc['expanded_84']['n_total']}`], "
+            f"`{payload['n_sidecars_verified']}/{payload['n_artifacts_present']}` SHA-256 sidecars verified)."
+        ),
         "",
-        "## Benchmark Roster Universe",
+        "## Benchmark Roster Universes",
         "",
-        f"The canonical roster in `src/capability/unified/roster.py` covers **{payload['roster_universe']['n_total_arms']} unique arms** = **{payload['roster_universe']['n_single_sequence_arms']} single-sequence arms** (`33` frozen pre-registered `ROSTER` arms + `29` expanded single-sequence general PLMs) plus **{payload['roster_universe']['n_msa_context_arms']} multi-sequence MSA context arms** (`msa-transformer`, `dayhoff-170m-msa`, `protmamba`). Frozen pre-registered baselines and `src/capability/core/arms.py` remain untouched.",
+        (
+            f"- **Core 65-Model Tier (`roster_universe`)**: **{ru65['n_total_arms']} unique arms** = "
+            f"**{ru65['n_single_sequence_arms']} single-sequence arms** (`33` frozen pre-registered `ROSTER` arms + "
+            f"`29` expanded single-sequence general PLMs) plus **{ru65['n_msa_context_arms']} multi-sequence MSA context arms** "
+            f"(`{'`, `'.join(ru65['msa_context_arms_3'])}`). Frozen pre-registered baselines and `src/capability/core/arms.py` remain untouched."
+        ),
+        (
+            f"- **Expanded 84-Model Full Tier (`expanded_roster_universe_84`)**: **{ru84['n_total_arms']} unique checkpoints** = "
+            f"**{ru84['n_single_target_arms']} single-target arms** (`62` core single-sequence + "
+            f"`{len(ru84['dplm2_4_arms'])}` multimodal sequence-structure diffusion `DPLM-2` + "
+            f"`{len(ru84['proteinmpnn_11_arms'])}` inverse-folding `ProteinMPNN` + "
+            f"`{len(ru84['dima_4_arms'])}` continuous latent diffusion `DiMA`) plus "
+            f"**{ru84['n_msa_context_arms']} multi-sequence MSA context arms**, spanning `{len(ru84['paradigm_order_84'])}` paradigms "
+            f"(`{'`, `'.join(ru84['paradigm_order_84'])}`)."
+        ),
         "",
         "## Canonical Artifact Manifest & SHA-256 Digests",
         "",
-        "| Section | Artifact | Status | Sidecar | Size (MB) | SHA-256 (prefix) | Producer |",
-        "| --- | --- | --- | --- | ---: | --- | --- |",
+        "| Tier | Section | Artifact | Status | Sidecar | Size (MB) | SHA-256 (prefix) | Producer |",
+        "| --- | --- | --- | --- | --- | ---: | --- | --- |",
     ]
     for item in payload["artifact_manifest"]:
         size_mb = f"{item['size_bytes'] / 1e6:.2f}" if item["size_bytes"] is not None else "—"
         sha_short = f"`{item['sha256'][:16]}`" if item["sha256"] else "—"
         sidecar_s = "OK" if item["sidecar_verified"] else ("MISSING" if not item["exists"] else "FAIL")
         lines.append(
-            f"| `{item['section']}` | `{item['filename']}` | `{item['status']}` | {sidecar_s} | {size_mb} | {sha_short} | `{item['producer']}` |"
+            f"| `{item['tier']}` | `{item['section']}` | `{item['filename']}` | `{item['status']}` | {sidecar_s} | {size_mb} | {sha_short} | `{item['producer']}` |"
         )
 
+    failed_gates = list(payload.get("failed_reproduction_gates") or [])
+    gate_summary = (
+        f"ALL PASSED (`{len(payload['reproduction_gates'])}/{len(payload['reproduction_gates'])}`)"
+        if payload.get("all_reproduction_gates_passed")
+        else (
+            f"FAILED (`{len(failed_gates)}` failed: `{'`, `'.join(failed_gates)}`)"
+            if failed_gates
+            else "NO GATES VERIFIED"
+        )
+    )
     lines.extend(
         [
             "",
             "## Reproduction & Parity Verification Gates",
+            "",
+            f"Overall gate status: **{gate_summary}**.",
             "",
             "| Gate | Artifact | Status | Observed Max Abs Diff |",
             "| --- | --- | --- | --- |",
@@ -465,13 +688,65 @@ def _render_provenance_markdown(payload: dict[str, Any]) -> str:
     return text
 
 
+def _check_artifact_completion(spec: ArtifactSpec, doc: dict[str, Any]) -> tuple[str, str | None]:
+    """Return ``(status, detail)`` verifying completion for both core_65 and expanded_80 artifacts."""
+    fname = spec.filename
+    if fname == "r6_experiment_4_2_phase_space_unified.json":
+        cov = doc.get("coverage") or {}
+        n_pend = int(cov.get("n_pending_plms", 0))
+        if n_pend > 0 or not cov.get("is_complete_panel", False):
+            return (
+                "partial_pending_h200",
+                f"r6_experiment_4_2 has n_pending_plms={n_pend} (is_complete_panel={cov.get('is_complete_panel')})",
+            )
+        return "complete", None
+
+    if fname == "r4_scoring_unified_65.json":
+        cov = doc.get("coverage") or {}
+        n_pend = int(cov.get("n_pending_arms", 0))
+        if n_pend > 0 or not doc.get("is_complete_65", False):
+            return "partial_pending_h200", f"r4_scoring_unified_65 has n_pending_arms={n_pend}"
+        return "complete", None
+
+    if fname in (
+        "r5_experiment_4_1_unified_generation_full.json",
+        "r5a_local_infilling_full.json",
+        "r6_experiment_4_2_phase_space_full.json",
+        "r6_experiment_4_3_native_likelihood_full.json",
+        "r4_continuation_unified_full.json",
+    ):
+        cov = doc.get("coverage") or {}
+        if not bool(cov.get("is_complete", False)):
+            return (
+                "partial_pending_h200",
+                f"{fname} has coverage.is_complete={cov.get('is_complete')!r}",
+            )
+        return "complete", None
+
+    if fname == "r6_dplm2_mpnn_adaptation_unified.json":
+        axes = (doc.get("protocol") or {}).get("adaptation_axes") or []
+        if not axes:
+            return "partial_pending_h200", f"{fname} missing protocol.adaptation_axes"
+        return "complete", None
+
+    # All other core_65 and expanded_80 scoring / merged artifacts carry explicit completion_status.
+    if "completion_status" in doc and str(doc.get("completion_status")) != "complete":
+        return (
+            "partial_pending_h200",
+            f"{fname} has completion_status={doc.get('completion_status')!r}",
+        )
+    return "complete", None
+
+
 def build_unified_master_summary(
     *,
     root: Path = REPO_ROOT,
     out_dir: Path | None = None,
     allow_pending: bool = False,
 ) -> dict[str, Any]:
-    """Verify all canonical unified artifacts and assemble ``unified_master_summary.json`` + ``PROVENANCE.md``."""
+    """Verify all canonical unified artifacts (core_65 + expanded_80) and assemble
+    ``unified_master_summary.json`` + ``PROVENANCE.md``.
+    """
     target_dir = Path(out_dir) if out_dir is not None else (root / UNIFIED_OUTPUT_DIR)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -498,17 +773,14 @@ def build_unified_master_summary(
         else:
             doc = json.loads(fpath.read_text(encoding="utf-8"))
             loaded_docs[spec.filename] = doc
-            if spec.filename == "r6_experiment_4_2_phase_space_unified.json":
-                cov = doc.get("coverage") or {}
-                n_pend = int(cov.get("n_pending_plms", 0))
-                if n_pend > 0 or not cov.get("is_complete_panel", False):
-                    status = "partial_pending_h200"
-                    detail = f"r6_experiment_4_2 has n_pending_plms={n_pend} (is_complete_panel={cov.get('is_complete_panel')})"
-                    pending_reasons.append(detail)
+            status, detail = _check_artifact_completion(spec, doc)
+            if status != "complete":
+                pending_reasons.append(detail or f"{spec.filename} incomplete")
 
         manifest.append(
             {
                 "filename": spec.filename,
+                "tier": spec.tier,
                 "section": spec.section,
                 "role": spec.role,
                 "producer": spec.producer,
@@ -522,13 +794,7 @@ def build_unified_master_summary(
             }
         )
 
-    if pending_reasons and not allow_pending:
-        raise RuntimeError(
-            "Strict master summary build refused due to incomplete/pending artifacts "
-            "(pass --allow-pending for interim build): " + "; ".join(pending_reasons)
-        )
-
-    # Assemble reproduction gates ledger across all completed artifacts.
+    # Assemble reproduction gates ledger across all loaded artifacts BEFORE deciding completion status.
     gates: dict[str, dict[str, Any]] = {}
     if "r1_proteingym_unified_62.json" in loaded_docs:
         g1 = _extract_r1_gate(loaded_docs["r1_proteingym_unified_62.json"])
@@ -550,6 +816,14 @@ def build_unified_master_summary(
             "passed": float(vg["megascale_79g_full_nuisance_U_C_max_diff"]) < 1e-10,
             "max_abs_diff": float(vg["megascale_79g_full_nuisance_U_C_max_diff"]),
         }
+    if "r2_r3_middle_vs_last_representation_62.json" in loaded_docs:
+        gml = loaded_docs["r2_r3_middle_vs_last_representation_62.json"].get("reproduction_gate") or {}
+        if gml:
+            gates["r2_r3_mid_vs_last_62arm_sealed_parity"] = {
+                "artifact": "r2_r3_middle_vs_last_representation_62.json",
+                "passed": bool(gml.get("passed")),
+                "max_abs_diff": float(gml.get("max_abs_diff", 0.0)),
+            }
     if "r3_epistasis_and_contacts_unified_62.json" in loaded_docs:
         g3 = loaded_docs["r3_epistasis_and_contacts_unified_62.json"]["reproduction_gate"]
         gates["r3_epistasis_progen2_small"] = {
@@ -572,6 +846,69 @@ def build_unified_master_summary(
             "passed": bool(g43["passed"]),
             "max_abs_diff": float(g43["max_abs_diff"]),
         }
+    if "r4_scoring_unified_65.json" in loaded_docs:
+        gr4s = loaded_docs["r4_scoring_unified_65.json"].get("reproduction_gate") or {}
+        if gr4s:
+            gates["r5_main_table_cached_29arm_parity"] = {
+                "artifact": "r4_scoring_unified_65.json",
+                "passed": bool(gr4s.get("passed")),
+                "max_abs_diff": float(gr4s.get("max_abs_diff", 0.0)),
+            }
+    if "r5_dms_context_ranking_unified.json" in loaded_docs:
+        gdms = loaded_docs["r5_dms_context_ranking_unified.json"].get("reproduction_gates") or {}
+        for k, v in gdms.items():
+            if isinstance(v, dict) and "passed" in v:
+                gates[f"r5_dms_{k}"] = {
+                    "artifact": "r5_dms_context_ranking_unified.json",
+                    "passed": bool(v.get("passed")),
+                    "max_abs_diff": float(v.get("max_abs_diff", 0.0)),
+                }
+    if "r6_objective_tuned_full_esmfold2_unified.json" in loaded_docs:
+        gr6 = (
+            loaded_docs["r6_objective_tuned_full_esmfold2_unified.json"].get("reproduction_gates")
+            or loaded_docs["r6_objective_tuned_full_esmfold2_unified.json"].get("reproduction_gate")
+            or {}
+        )
+        if isinstance(gr6, dict):
+            if "passed" in gr6:
+                gates["r6_objective_tuned_full_parity"] = {
+                    "artifact": "r6_objective_tuned_full_esmfold2_unified.json",
+                    "passed": bool(gr6.get("passed")),
+                    "max_abs_diff": float(gr6.get("max_abs_diff", 0.0)),
+                }
+            else:
+                for k, v in gr6.items():
+                    if isinstance(v, dict) and "passed" in v:
+                        gates[f"r6_ot_{k}"] = {
+                            "artifact": "r6_objective_tuned_full_esmfold2_unified.json",
+                            "passed": bool(v.get("passed")),
+                            "max_abs_diff": float(v.get("max_abs_diff", 0.0)),
+                        }
+    if "r4_saprot_3di_aa_target_causal_control.json" in loaded_docs:
+        gsap = (
+            loaded_docs["r4_saprot_3di_aa_target_causal_control.json"].get("verification_gate")
+            or loaded_docs["r4_saprot_3di_aa_target_causal_control.json"].get("reproduction_gate")
+            or {}
+        )
+        if isinstance(gsap, dict) and "passed" in gsap:
+            gates["r4_saprot_3di_aa_target_causal_control"] = {
+                "artifact": "r4_saprot_3di_aa_target_causal_control.json",
+                "passed": bool(gsap.get("passed")),
+                "max_abs_diff": float(gsap.get("max_abs_diff", 0.0)),
+            }
+
+    failed_gates = sorted(gname for gname, grec in gates.items() if not bool(grec.get("passed")))
+    all_gates_passed = bool(gates) and not failed_gates
+
+    if failed_gates and not allow_pending:
+        raise RuntimeError(
+            f"Strict master summary build refused due to failed reproduction gates: {failed_gates}"
+        )
+    if pending_reasons and not allow_pending:
+        raise RuntimeError(
+            "Strict master summary build refused due to incomplete/pending artifacts "
+            "(pass --allow-pending for interim build): " + "; ".join(pending_reasons)
+        )
 
     # Assemble structured results summary
     results_summary: dict[str, Any] = {}
@@ -624,22 +961,115 @@ def build_unified_master_summary(
                 r456["r6_post_training_alignment"]["n_contrast_pairs_with_band_tables"]
             ),
         }
+    if "r4_saprot_3di_aa_target_causal_control.json" in loaded_docs:
+        sap = loaded_docs["r4_saprot_3di_aa_target_causal_control.json"]
+        r4_block["saprot_3di_aa_target_causal_control"] = {
+            "schema": sap.get("schema") or sap.get("schema_version"),
+            "completion_status": sap.get("completion_status", "complete"),
+            "models": sorted((sap.get("models") or {}).keys()) if isinstance(sap.get("models"), dict) else sap.get("models"),
+            "verification_gate": sap.get("verification_gate") or sap.get("reproduction_gate"),
+        }
     results_summary["result_4_generation_memory_and_alignment"] = r4_block
+
+    r5_block: dict[str, Any] = {}
+    if "r4_scoring_unified_65.json" in loaded_docs:
+        d65 = loaded_docs["r4_scoring_unified_65.json"]
+        r5_block["main_table_800_units"] = {
+            "status": d65.get("completion_status"),
+            "n_arms_present": (d65.get("coverage") or {}).get("n_arms_present"),
+            "n_pending_arms": (d65.get("coverage") or {}).get("n_pending_arms"),
+            "n_horizontal_rows": len(d65.get("horizontal_benchmark_table") or []),
+        }
+    if "r5_dms_context_ranking_unified.json" in loaded_docs:
+        ddms = loaded_docs["r5_dms_context_ranking_unified.json"]
+        r5_block["downstream_1_dms_mutation_ranking"] = {
+            "status": ddms.get("completion_status", "complete"),
+            "coverage": ddms.get("coverage"),
+        }
+    if "r4_continuation_unified.json" in loaded_docs:
+        dcont = loaded_docs["r4_continuation_unified.json"]
+        r5_block["downstream_2_prefix_continuation_and_folding"] = {
+            "status": dcont.get("completion_status", "complete"),
+            "coverage": dcont.get("coverage"),
+        }
+    if "r5_homologous_context_merged.json" in loaded_docs:
+        dmrg = loaded_docs["r5_homologous_context_merged.json"]
+        r5_block["merged_status"] = {
+            "completion_status": dmrg.get("completion_status"),
+            "n_components_complete": dmrg.get("n_components_complete"),
+            "n_components_total": dmrg.get("n_components_total"),
+        }
+    if r5_block:
+        results_summary["result_5_homologous_context_merged"] = r5_block
+    if "r6_objective_tuned_full_esmfold2_unified.json" in loaded_docs:
+        dr6 = loaded_docs["r6_objective_tuned_full_esmfold2_unified.json"]
+        results_summary["result_6_objective_tuned_full_esmfold2"] = {
+            "completion_status": dr6.get("completion_status", "complete"),
+            "coverage": dr6.get("coverage"),
+        }
+
+    # Expanded 81/84-model full tier compact summary (populates cleanly as each artifact lands).
+    expanded_summary: dict[str, Any] = {}
+    for spec in CANONICAL_ARTIFACTS_FULL:
+        if spec.filename not in loaded_docs:
+            continue
+        edoc = loaded_docs[spec.filename]
+        st, _ = _check_artifact_completion(spec, edoc)
+        entry: dict[str, Any] = {
+            "schema": edoc.get("schema") or edoc.get("schema_version"),
+            "status": st,
+        }
+        for k in (
+            "n_arms_primary",
+            "n_arms_with_struct_companions",
+            "n_arms_total_rows",
+            "n_components_complete",
+            "n_components_total",
+            "coverage",
+        ):
+            if k in edoc:
+                entry[k] = edoc[k]
+        expanded_summary[spec.filename] = entry
+    if expanded_summary:
+        results_summary["expanded_81_84_tier"] = expanded_summary
 
     n_present = sum(1 for m in manifest if m["exists"])
     n_complete = sum(1 for m in manifest if m["status"] == "complete")
     n_verified = sum(1 for m in manifest if m["sidecar_verified"])
 
+    tier_summary = {
+        tier_name: {
+            "n_total": sum(1 for m in manifest if m["tier"] == tier_name),
+            "n_present": sum(1 for m in manifest if m["tier"] == tier_name and m["exists"]),
+            "n_complete": sum(1 for m in manifest if m["tier"] == tier_name and m["status"] == "complete"),
+            "n_sidecars_verified": sum(1 for m in manifest if m["tier"] == tier_name and m["sidecar_verified"]),
+        }
+        for tier_name in ("core_65", "expanded_84")
+    }
+
+    if failed_gates:
+        completion_status = "failed_reproduction_gates"
+    elif pending_reasons:
+        completion_status = "interim_pending"
+    elif all_gates_passed:
+        completion_status = "complete"
+    else:
+        completion_status = "interim_pending"
+
     counts_by_paradigm = {p: len(arms_by_paradigm(p)) for p in PARADIGM_ORDER}
+    counts_by_paradigm_80 = {p: len(arms_by_paradigm(p, include_80=True)) for p in PARADIGM_ORDER_80}
+    counts_by_paradigm_84 = {p: len(arms_by_paradigm(p, include_84=True)) for p in PARADIGM_ORDER_84}
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "generated_utc": datetime.now(timezone.utc).isoformat(),
-        "completion_status": "complete" if not pending_reasons else "interim_pending",
+        "completion_status": completion_status,
         "pending_artifacts": pending_reasons,
+        "failed_reproduction_gates": failed_gates,
         "n_artifacts_total": len(manifest),
         "n_artifacts_present": n_present,
         "n_artifacts_complete": n_complete,
         "n_sidecars_verified": n_verified,
+        "tier_summary": tier_summary,
         "roster_universe": {
             "n_total_arms": len(UNIFIED_65_ARMS),
             "n_single_sequence_arms": len(UNIFIED_62_SINGLE_SEQUENCE_ARMS),
@@ -651,9 +1081,39 @@ def build_unified_master_summary(
             "msa_context_arms_3": list(UNIFIED_3_MSA_CONTEXT_ARMS),
             "arm_metadata_count": len(ARM_METADATA),
         },
+        "expanded_roster_universe_80": {
+            "n_total_arms": len(UNIFIED_80_ARMS),
+            "n_single_target_arms": len(UNIFIED_77_SINGLE_TARGET_ARMS),
+            "n_msa_context_arms": len(UNIFIED_3_MSA_CONTEXT_ARMS),
+            "n_dplm2_arms": len(DPLM2_4_ARMS),
+            "n_proteinmpnn_arms": len(PROTEINMPNN_11_ARMS),
+            "paradigm_order_80": list(PARADIGM_ORDER_80),
+            "counts_by_paradigm_80": counts_by_paradigm_80,
+            "dplm2_4_arms": list(DPLM2_4_ARMS),
+            "proteinmpnn_11_arms": list(PROTEINMPNN_11_ARMS),
+            "expanded_15_struct_arms": list(EXPANDED_15_STRUCT_ARMS),
+            "single_target_arms_77": list(UNIFIED_77_SINGLE_TARGET_ARMS),
+            "msa_context_arms_3": list(UNIFIED_3_MSA_CONTEXT_ARMS),
+        },
+        "expanded_roster_universe_84": {
+            "n_total_arms": len(UNIFIED_84_ARMS),
+            "n_single_target_arms": len(UNIFIED_81_SINGLE_TARGET_ARMS),
+            "n_msa_context_arms": len(UNIFIED_3_MSA_CONTEXT_ARMS),
+            "n_dplm2_arms": len(DPLM2_4_ARMS),
+            "n_proteinmpnn_arms": len(PROTEINMPNN_11_ARMS),
+            "n_dima_arms": len(DIMA_4_ARMS),
+            "paradigm_order_84": list(PARADIGM_ORDER_84),
+            "counts_by_paradigm_84": counts_by_paradigm_84,
+            "dplm2_4_arms": list(DPLM2_4_ARMS),
+            "proteinmpnn_11_arms": list(PROTEINMPNN_11_ARMS),
+            "dima_4_arms": list(DIMA_4_ARMS),
+            "expanded_19_new_arms": list(EXPANDED_19_NEW_ARMS),
+            "single_target_arms_81": list(UNIFIED_81_SINGLE_TARGET_ARMS),
+            "msa_context_arms_3": list(UNIFIED_3_MSA_CONTEXT_ARMS),
+        },
         "artifact_manifest": manifest,
         "reproduction_gates": gates,
-        "all_reproduction_gates_passed": all(bool(g.get("passed")) for g in gates.values()) if gates else False,
+        "all_reproduction_gates_passed": all_gates_passed,
         "results_summary": results_summary,
     }
 

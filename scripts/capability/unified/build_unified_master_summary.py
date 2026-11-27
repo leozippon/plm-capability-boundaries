@@ -5,9 +5,9 @@ Writes:
   - ``results/extensions/unified_yardstick_20261124/unified_master_summary.json`` (+ ``.sha256``)
   - ``results/extensions/unified_yardstick_20261124/PROVENANCE.md``
 
-By default runs in strict 100%-completion mode (requiring all 17 canonical
-artifacts present, sidecar-verified, and ``r6_experiment_4_2`` ``n_pending_plms == 0``).
-Pass ``--allow-pending`` during development before all parallel tracks land.
+By default runs in strict 100%-completion mode across all 40 canonical artifacts
+(23 core 62/65-model tier + 17 expanded 77/80-model tier: all present, sidecar-verified,
+and complete). Pass ``--allow-pending`` during development before all parallel tracks land.
 """
 
 from __future__ import annotations
