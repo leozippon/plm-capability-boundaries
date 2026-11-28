@@ -90,7 +90,7 @@ def evaluate_multimodal_split_native(
     eval_seed: int = 20261129,
     mask_rate: float | None = None,
     eval_temperature_calibration: bool = False,
-    cal_max_tokens: int = 262_144,
+    cal_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate native AA cross-entropy (bits/res) with Z = Z_true, Z = Z_shuf, or Z = empty."""
     canon_obj = canonicalize_objective(objective)
@@ -125,7 +125,9 @@ def evaluate_multimodal_split_native(
         weights_b: torch.Tensor,
     ) -> None:
         nonlocal cal_tokens_collected
-        if not eval_temperature_calibration or cal_tokens_collected >= int(cal_max_tokens):
+        if not eval_temperature_calibration:
+            return
+        if cal_max_tokens is not None and cal_tokens_collected >= int(cal_max_tokens):
             return
         sel_l = logits_b[mask_b].detach().to(device="cpu", dtype=torch.float16)
         sel_t = targets_b[mask_b].detach().to(device="cpu", dtype=torch.uint8)
@@ -133,10 +135,11 @@ def evaluate_multimodal_split_native(
         n_new = int(sel_t.numel())
         if n_new == 0:
             return
-        rem = int(cal_max_tokens) - cal_tokens_collected
-        if n_new > rem:
-            sel_l, sel_t, sel_w = sel_l[:rem], sel_t[:rem], sel_w[:rem]
-            n_new = rem
+        if cal_max_tokens is not None:
+            rem = int(cal_max_tokens) - cal_tokens_collected
+            if n_new > rem:
+                sel_l, sel_t, sel_w = sel_l[:rem], sel_t[:rem], sel_w[:rem]
+                n_new = rem
         cal_logits_chunks.append(sel_l)
         cal_targets_chunks.append(sel_t)
         cal_weights_chunks.append(sel_w)
@@ -521,10 +524,18 @@ def evaluate_sequence_to_structure_readout(
             valid = pos < lengths.unsqueeze(1)
             struct_absent = torch.zeros((bsz,), dtype=torch.bool, device=device)
 
+            if model.is_causal:
+                prep = prepare_ar_batch(tokens, lengths)
+                inp_ids = prep.input_ids
+                inp_mask = prep.attention_mask
+            else:
+                inp_ids = tokens
+                inp_mask = valid
+
             with autocast_ctx:
                 out = model.forward_multimodal(
-                    tokens,
-                    valid,
+                    inp_ids,
+                    inp_mask,
                     struct_tokens=None,
                     geom_feats=None,
                     cb_coords=None,

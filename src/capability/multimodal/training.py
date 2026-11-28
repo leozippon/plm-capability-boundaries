@@ -238,12 +238,20 @@ def compute_multimodal_batch_loss(
 
 
 def _sync_ddp_grads(raw_model: nn.Module, world_size: int) -> None:
-    """Explicit gradient average across ranks for multi-track forward_multimodal DDP steps."""
+    """Explicit gradient average across ranks for multi-track forward_multimodal DDP steps.
+
+    Every trainable parameter participates in ``all_reduce`` in deterministic order (materializing
+    a zero gradient whenever a rank skipped an optional branch such as structure dropout),
+    preventing NCCL collective mismatches or rank weight divergence.
+    """
     inv_ws = 1.0 / float(world_size)
     for p in raw_model.parameters():
-        if p.grad is not None:
-            dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
-            p.grad.mul_(inv_ws)
+        if not p.requires_grad:
+            continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p.data)
+        dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+        p.grad.mul_(inv_ws)
 
 
 def execute_multimodal_run(

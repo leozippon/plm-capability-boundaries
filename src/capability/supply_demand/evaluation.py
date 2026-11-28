@@ -63,24 +63,28 @@ def compute_temperature_calibrated_bits(
     weights: torch.Tensor | None = None,
     log_tau_bounds: tuple[float, float] = (-4.0, 6.0),
     n_iter: int = 32,
+    chunk_size: int = 262_144,
 ) -> dict[str, float]:
     """Compute raw vs scalar-temperature-calibrated cross-entropy min_{T>0} H(theta, T) in bits/tok.
 
     Implements Eq. (3b):
         H_unseen_fold(theta) = min_{T > 0} H_unseen_fold(theta, T) + Delta_cal(theta).
     Scaling logits z -> alpha * z inflates raw_bits_per_tok while leaving calibrated_bits_per_tok invariant.
+    Evaluates cross-entropy in memory-bounded chunks with float64 accumulation so full
+    unseen-fold token buffers (e.g. 3M+ fp16 logits) calibrate without truncation bias.
     """
     if valid_mask is not None:
         flat_mask = valid_mask.reshape(-1).bool()
-        flat_logits = logits.reshape(-1, logits.shape[-1])[flat_mask].float()
-        flat_targets = targets.reshape(-1)[flat_mask].long()
+        flat_logits = logits.reshape(-1, logits.shape[-1])[flat_mask]
+        flat_targets = targets.reshape(-1)[flat_mask]
         flat_weights = weights.reshape(-1)[flat_mask].float() if weights is not None else None
     else:
-        flat_logits = logits.reshape(-1, logits.shape[-1]).float()
-        flat_targets = targets.reshape(-1).long()
+        flat_logits = logits.reshape(-1, logits.shape[-1])
+        flat_targets = targets.reshape(-1)
         flat_weights = weights.reshape(-1).float() if weights is not None else None
 
-    if flat_targets.numel() == 0:
+    n_total = int(flat_targets.numel())
+    if n_total == 0:
         return {
             "raw_bits_per_tok": float("nan"),
             "calibrated_bits_per_tok": float("nan"),
@@ -89,18 +93,33 @@ def compute_temperature_calibrated_bits(
             "Delta_cal": float("nan"),
         }
 
-    w_sum = float(flat_weights.sum().item()) if flat_weights is not None else float(flat_targets.numel())
+    w_sum = (
+        float(flat_weights.to(dtype=torch.float64).sum().item())
+        if flat_weights is not None
+        else float(n_total)
+    )
     if w_sum <= 0.0:
         flat_weights = None
-        w_sum = float(flat_targets.numel())
+        w_sum = float(n_total)
+
+    step = max(1, int(chunk_size))
 
     def _bits_at_log_tau(log_tau: float) -> float:
         inv_tau = math.exp(-float(log_tau))
-        if flat_weights is None:
-            nll = F.cross_entropy(flat_logits * inv_tau, flat_targets, reduction="mean")
-            return float(nll.item() / LN2)
-        nll_vec = F.cross_entropy(flat_logits * inv_tau, flat_targets, reduction="none")
-        return float(((nll_vec * flat_weights).sum().item() / w_sum) / LN2)
+        total_nll = 0.0
+        for s in range(0, n_total, step):
+            e = min(n_total, s + step)
+            lg = flat_logits[s:e].float() * inv_tau
+            tg = flat_targets[s:e].long()
+            if flat_weights is None:
+                total_nll += float(
+                    F.cross_entropy(lg, tg, reduction="sum").to(dtype=torch.float64).item()
+                )
+            else:
+                nll_vec = F.cross_entropy(lg, tg, reduction="none").to(dtype=torch.float64)
+                w_vec = flat_weights[s:e].to(dtype=torch.float64)
+                total_nll += float((nll_vec * w_vec).sum().item())
+        return float((total_nll / w_sum) / LN2)
 
     raw_bits = _bits_at_log_tau(0.0)
 
@@ -240,7 +259,7 @@ def evaluate_split_native(
     eval_seed: int = 20261129,
     mask_rate: float | None = None,
     eval_temperature_calibration: bool = False,
-    cal_max_tokens: int = 262_144,
+    cal_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate native per-residue cross-entropy (bits/res) on a variable-length split.
 
@@ -284,7 +303,9 @@ def evaluate_split_native(
         per_pos_weights: torch.Tensor,
     ) -> None:
         nonlocal cal_tokens_collected
-        if not eval_temperature_calibration or cal_tokens_collected >= int(cal_max_tokens):
+        if not eval_temperature_calibration:
+            return
+        if cal_max_tokens is not None and cal_tokens_collected >= int(cal_max_tokens):
             return
         sel_logits = batch_logits[batch_mask].detach().to(device="cpu", dtype=torch.float16)
         sel_targets = batch_targets[batch_mask].detach().to(device="cpu", dtype=torch.uint8)
@@ -292,12 +313,13 @@ def evaluate_split_native(
         n_new = int(sel_targets.numel())
         if n_new == 0:
             return
-        rem = int(cal_max_tokens) - cal_tokens_collected
-        if n_new > rem:
-            sel_logits = sel_logits[:rem]
-            sel_targets = sel_targets[:rem]
-            sel_weights = sel_weights[:rem]
-            n_new = rem
+        if cal_max_tokens is not None:
+            rem = int(cal_max_tokens) - cal_tokens_collected
+            if n_new > rem:
+                sel_logits = sel_logits[:rem]
+                sel_targets = sel_targets[:rem]
+                sel_weights = sel_weights[:rem]
+                n_new = rem
         cal_logits_chunks.append(sel_logits)
         cal_targets_chunks.append(sel_targets)
         cal_weights_chunks.append(sel_weights)

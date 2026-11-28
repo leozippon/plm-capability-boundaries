@@ -168,3 +168,47 @@ def test_large_scale_stage2_bundle_cli_command_builder(tmp_path: Path) -> None:
     assert "--target-tokens" in cmd and "50000000" in cmd
     assert "--prejoined-parquet" in cmd
     assert any("uniref50_cath_l50_384.parquet" in tok for tok in cmd)
+
+
+def test_eq3b_chunked_calibration_exactness_and_full_buffer_conservation(tmp_path: Path) -> None:
+    """Regression test for (3): chunked CE exactness and unbiased full-split Eq. (3b) conservation."""
+    from src.capability.supply_demand.evaluation import (
+        compute_temperature_calibrated_bits,
+        evaluate_split_native,
+    )
+
+    torch.manual_seed(42)
+    logits = torch.randn(1024, 20, dtype=torch.float16) * 3.5
+    targets = torch.randint(0, 20, (1024,), dtype=torch.uint8)
+    weights = torch.rand(1024, dtype=torch.float32) + 0.1
+    cal_full = compute_temperature_calibrated_bits(
+        logits, targets, weights=weights, chunk_size=10_000
+    )
+    cal_chunked = compute_temperature_calibrated_bits(
+        logits, targets, weights=weights, chunk_size=37
+    )
+    assert cal_chunked["raw_bits_per_tok"] == pytest.approx(cal_full["raw_bits_per_tok"], abs=1e-12)
+    assert cal_chunked["calibrated_bits_per_tok"] == pytest.approx(
+        cal_full["calibrated_bits_per_tok"], abs=1e-12
+    )
+    assert cal_chunked["Delta_cal"] == pytest.approx(cal_full["Delta_cal"], abs=1e-12)
+
+    # Full-buffer MDM calibration (cal_max_tokens=None) preserves exact Eq. (3b) conservation across all lengths
+    bundle = _make_tiny_bundle(tmp_path / "bundle_cal", n_train=16, seed=55)
+    splits = bundle.load_arm_splits("M4")
+    torch.manual_seed(7)
+    model = VariableLengthProteinTransformer("0.5m", "mdm", max_seq_len=64)
+    with torch.no_grad():
+        model.lm_head.weight.mul_(25.0)
+    res = evaluate_split_native(
+        model,
+        splits["eval_unseen_fold"],
+        objective="mdm",
+        batch_size=4,
+        precision="fp32_strict",
+        n_draws=8,
+        eval_temperature_calibration=True,
+    )
+    tc = res["temperature_calibration"]
+    assert abs(res["bits_per_res"] - tc["raw_bits_per_tok"]) < 1e-3
+    assert abs(res["bits_per_res"] - (tc["calibrated_bits_per_tok"] + tc["Delta_cal"])) < 1e-3

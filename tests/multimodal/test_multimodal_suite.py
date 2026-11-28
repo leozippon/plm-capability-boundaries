@@ -308,3 +308,102 @@ def test_multimodal_all_three_modes_e2e_analysis_and_spot_worker(tmp_path: Path)
     )
     assert "[mm3d-worker] Completed" in proc.stdout
     assert (worker_out / "runs" / "mm3d_pure_seq_ar_0p5m_e1.json").is_file()
+
+
+def test_ddp_sync_materializes_zero_grads_and_ar_readout_bos_alignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for (1) _sync_ddp_grads None-grad safety and (2) AR <BOS>-shifted seq-to-struct readout."""
+    import contextlib
+    from src.capability.multimodal.evaluation import evaluate_sequence_to_structure_readout
+    from src.capability.multimodal.training import _sync_ddp_grads, compute_multimodal_batch_loss
+    from src.capability.supply_demand.objectives import prepare_ar_batch
+
+    bundle = _make_tiny_multimodal_bundle(tmp_path / "mm_reg_bundle")
+    store = bundle.load_splits()["eval_unseen_fold"]
+
+    # (1) _sync_ddp_grads must all_reduce EVERY requires_grad param even when struct_drop_prob=1.0 skips geom/pair branches
+    torch.manual_seed(11)
+    model_joint = MultiTrackProteinTransformer("0.5m", mode="joint_to_seq", objective="mdm", max_seq_len=64)
+    spec_drop = MultimodalRunSpec(
+        run_id="reg_drop_all",
+        mode="joint_to_seq",
+        objective="mdm",
+        scale_id="0.5m",
+        max_epochs=1,
+        struct_drop_prob=1.0,
+        precision="fp32_strict",
+        batch_size=4,
+    )
+    batch = store.collate_indices(np.arange(min(4, store.n_sequences)), pad_to_multiple=8)
+    loss, _ = compute_multimodal_batch_loss(
+        model_joint,
+        batch,
+        run_spec=spec_drop,
+        autocast_ctx=contextlib.nullcontext(),
+        generator=torch.Generator().manual_seed(3),
+    )
+    loss.backward()
+    # Confirm some structure-conditioning branch parameters indeed have grad=None before sync
+    assert any(p.requires_grad and p.grad is None for p in model_joint.parameters())
+
+    seen_shapes: list[tuple[int, ...]] = []
+
+    def _fake_all_reduce(tensor: torch.Tensor, op: object = None) -> None:
+        seen_shapes.append(tuple(tensor.shape))
+        tensor.mul_(2.0)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", _fake_all_reduce)
+    _sync_ddp_grads(model_joint, world_size=2)
+    req_params = [p for p in model_joint.parameters() if p.requires_grad]
+    assert len(seen_shapes) == len(req_params)
+    assert all(p.grad is not None for p in req_params)
+
+    # (2) AR seq-to-struct readout must use <BOS>-shifted prepare_ar_batch input (matching AR training)
+    torch.manual_seed(19)
+    model_ar = MultiTrackProteinTransformer("0.5m", mode="joint_to_seq", objective="ar", max_seq_len=64)
+    model_ar.eval()
+    readout = evaluate_sequence_to_structure_readout(
+        model_ar, store, batch_size=8, precision="fp32_strict"
+    )
+    # Compute exact reference using <BOS>-shifted prepare_ar_batch
+    all_idx = np.arange(store.n_sequences, dtype=np.int64)
+    full_b = store.collate_indices(all_idx, pad_to_multiple=8)
+    prep = prepare_ar_batch(full_b["aa_tokens"], full_b["lengths"])
+    with torch.no_grad():
+        out_bos = model_ar.forward_multimodal(
+            prep.input_ids,
+            prep.attention_mask,
+            struct_tokens=None,
+            geom_feats=None,
+            cb_coords=None,
+            cb_mask=None,
+            struct_present=torch.zeros((store.n_sequences,), dtype=torch.bool),
+            right_padded=True,
+            return_struct_heads=True,
+        )
+        out_unshifted = model_ar.forward_multimodal(
+            full_b["aa_tokens"],
+            prep.attention_mask,
+            struct_tokens=None,
+            geom_feats=None,
+            cb_coords=None,
+            cb_mask=None,
+            struct_present=torch.zeros((store.n_sequences,), dtype=torch.bool),
+            right_padded=True,
+            return_struct_heads=True,
+        )
+    valid = prep.attention_mask
+    s_tgt = torch.where(valid, full_b["struct_tokens"], torch.zeros_like(full_b["struct_tokens"]))
+    ce_bos = torch.nn.functional.cross_entropy(
+        out_bos.struct_3di_logits.float().transpose(1, 2), s_tgt, reduction="none"
+    ) / math.log(2.0)
+    ce_unshifted = torch.nn.functional.cross_entropy(
+        out_unshifted.struct_3di_logits.float().transpose(1, 2), s_tgt, reduction="none"
+    ) / math.log(2.0)
+    ref_bos_bits = float(torch.where(valid, ce_bos, torch.zeros_like(ce_bos)).sum().item() / valid.sum().item())
+    ref_unshifted_bits = float(
+        torch.where(valid, ce_unshifted, torch.zeros_like(ce_unshifted)).sum().item() / valid.sum().item()
+    )
+    assert readout["three_di_xent_bits_per_res"] == pytest.approx(ref_bos_bits, abs=1e-5)
+    assert abs(ref_bos_bits - ref_unshifted_bits) > 1e-4

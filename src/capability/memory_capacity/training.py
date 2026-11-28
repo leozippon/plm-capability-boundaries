@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import math
 import os
 import random
@@ -381,7 +382,11 @@ def setup_distributed(device: torch.device | str | None = None) -> DistributedCo
             raise RuntimeError("Distributed training with WORLD_SIZE > 1 requires CUDA")
         torch.cuda.set_device(local_rank)
         dev = torch.device("cuda", local_rank)
-        dist.init_process_group(backend="nccl", device_id=dev)
+        dist.init_process_group(
+            backend="nccl",
+            device_id=dev,
+            timeout=datetime.timedelta(minutes=60),
+        )
         return DistributedContext(
             rank=rank,
             local_rank=local_rank,
