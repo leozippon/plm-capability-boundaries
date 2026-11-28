@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--family",
         type=str,
         default="auto",
-        choices=["auto", "ar", "mlm", "mdm", "saprot", "proteinmpnn", "dplm2", "esm3"],
+        choices=["auto", "ar", "mlm", "mdm", "saprot", "proteinmpnn", "dplm2", "esm3", "prot_t5"],
         help="Optional explicit model family override (default: auto-detect).",
     )
     p.add_argument(

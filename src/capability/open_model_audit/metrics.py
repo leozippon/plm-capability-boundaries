@@ -298,20 +298,37 @@ def deterministic_loo_positions(
 
 
 def count_model_parameters(model: nn.Module) -> dict[str, int]:
-    """Count total, embedding, and non-embedding parameters (deduplicating tied weights).
+    """Count total, embedding/vocab-head, and non-embedding parameters (deduplicating tied weights).
 
-    Follows the standard Kaplan/Chinchilla/foundational-PLM-theory convention:
-    ``P_non_emb`` excludes lookup embedding tables (``nn.Embedding``) and untied final
-    vocabulary projection heads whose output dim equals a token vocabulary table,
-    while reporting ``P_total``, ``P_emb``, and ``P_non_emb`` transparently.
+    Follows the Kaplan/Chinchilla/foundational-PLM-theory convention:
+    ``P_non_emb`` excludes lookup embedding tables (``nn.Embedding``) and untied 2D
+    vocabulary output projection matrices (``lm_head.weight``, ``embed_out.weight``,
+    ``output_projection.weight``, ``decoder.weight`` inside LM heads, etc.), while
+    deduplicating weight-tied pointers via ``data_ptr()`` and reporting ``P_total``,
+    ``P_emb``, and ``P_non_emb`` transparently.
     """
     seen_ptrs: set[int] = set()
     emb_ptrs: set[int] = set()
+    emb_dims: set[tuple[int, int]] = set()
 
     for mod in model.modules():
         if isinstance(mod, nn.Embedding):
             for p in mod.parameters(recurse=False):
                 emb_ptrs.add(int(p.data_ptr()))
+                if p.ndim == 2:
+                    emb_dims.add((int(p.shape[0]), int(p.shape[1])))
+
+    vocab_head_suffixes = (
+        "lm_head.weight",
+        "lm_head.decoder.weight",
+        "embed_out.weight",
+        "output_projection.weight",
+        "predictions.decoder.weight",
+        "cls.predictions.decoder.weight",
+        ".w_out.weight",
+        "w_out.weight",
+        "sequence_head.weight",
+    )
 
     total = 0
     emb = 0
@@ -323,14 +340,23 @@ def count_model_parameters(model: nn.Module) -> dict[str, int]:
         n = int(p.numel())
         total += n
         low_name = name.lower()
+        is_untied_vocab_head = (
+            p.ndim == 2
+            and (
+                any(low_name == suf or low_name.endswith("." + suf.lstrip(".")) for suf in vocab_head_suffixes)
+                or (low_name.endswith("decoder.weight") and (int(p.shape[0]), int(p.shape[1])) in emb_dims)
+            )
+        )
         is_emb_name = (
             ptr in emb_ptrs
+            or is_untied_vocab_head
             or "embed_tokens" in low_name
             or "word_embeddings" in low_name
             or "position_embeddings" in low_name
             or "wte." in low_name
             or "wpe." in low_name
             or low_name.endswith(".w_s.weight")
+            or low_name == "w_s.weight"
         )
         if is_emb_name:
             emb += n

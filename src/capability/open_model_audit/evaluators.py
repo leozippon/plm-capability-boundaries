@@ -75,10 +75,48 @@ DEFAULT_CAUSAL_MODEL_ROOTS: tuple[Path, ...] = (
     Path("/home/lzp/models/general_plm_20261120"),
     Path("/Data/lzp/models/general_plm_20261120"),
     Path("/Data/public"),
+    Path("/mnt/c20250608_hs/liuzipeng/models"),
     Path("/mnt/c20250608_hs/Ming/model"),
+    Path("/mnt/c20250608_hs/Ming/model/ESM-2"),
+    Path("/mnt/c20250608_hs/Ming/model/DPLM"),
+    Path("/mnt/c20250608_hs/Ming/model/Prot-T5"),
+    Path("/mnt/c20250608_hs/Ming/model/ProtGPT3"),
     Path("/mnt/c20250608/heliang/checkpoint"),
+    Path("/mnt/c20250608/heliang/checkpoint/esm"),
     Path("/mnt/c20250608/shared/checkpoint"),
+    Path("/mnt/c20250608/shared/checkpoint/esm"),
 )
+
+_CUIHU_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "esm2-8m": ("esm2-8m", "esm2_t6_8M_UR50D"),
+    "esm2-35m": ("esm2-35m", "esm2_t12_35M_UR50D"),
+    "esm2-150m": ("esm2-150m", "esm2_t30_150M_UR50D"),
+    "esm2-650m": ("esm2-650m", "esm2_t33_650M_UR50D"),
+    "esm2-3b": ("esm2-3b", "esm2_t36_3B_UR50D"),
+    "esm2-15b": ("esm2-15b", "esm2_t48_15B_UR50D"),
+    "dplm-150m": ("dplm-150m", "dplm_150m"),
+    "dplm-650m": ("dplm-650m", "dplm_650m"),
+    "dplm-3b": ("dplm-3b", "dplm_3b"),
+    "esmc-300m": ("esmc-300m-hf", "ESMC-300M", "ESMC-300M-hf", "esmc-300m"),
+    "esmc-600m": ("esmc-600m-hf", "ESMC-600M", "ESMC-600M-hf", "esmc-600m"),
+    "esmc-6b": ("esmc-6b-hf", "ESMC-6B", "ESMC-6B-hf", "esmc-6b"),
+    "saprot-35m": ("saprot-35m", "SaProt_35M_AF2"),
+    "saprot-650m": ("saprot-650m", "SaProt_650M_AF2"),
+    "saprot-650m-pdb": ("SaProt_650M_PDB", "saprot-650m-pdb"),
+    "saprot-1.3b": ("saprot-1.3b", "SaProt_1.3B_AF2", "SaProt_1.3B_AFDB_OMG_NCBI"),
+    "saprot-1.3b-afdb-omg-ncbi": ("SaProt_1.3B_AFDB_OMG_NCBI",),
+    "protgpt3-112m": ("ProtGPT3-112M", "protgpt3-112m"),
+    "protgpt3-112m-new": ("ProtGPT3-112M_new",),
+    "protgpt3-1.3b": ("ProtGPT3-1.3B", "protgpt3-1.3b"),
+    "protgpt3-10b": ("ProtGPT3-10B", "protgpt3-10b"),
+    "progen3-112m": ("progen3-112m", "ProGen3-112M"),
+    "prot-t5-xl": ("prot_t5_xl_uniref50",),
+    "prot-t5-xxl": ("prot_t5_xxl_uniref50",),
+    "galactica-125m": ("galactica-125m",),
+    "galactica-1.3b": ("galactica-1.3b",),
+    "galactica-6.7b": ("galactica-6.7b",),
+    "galactica-30b": ("galactica-30b",),
+}
 
 _PROGEN2_NAMES: frozenset[str] = frozenset(
     {
@@ -603,7 +641,9 @@ class MaskedLMOpenEvaluator(OpenModelAuditEvaluator):
                         y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
                         ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
                         seq_draw_bits[orig_i].append(float(ce_bits.mean().item()))
-                        cal_buf.add(z20.detach().cpu().numpy(), y_np)
+                        L_seq = float(seq_lens[orig_i])
+                        w_site = np.full(len(pos), L_seq / float(int(n_draws) * len(pos)), dtype=np.float64)
+                        cal_buf.add(z20.detach().cpu().numpy(), y_np, weights=w_site)
 
         final_bits = [float(np.mean(seq_draw_bits[i])) for i in range(len(records))]
         final_lens = [seq_lens[i] for i in range(len(records))]
@@ -727,7 +767,8 @@ class MaskedLMOpenEvaluator(OpenModelAuditEvaluator):
                     y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
                     ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
                     site_bits.extend(ce_bits.detach().cpu().tolist())
-                    cal_buf.add(z20.detach().cpu().numpy(), y_np)
+                    w_chunk = np.full(len(chunk), float(L) / float(len(probes)), dtype=np.float64)
+                    cal_buf.add(z20.detach().cpu().numpy(), y_np, weights=w_chunk)
                 seq_bits.append(float(np.mean(site_bits)))
                 seq_lens.append(int(L))
 
@@ -899,7 +940,8 @@ class ProteinMPNNOpenEvaluator(OpenModelAuditEvaluator):
                 y_loo_t = torch.as_tensor(y_loo_np, dtype=torch.long, device=self.device)
                 ce_loo_bits = F.cross_entropy(z20_loo, y_loo_t, reduction="none").to(torch.float64) / LN2
                 loo_seq_bits.append(float(ce_loo_bits.mean().item()))
-                loo_cal.add(z20_loo.detach().cpu().numpy(), y_loo_np)
+                w_loo = np.full(len(probes), float(L) / float(len(probes)), dtype=np.float64)
+                loo_cal.add(z20_loo.detach().cpu().numpy(), y_loo_np, weights=w_loo)
                 seq_lens.append(L)
 
         za, ya, wa = ar_cal.finalize()
@@ -1110,10 +1152,8 @@ class SaProtOpenEvaluator(OpenModelAuditEvaluator):
                                 stratum_weighted_sum[step] += h_val * float(L)
                                 stratum_res_sum[step] += float(L)
                                 stratum_mask_frac_sum[step] += (float(len(pos)) / float(L)) * float(L)
-                                w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
-                                cal_buf.add(z_rows.detach().cpu().numpy(), y_np, weights=w_site)
-                            else:
-                                cal_buf.add(z_rows.detach().cpu().numpy(), y_np)
+                            w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
+                            cal_buf.add(z_rows.detach().cpu().numpy(), y_np, weights=w_site)
 
             final_bits = [float(np.mean(v)) for v in seq_step_bits]
             z, y, w = cal_buf.finalize()
@@ -1165,7 +1205,8 @@ class SaProtOpenEvaluator(OpenModelAuditEvaluator):
                     y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
                     ce_bits = F.cross_entropy(z_rows, y_t, reduction="none").to(torch.float64) / LN2
                     site_bits.extend(ce_bits.detach().cpu().tolist())
-                    loo_cal.add(z_rows.detach().cpu().numpy(), y_np)
+                    w_chunk = np.full(len(chunk), float(L) / float(len(probes)), dtype=np.float64)
+                    loo_cal.add(z_rows.detach().cpu().numpy(), y_np, weights=w_chunk)
                 loo_bits.append(float(np.mean(site_bits)))
 
         zl, yl, wl = loo_cal.finalize()
@@ -1340,17 +1381,30 @@ class DPLM2OpenEvaluator(OpenModelAuditEvaluator):
         eval_seed: int,
         max_calibration_positions: int = 65_536,
     ) -> dict[str, dict[str, Any]]:
-        from src.capability.unified.dplm2_adapter import AA_MASK_ID, DPLM2_AA20_IDS
+        from src.capability.unified.dplm2_adapter import (
+            AA_MASK_ID,
+            DPLM2_AA20_IDS,
+            _encode_aa_to_ids,
+        )
 
         aa20_t = torch.as_tensor(DPLM2_AA20_IDS, dtype=torch.long, device=self.device)
-        encoded = [adapter._build_input_pair(s, coords=c) for s, c in zip(seqs, coords_list)]
+        prepared: list[tuple[torch.Tensor, int, bool]] = []
+        for s, c in zip(seqs, coords_list):
+            aa_ids = _encode_aa_to_ids(s)
+            s_ids, single_mod = adapter._resolve_struct_ids(len(s), coords=c)
+            base_paired, half = adapter._build_paired_ids([aa_ids], [s_ids])
+            prepared.append((base_paired, half, bool(single_mod)))
         seq_lens = [len(s) for s in seqs]
 
         def _run_mask_mode(mode: str, n_steps: int) -> dict[str, Any]:
             seq_bits: list[list[float]] = [[] for _ in range(len(seqs))]
             cal = _CalibrationBuffer(max_positions=max_calibration_positions, seed=eval_seed + 3)
+            stratum_weighted_sum = np.zeros(n_steps, dtype=np.float64)
+            stratum_res_sum = np.zeros(n_steps, dtype=np.float64)
+            stratum_mask_frac_sum = np.zeros(n_steps, dtype=np.float64)
+
             with _precision_ctx(self.device, self.dtype):
-                for seq_i, (seq, (ids_1d, type_1d, aa_offset)) in enumerate(zip(seqs, encoded)):
+                for seq_i, (seq, (base_paired, half, single_mod)) in enumerate(zip(seqs, prepared)):
                     L = len(seq)
                     for step in range(n_steps):
                         if mode == "mlm_15":
@@ -1362,25 +1416,37 @@ class DPLM2OpenEvaluator(OpenModelAuditEvaluator):
                                 seq_i, L, stratum=step, n_strata=n_steps, eval_seed=eval_seed
                             )
                         pos = np.flatnonzero(m)
-                        inp = ids_1d.clone().unsqueeze(0)
-                        inp[0, aa_offset + torch.as_tensor(pos, dtype=torch.long, device=self.device)] = AA_MASK_ID
-                        logits = adapter._forward_logits(inp, type_1d.unsqueeze(0))[0]
-                        tok_idx = torch.as_tensor(aa_offset + pos, dtype=torch.long, device=self.device)
-                        z20 = aa20_restricted_logits(logits.index_select(0, tok_idx), aa20_t)
+                        pos_t = torch.as_tensor(pos, dtype=torch.long, device=self.device)
+                        inp = base_paired.clone()
+                        inp[0, half + 1 + pos_t] = AA_MASK_ID
+                        net_out = adapter._forward_paired(inp, single_modality=single_mod)
+                        aa_logits = adapter._extract_aa_logits(net_out, half)[0].float()
+                        z20 = aa20_restricted_logits(aa_logits.index_select(0, 1 + pos_t), aa20_t)
                         y_np = np.asarray([AA20_INDEX[seq[int(p)]] for p in pos], dtype=np.int64)
                         y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
                         ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
-                        seq_bits[seq_i].append(float(ce_bits.mean().item()))
-                        w_site = (
-                            np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
-                            if mode == "mdm_16"
-                            else None
-                        )
+                        h_val = float(ce_bits.mean().item())
+                        seq_bits[seq_i].append(h_val)
+                        if mode == "mdm_16":
+                            stratum_weighted_sum[step] += h_val * float(L)
+                            stratum_res_sum[step] += float(L)
+                            stratum_mask_frac_sum[step] += (float(len(pos)) / float(L)) * float(L)
+                        w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
                         cal.add(z20.detach().cpu().numpy(), y_np, weights=w_site)
             z, y, w = cal.finalize()
-            return _summarize_seq_bits(
+            res = _summarize_seq_bits(
                 [float(np.mean(v)) for v in seq_bits], seq_lens, logits_20=z, targets_20=y, weights=w
             )
+            if mode == "mdm_16":
+                res["stratum_curve"] = [
+                    {
+                        "stratum": int(s),
+                        "mean_mask_frac": float(stratum_mask_frac_sum[s] / max(stratum_res_sum[s], 1.0)),
+                        "bits_per_res": float(stratum_weighted_sum[s] / max(stratum_res_sum[s], 1.0)),
+                    }
+                    for s in range(n_steps)
+                ]
+            return res
 
         loo_bits: list[float] = []
         loo_cal = _CalibrationBuffer(max_positions=max_calibration_positions, seed=eval_seed + 9)
@@ -1392,7 +1458,8 @@ class DPLM2OpenEvaluator(OpenModelAuditEvaluator):
                 y_np = np.asarray([AA20_INDEX[seq[int(p)]] for p in probes], dtype=np.int64)
                 ce_bits = -lp[np.arange(len(probes)), y_np] / LN2
                 loo_bits.append(float(np.mean(ce_bits)))
-                loo_cal.add(lp, y_np)
+                w_loo = np.full(len(probes), float(L) / float(len(probes)), dtype=np.float64)
+                loo_cal.add(lp, y_np, weights=w_loo)
         zl, yl, wl = loo_cal.finalize()
         return {
             "mlm_15": _run_mask_mode("mlm_15", int(n_mlm15_draws)),
@@ -1574,11 +1641,7 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
                     y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
                     ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
                     seq_bits[seq_i].append(float(ce_bits.mean().item()))
-                    w_site = (
-                        np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
-                        if mode == "mdm_16"
-                        else None
-                    )
+                    w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
                     cal.add(z20.detach().cpu().numpy(), y_np, weights=w_site)
             z, y, w = cal.finalize()
             return _summarize_seq_bits([float(np.mean(v)) for v in seq_bits], seq_lens, logits_20=z, targets_20=y, weights=w)
@@ -1653,7 +1716,124 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Unified Model Loader Factory
+# 4E. Prot-T5 Encoder-Decoder Sentinel LOO Evaluator
+# --------------------------------------------------------------------------- #
+
+
+def _validate_aa20_ids(aa20_ids: Sequence[int | None], unk_id: int | None, label: str) -> list[int]:
+    """Fail fast if any canonical AA20 residue lacks a distinct valid token ID."""
+    resolved: list[int] = []
+    for aa, tid in zip(AA20, aa20_ids):
+        if tid is None or int(tid) < 0 or (unk_id is not None and int(tid) == int(unk_id)):
+            raise ValueError(f"{label}: tokenizer lacks valid dedicated token ID for AA {aa!r} (got {tid!r}, unk={unk_id!r})")
+        resolved.append(int(tid))
+    if len(set(resolved)) != 20:
+        raise ValueError(f"{label}: duplicate token IDs across AA20 residues: {resolved}")
+    return resolved
+
+
+class ProtT5OpenEvaluator(OpenModelAuditEvaluator):
+    """Single-site sentinel ``<extra_id_0>`` LOO evaluator for ``T5ForConditionalGeneration`` (Prot-T5)."""
+
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        model: nn.Module,
+        tokenizer: Any,
+        aa20_ids: Sequence[int],
+        sentinel_id: int,
+        decoder_start_id: int,
+        max_residues: int = 1022,
+        device: str = "cpu",
+        dtype: str = "float32",
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        pcounts = count_model_parameters(model)
+        super().__init__(
+            model_id=model_id,
+            family_kind="mlm",
+            primary_readout="loo",
+            n_params_total=pcounts["n_params_total"],
+            n_params_emb=pcounts["n_params_emb"],
+            n_params_non_emb=pcounts["n_params_non_emb"],
+            device=device,
+            dtype=dtype,
+            supports_sequence_splits=True,
+            supports_3d_panel=False,
+            supports_3d_ablation=False,
+            extra_metadata={"architecture": "t5_seq2seq_sentinel_loo", **(dict(extra_metadata) if extra_metadata else {})},
+        )
+        self.model = model
+        self.tokenizer = tokenizer
+        self.aa20_ids = [int(x) for x in aa20_ids]
+        self.aa20_ids_t = torch.as_tensor(self.aa20_ids, dtype=torch.long, device=self.device)
+        self.aa_to_id = {aa: tid for aa, tid in zip(AA20, self.aa20_ids)}
+        self.sentinel_id = int(sentinel_id)
+        self.decoder_start_id = int(decoder_start_id)
+        self.eos_id = getattr(tokenizer, "eos_token_id", None)
+        self.max_residues = int(max_residues)
+
+    @torch.no_grad()
+    def evaluate_sequence_split(
+        self,
+        records: Sequence[AuditSequenceRecord],
+        *,
+        batch_size: int = 16,
+        n_mlm15_draws: int = DEFAULT_MLM15_DRAWS,
+        n_loo_probes: int = DEFAULT_LOO_PROBES,
+        n_mdm_strata: int = DEFAULT_MDM_STRATA,
+        eval_seed: int = 20261129,
+        max_calibration_positions: int = 65_536,
+    ) -> dict[str, dict[str, Any]]:
+        del n_mlm15_draws, n_mdm_strata
+        seq_bits: list[float] = []
+        seq_lens: list[int] = []
+        cal_buf = _CalibrationBuffer(max_positions=max_calibration_positions, seed=eval_seed + 61)
+        bs = max(1, int(batch_size))
+
+        with _precision_ctx(self.device, self.dtype):
+            for orig_i, rec in enumerate(records):
+                seq = rec.sequence[: self.max_residues]
+                L = len(seq)
+                base_ids = [self.aa_to_id[aa] for aa in seq]
+                if self.eos_id is not None:
+                    base_ids.append(int(self.eos_id))
+                row = torch.as_tensor(base_ids, dtype=torch.long, device=self.device)
+                probes = deterministic_loo_positions(orig_i, L, n_probes=n_loo_probes, eval_seed=eval_seed + 200)
+                site_bits: list[float] = []
+                for start in range(0, len(probes), bs):
+                    chunk = probes[start : start + bs]
+                    b_inp = row.unsqueeze(0).repeat(len(chunk), 1)
+                    for r_i, p in enumerate(chunk):
+                        b_inp[r_i, int(p)] = self.sentinel_id
+                    b_attn = torch.ones_like(b_inp)
+                    dec_inp = torch.tensor(
+                        [[self.decoder_start_id, self.sentinel_id]] * len(chunk),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    out = self.model(input_ids=b_inp, attention_mask=b_attn, decoder_input_ids=dec_inp)
+                    # Decoder step 1 (conditioned on [decoder_start_id, <extra_id_0>]) predicts the masked AA
+                    step_logits = out.logits[:, 1, :].float()
+                    z20 = aa20_restricted_logits(step_logits, self.aa20_ids_t)
+                    y_np = np.asarray([AA20_INDEX[seq[int(p)]] for p in chunk], dtype=np.int64)
+                    y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
+                    ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
+                    site_bits.extend(ce_bits.detach().cpu().tolist())
+                    w_chunk = np.full(len(chunk), float(L) / float(len(probes)), dtype=np.float64)
+                    cal_buf.add(z20.detach().cpu().numpy(), y_np, weights=w_chunk)
+                seq_bits.append(float(np.mean(site_bits)))
+                seq_lens.append(L)
+
+        z, y, w = cal_buf.finalize()
+        summary = _summarize_seq_bits(seq_bits, seq_lens, logits_20=z, targets_20=y, weights=w)
+        summary["n_probes_per_seq"] = int(n_loo_probes)
+        return {"loo": summary}
+
+
+# --------------------------------------------------------------------------- #
+# 5. Unified Model Loader Factory (Handles Short Names & Direct Cuihu Paths)
 # --------------------------------------------------------------------------- #
 
 
@@ -1669,16 +1849,150 @@ def _resolve_local_dir(name_or_path: str, model_root: Path | str | None = None) 
         if v:
             roots.append(Path(v).expanduser())
     roots.extend(DEFAULT_CAUSAL_MODEL_ROOTS)
+
+    candidates = [name_or_path]
+    alias_hits = _CUIHU_MODEL_ALIASES.get(name_or_path.lower())
+    if alias_hits:
+        candidates.extend(alias_hits)
+
     for root in roots:
-        cand = root / name_or_path
-        if cand.is_dir():
-            return cand.resolve()
-    raise FileNotFoundError(f"Could not locate local checkpoint directory for {name_or_path!r}")
+        for cand_name in candidates:
+            cand = root / cand_name
+            if cand.is_dir():
+                return cand.resolve()
+    raise FileNotFoundError(
+        f"Could not locate local checkpoint directory for {name_or_path!r} "
+        f"(checked aliases={candidates} across {len(roots)} roots)"
+    )
+
+
+def _read_config_json(ckpt_dir: Path) -> dict[str, Any]:
+    cfg_p = ckpt_dir / "config.json"
+    if cfg_p.is_file():
+        try:
+            return json.loads(cfg_p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _detect_family_from_dir(ckpt_dir: Path, model_spec: str) -> str:
+    """Infer exact loader route from directory name, files, and ``config.json``."""
+    low = f"{model_spec} {ckpt_dir.name}".lower()
+    cfg = _read_config_json(ckpt_dir)
+    mtype = str(cfg.get("model_type", "")).lower()
+    archs = " ".join(str(a).lower() for a in (cfg.get("architectures") or ()))
+
+    if (ckpt_dir / "weight/vanilla_model_weights").is_dir() or "proteinmpnn" in low:
+        return "proteinmpnn"
+    if "dplm2" in low or "dplm_2" in low or int(cfg.get("vocab_size", 0)) >= 8000 and "esm" in mtype:
+        return "dplm2"
+    if "saprot" in low or (mtype == "esm" and int(cfg.get("vocab_size", 0)) in (441, 446)):
+        return "saprot"
+    if "esm3" in low:
+        return "esm3"
+    if "esmc" in low or mtype == "esmc":
+        return "esmc_hf"
+    if "amplify" in low or mtype == "amplify":
+        return "amplify_mlm"
+    if "proteinglm" in low and ("mlm" in low or "maskedlm" in archs):
+        return "proteinglm_mlm"
+    if "dplm" in low:
+        return "dplm_mdm"
+    if "progen3" in low or mtype == "progen3":
+        return "progen3_causal"
+    if "protgpt3" in low:
+        return "protgpt3_causal"
+    if "dayhoff" in low or mtype == "jamba":
+        return "dayhoff_causal"
+    if "galactica" in low:
+        return "galactica_causal"
+    if "prot_t5" in low or "prot-t5" in low or mtype == "t5" or "t5for" in archs or "t5encoder" in archs:
+        return "prot_t5"
+    if (
+        "progen2" in low
+        or mtype == "progen"
+        or "rita" in low
+        or "causallm" in archs
+        or mtype in ("opt", "gpt2", "llama", "mixtral", "mistral", "qwen2")
+    ):
+        return "causal_ar"
+    if "esm" in low or mtype == "esm" or "maskedlm" in archs:
+        return "esm_mlm"
+    return "generic_mlm"
+
+
+def _wrap_general_plm_adapter(
+    ad: Any,
+    *,
+    model_id: str,
+    family_override: str,
+    dtype_name: str,
+    device: str,
+) -> OpenModelAuditEvaluator:
+    spec = ad.spec
+    if spec.family == "saprot" or family_override == "saprot":
+        return SaProtOpenEvaluator(ad)
+    if spec.is_causal:
+        if spec.family == "progen3":
+            def _pg3_fwd(inp: torch.Tensor) -> torch.Tensor:
+                pos_ids = torch.arange(inp.shape[1], dtype=torch.long, device=inp.device).unsqueeze(0)
+                seq_ids = torch.zeros_like(inp)
+                return ad.handle.model(input_ids=inp, position_ids=pos_ids, sequence_ids=seq_ids, use_cache=False).logits
+
+            sample_prefix = ad.handle.batch(["A"], reverse=False)["input_ids"][0].tolist()[:2]
+            return CausalAROpenEvaluator(
+                model_id=model_id,
+                model=ad.model,
+                aa20_ids=[ad.aa_to_id[aa] for aa in AA20],
+                bos_prefix_ids=sample_prefix,
+                max_positions=spec.max_residues,
+                device=device,
+                dtype=ad.dtype,
+                forward_fn=_pg3_fwd,
+                extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir)},
+            )
+        return CausalAROpenEvaluator(
+            model_id=model_id,
+            model=ad.model,
+            aa20_ids=ad.aa20_ids,
+            bos_prefix_ids=ad.bos_prefix_ids,
+            eos_suffix_ids=ad.eos_suffix_ids,
+            max_positions=spec.max_residues,
+            device=device,
+            dtype=ad.dtype,
+            forward_fn=ad._forward_ids,
+            extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir)},
+        )
+
+    pad_id = getattr(ad.tokenizer, "pad_token_id", None)
+    if pad_id is None:
+        pad_id = 1
+    probe_ids, probe_off = ad._encode_sequence("ACDE")
+    eff_cls = probe_ids[0] if probe_off == 1 else None
+    eff_eos = probe_ids[-1] if len(probe_ids) > probe_off + 4 else None
+    cls_cls = MDMOpenEvaluator if (spec.paradigm == "discrete_diffusion" or family_override == "mdm") else MaskedLMOpenEvaluator
+    return cls_cls(
+        model_id=model_id,
+        model=ad.model,
+        aa20_ids=ad.aa20_ids,
+        mask_id=ad.mask_id,
+        pad_id=int(pad_id),
+        cls_id=eff_cls,
+        eos_id=eff_eos,
+        max_residues=spec.max_residues,
+        device=device,
+        dtype=dtype_name,
+        additive_attention_mask=ad.additive_attention_mask,
+        forward_fn=ad._forward_logits,
+        extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir), "paradigm": spec.paradigm},
+    )
 
 
 def _resolve_progen2_or_hf_causal(
     model_spec: str,
     *,
+    ckpt_dir: Path | None = None,
     device: str,
     dtype: str,
     model_root: Path | str | None = None,
@@ -1686,10 +2000,10 @@ def _resolve_progen2_or_hf_causal(
 ) -> CausalAROpenEvaluator:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    ckpt_dir = _resolve_local_dir(model_spec, model_root=model_root)
+    resolved_dir = ckpt_dir if ckpt_dir is not None else _resolve_local_dir(model_spec, model_root=model_root)
     dtype_name, torch_dt = _resolve_torch_dtype(dtype)
     model = AutoModelForCausalLM.from_pretrained(
-        str(ckpt_dir),
+        str(resolved_dir),
         local_files_only=True,
         trust_remote_code=True,
         torch_dtype=torch_dt,
@@ -1697,17 +2011,17 @@ def _resolve_progen2_or_hf_causal(
     model.requires_grad_(False)
 
     # Support ProGen2 raw tokenizers.Tokenizer JSON without tokenizer_config.json
-    tok_json = ckpt_dir / "tokenizer.json"
+    tok_json = resolved_dir / "tokenizer.json"
     is_progen2 = (
-        ckpt_dir.name.lower() in _PROGEN2_NAMES
+        resolved_dir.name.lower() in _PROGEN2_NAMES
         or "progen2" in model_spec.lower()
         or getattr(getattr(model, "config", None), "model_type", "") == "progen"
     )
-    if is_progen2 and tok_json.is_file() and not (ckpt_dir / "tokenizer_config.json").is_file():
+    if is_progen2 and tok_json.is_file() and not (resolved_dir / "tokenizer_config.json").is_file():
         from tokenizers import Tokenizer
 
         tok = Tokenizer.from_file(str(tok_json))
-        aa20_ids = [int(tok.token_to_id(aa)) for aa in AA20]
+        aa20_ids = _validate_aa20_ids([tok.token_to_id(aa) for aa in AA20], None, model_spec)
         id_1 = int(tok.token_to_id("1"))
         id_2 = int(tok.token_to_id("2"))
         return CausalAROpenEvaluator(
@@ -1722,23 +2036,46 @@ def _resolve_progen2_or_hf_causal(
             max_positions=int(getattr(model.config, "n_positions", 1024)),
             device=device,
             dtype=dtype_name,
-            extra_metadata={"checkpoint_dir": str(ckpt_dir), "tokenizer_kind": "progen2_tokenizers_json"},
+            extra_metadata={"checkpoint_dir": str(resolved_dir), "tokenizer_kind": "progen2_tokenizers_json"},
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
-    aa20_ids = []
+    tokenizer = AutoTokenizer.from_pretrained(str(resolved_dir), local_files_only=True, trust_remote_code=True)
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    raw_aa_ids: list[int | None] = []
     for aa in AA20:
         tid = tokenizer.convert_tokens_to_ids(aa)
-        if tid is None or (tokenizer.unk_token_id is not None and int(tid) == int(tokenizer.unk_token_id)):
+        if tid is None or (unk_id is not None and int(tid) == int(unk_id)):
             enc = tokenizer.encode(aa, add_special_tokens=False)
-            tid = int(enc[-1]) if enc else 0
-        aa20_ids.append(int(tid))
+            tid = int(enc[-1]) if len(enc) == 1 else None
+        raw_aa_ids.append(tid)
+    aa20_ids = _validate_aa20_ids(raw_aa_ids, unk_id, model_spec)
+
+    # Detect Galactica protein mode ([START_AMINO]...[END_AMINO])
+    start_amino_id = tokenizer.convert_tokens_to_ids("[START_AMINO]")
+    end_amino_id = tokenizer.convert_tokens_to_ids("[END_AMINO]")
+    has_amino_tags = (
+        start_amino_id is not None
+        and end_amino_id is not None
+        and (unk_id is None or (int(start_amino_id) != int(unk_id) and int(end_amino_id) != int(unk_id)))
+    )
+    is_galactica = "galactica" in f"{model_spec} {resolved_dir.name}".lower() or has_amino_tags
 
     bos_prefix: list[int] = []
     eos_suffix: list[int] = []
     rev_bos: list[int] | None = None
     rev_eos: list[int] = []
-    if is_progen2:
+    extra_meta: dict[str, Any] = {"checkpoint_dir": str(resolved_dir), "model_class": type(model).__name__}
+
+    if is_galactica:
+        if not has_amino_tags:
+            raise ValueError(
+                f"{model_spec}: Galactica checkpoint missing required [START_AMINO] / [END_AMINO] tokens "
+                f"(got start={start_amino_id!r}, end={end_amino_id!r})"
+            )
+        bos_prefix = [int(start_amino_id)]
+        eos_suffix = [int(end_amino_id)]
+        extra_meta["packing"] = "galactica_start_end_amino"
+    elif is_progen2:
         t1 = tokenizer.convert_tokens_to_ids("1")
         t2 = tokenizer.convert_tokens_to_ids("2")
         if t1 is not None:
@@ -1768,7 +2105,66 @@ def _resolve_progen2_or_hf_causal(
         max_positions=max_pos,
         device=device,
         dtype=dtype_name,
-        extra_metadata={"checkpoint_dir": str(ckpt_dir), "model_class": type(model).__name__},
+        extra_metadata=extra_meta,
+    )
+
+
+def _load_prot_t5(
+    model_spec: str,
+    ckpt_dir: Path,
+    *,
+    device: str,
+    dtype: str,
+) -> ProtT5OpenEvaluator:
+    from transformers import AutoTokenizer, T5ForConditionalGeneration
+
+    cfg = _read_config_json(ckpt_dir)
+    archs = [str(a) for a in (cfg.get("architectures") or ())]
+    if any("EncoderModel" in a for a in archs) and not any("ConditionalGeneration" in a for a in archs):
+        raise RuntimeError(
+            f"{model_spec}: checkpoint at {ckpt_dir} is encoder-only ({archs}) with no T5 LM head/decoder; "
+            "ProtT5OpenEvaluator requires T5ForConditionalGeneration weights."
+        )
+    dtype_name, torch_dt = _resolve_torch_dtype(dtype)
+    tokenizer = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, legacy=False)
+    model, info = T5ForConditionalGeneration.from_pretrained(
+        str(ckpt_dir),
+        local_files_only=True,
+        output_loading_info=True,
+        torch_dtype=torch_dt,
+    )
+    missing_dec = [k for k in info.get("missing_keys", ()) if "decoder" in k or "lm_head" in k]
+    if missing_dec:
+        raise RuntimeError(
+            f"{model_spec}: Prot-T5 checkpoint at {ckpt_dir} is missing decoder/lm_head weights "
+            f"(e.g. {missing_dec[:5]}); encoder-only checkpoints cannot be evaluated for AA20 cross-entropy."
+        )
+    model = model.eval().to(device)
+    model.requires_grad_(False)
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    raw_ids: list[int | None] = []
+    for aa in AA20:
+        tid = tokenizer.convert_tokens_to_ids(f"\u2581{aa}")
+        if tid is None or (unk_id is not None and int(tid) == int(unk_id)):
+            tid = tokenizer.convert_tokens_to_ids(aa)
+        raw_ids.append(tid)
+    aa20_ids = _validate_aa20_ids(raw_ids, unk_id, model_spec)
+    sentinel_id = tokenizer.convert_tokens_to_ids("<extra_id_0>")
+    if sentinel_id is None or (unk_id is not None and int(sentinel_id) == int(unk_id)):
+        raise ValueError(f"{model_spec}: Prot-T5 tokenizer missing <extra_id_0> sentinel token")
+    dec_start = getattr(model.config, "decoder_start_token_id", None)
+    if dec_start is None:
+        dec_start = getattr(tokenizer, "pad_token_id", 0) or 0
+    return ProtT5OpenEvaluator(
+        model_id=model_spec,
+        model=model,
+        tokenizer=tokenizer,
+        aa20_ids=aa20_ids,
+        sentinel_id=int(sentinel_id),
+        decoder_start_id=int(dec_start),
+        device=device,
+        dtype=dtype_name,
+        extra_metadata={"checkpoint_dir": str(ckpt_dir)},
     )
 
 
@@ -1781,26 +2177,36 @@ def load_open_audit_evaluator(
     model_root: Path | str | None = None,
     progen2_bidirectional: bool = False,
 ) -> OpenModelAuditEvaluator:
-    """Load any supported open-source PLM checkpoint into a unified audit evaluator."""
+    """Load any supported open-source PLM checkpoint (short name or direct Cuihu/local path)."""
     eff_dev = _resolve_device(device)
     dtype_name, torch_dt = _resolve_torch_dtype(dtype)
     fam = (family or "auto").strip().lower()
 
-    # 1. ProteinMPNN arms
+    # 1. Exact registered ProteinMPNN arms
     from src.capability.unified.proteinmpnn_adapter import PROTEINMPNN_SPECS, load_proteinmpnn_adapter
 
     if fam == "proteinmpnn" or model_spec in PROTEINMPNN_SPECS:
-        adapter = load_proteinmpnn_adapter(model_spec, model_root=model_root, device=eff_dev, dtype=dtype_name)
+        arm_name = model_spec if model_spec in PROTEINMPNN_SPECS else "proteinmpnn-v-020"
+        eff_root = model_spec if Path(model_spec).is_dir() else model_root
+        adapter = load_proteinmpnn_adapter(arm_name, model_root=eff_root, device=eff_dev, dtype=dtype_name)
         return ProteinMPNNOpenEvaluator(adapter)
 
-    # 2. DPLM-2 multi-track arms
+    # 2. Exact registered DPLM-2 arms
     from src.capability.unified.dplm2_adapter import DPLM2_SPECS, load_dplm2_adapter
 
     if fam == "dplm2" or model_spec in DPLM2_SPECS:
-        ad_seq = load_dplm2_adapter(model_spec, mode="seq_only", model_root=model_root, device=eff_dev, dtype=dtype_name)
+        if model_spec in DPLM2_SPECS:
+            dplm2_arm = model_spec
+            dplm2_root = model_root
+        else:
+            p_dir = _resolve_local_dir(model_spec, model_root=model_root)
+            low_n = p_dir.name.lower().replace("_", "-")
+            dplm2_arm = next((k for k in DPLM2_SPECS if k in low_n), "dplm2-150m")
+            dplm2_root = p_dir.parent
+        ad_seq = load_dplm2_adapter(dplm2_arm, mode="seq_only", model_root=dplm2_root, device=eff_dev, dtype=dtype_name)
         try:
             ad_struct = load_dplm2_adapter(
-                model_spec, mode="struct_conditioned", model_root=model_root, device=eff_dev, dtype=dtype_name
+                dplm2_arm, mode="struct_conditioned", model_root=dplm2_root, device=eff_dev, dtype=dtype_name
             )
         except Exception:
             ad_struct = None
@@ -1817,99 +2223,161 @@ def load_open_audit_evaluator(
         esm3_model = ESM3.from_pretrained(model_spec, device=torch.device(eff_dev)).eval()
         return ESM3OpenEvaluator(esm3_model, model_id=model_spec, device=eff_dev)
 
-    # 3. General-PLM registry arms (ESM-2, DPLM, SaProt, AMPLIFY, ESMC, ProteinGLM, ProtGPT3, ProGen3, Dayhoff)
-    from src.capability.general_plm.adapters import load_general_plm
-    from src.capability.general_plm.registry import GENERAL_PLM_REGISTRY
+    # 3. Exact registered General-PLM registry arms (with Cuihu search roots included)
+    from src.capability.general_plm.adapters import (
+        ProGen3CausalAdapter,
+        _load_amplify_mlm,
+        _load_dayhoff_causal,
+        _load_esm_mlm,
+        _load_esmc_hf,
+        _load_proteinglm_mlm,
+        _load_protgpt3_causal,
+        _load_saprot_mlm,
+        load_general_plm,
+    )
+    from src.capability.general_plm.registry import GENERAL_PLM_REGISTRY, GeneralPLMSpec
 
     if model_spec in GENERAL_PLM_REGISTRY:
         spec = GENERAL_PLM_REGISTRY[model_spec]
-        if spec.family == "saprot" or fam == "saprot":
+        eff_dt = "bfloat16" if spec.family == "progen3" else dtype_name
+        try:
             ad = load_general_plm(
-                model_spec, device=eff_dev, dtype=dtype_name, model_root=model_root, saprot_mode="foldseek_3di"
-            )
-            return SaProtOpenEvaluator(ad)
-        if spec.is_causal:
-            eff_dt = "bfloat16" if spec.family == "progen3" else dtype_name
-            ad = load_general_plm(model_spec, device=eff_dev, dtype=eff_dt, model_root=model_root)
-            if spec.family == "progen3":
-                # ProGen3 uses custom forward signature (position_ids, sequence_ids)
-                def _pg3_fwd(inp: torch.Tensor) -> torch.Tensor:
-                    pos_ids = torch.arange(inp.shape[1], dtype=torch.long, device=inp.device).unsqueeze(0)
-                    seq_ids = torch.zeros_like(inp)
-                    return ad.handle.model(input_ids=inp, position_ids=pos_ids, sequence_ids=seq_ids, use_cache=False).logits
-
-                sample_prefix = ad.handle.batch(["A"], reverse=False)["input_ids"][0].tolist()[:2]
-                return CausalAROpenEvaluator(
-                    model_id=model_spec,
-                    model=ad.model,
-                    aa20_ids=[ad.aa_to_id[aa] for aa in AA20],
-                    bos_prefix_ids=sample_prefix,
-                    max_positions=spec.max_residues,
-                    device=eff_dev,
-                    dtype=eff_dt,
-                    forward_fn=_pg3_fwd,
-                    extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir)},
-                )
-            return CausalAROpenEvaluator(
-                model_id=model_spec,
-                model=ad.model,
-                aa20_ids=ad.aa20_ids,
-                bos_prefix_ids=ad.bos_prefix_ids,
-                eos_suffix_ids=ad.eos_suffix_ids,
-                max_positions=spec.max_residues,
+                model_spec,
                 device=eff_dev,
                 dtype=eff_dt,
-                forward_fn=ad._forward_ids,
-                extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir)},
+                model_root=model_root,
+                saprot_mode="foldseek_3di",
             )
-        # Masked LM or Discrete Diffusion (ESM-2, DPLM, AMPLIFY, ESMC, ProteinGLM-MLM, Prime)
-        ad = load_general_plm(model_spec, device=eff_dev, dtype=dtype_name, model_root=model_root)
-        cls_id = getattr(ad.tokenizer, "cls_token_id", None)
-        eos_id = getattr(ad.tokenizer, "eos_token_id", None)
-        pad_id = getattr(ad.tokenizer, "pad_token_id", None)
-        if pad_id is None:
-            pad_id = 1
-        # Verify exact CLS/EOS framing from adapter's own _encode_sequence on "ACDE"
-        probe_ids, probe_off = ad._encode_sequence("ACDE")
-        eff_cls = probe_ids[0] if probe_off == 1 else None
-        eff_eos = probe_ids[-1] if len(probe_ids) > probe_off + 4 else None
-        cls_cls = MDMOpenEvaluator if (spec.paradigm == "discrete_diffusion" or fam == "mdm") else MaskedLMOpenEvaluator
-        return cls_cls(
-            model_id=model_spec,
-            model=ad.model,
-            aa20_ids=ad.aa20_ids,
-            mask_id=ad.mask_id,
-            pad_id=int(pad_id),
-            cls_id=eff_cls,
-            eos_id=eff_eos,
-            max_residues=spec.max_residues,
-            device=eff_dev,
-            dtype=dtype_name,
-            additive_attention_mask=ad.additive_attention_mask,
-            forward_fn=ad._forward_logits,
-            extra_metadata={"checkpoint_dir": str(ad.checkpoint_dir), "paradigm": spec.paradigm},
-        )
+            return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=eff_dt, device=eff_dev)
+        except FileNotFoundError:
+            # Fall through to Cuihu alias & subdir resolution below
+            pass
 
-    # 4. ProGen2 / RITA / Tranception / Generic local HF CausalLM or MaskedLM
-    if fam in ("ar", "causal", "causal_ar") or model_spec.lower() in _PROGEN2_NAMES or "rita" in model_spec.lower() or "progen2" in model_spec.lower():
+    # 4. Resolve local / Cuihu directory & dispatch by architecture/family (handles direct paths & unlisted variants!)
+    ckpt_dir = _resolve_local_dir(model_spec, model_root=model_root)
+    detected = _detect_family_from_dir(ckpt_dir, model_spec) if fam == "auto" else {
+        "ar": "causal_ar",
+        "mlm": "esm_mlm",
+        "mdm": "dplm_mdm",
+        "saprot": "saprot",
+        "prot_t5": "prot_t5",
+    }.get(fam, _detect_family_from_dir(ckpt_dir, model_spec))
+
+    if detected == "proteinmpnn":
+        adapter = load_proteinmpnn_adapter("proteinmpnn-v-020", model_root=ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return ProteinMPNNOpenEvaluator(adapter)
+
+    if detected == "dplm2":
+        low_n = ckpt_dir.name.lower().replace("_", "-")
+        dplm2_arm = next((k for k in DPLM2_SPECS if k in low_n), "dplm2-150m")
+        ad_seq = load_dplm2_adapter(dplm2_arm, mode="seq_only", model_root=ckpt_dir.parent, device=eff_dev, dtype=dtype_name)
+        try:
+            ad_struct = load_dplm2_adapter(
+                dplm2_arm, mode="struct_conditioned", model_root=ckpt_dir.parent, device=eff_dev, dtype=dtype_name
+            )
+        except Exception:
+            ad_struct = None
+        return DPLM2OpenEvaluator(ad_seq, ad_struct)
+
+    if detected == "saprot":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="saprot", paradigm="structure_aware_mlm", loader_kind="saprot_mlm",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=1024,
+        )
+        ad = _load_saprot_mlm(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name, saprot_mode="foldseek_3di")
+        return SaProtOpenEvaluator(ad)
+
+    if detected == "dplm_mdm":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="dplm", paradigm="discrete_diffusion", loader_kind="esm_mlm",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=1024,
+        )
+        ad = _load_esm_mlm(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override="mdm", dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "amplify_mlm":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="amplify", paradigm="masked_lm", loader_kind="amplify_mlm",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=2048, trust_remote_code=True,
+        )
+        ad = _load_amplify_mlm(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "esmc_hf":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="esmc", paradigm="masked_lm", loader_kind="esmc_hf",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=2048, trust_remote_code=True,
+        )
+        ad = _load_esmc_hf(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "proteinglm_mlm":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="proteinglm_mlm", paradigm="masked_lm", loader_kind="proteinglm_mlm",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=1024, trust_remote_code=True,
+        )
+        ad = _load_proteinglm_mlm(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "progen3_causal":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="progen3", paradigm="causal_lm", loader_kind="progen3_causal",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, default_dtype="bfloat16", max_residues=2048, allow_fp16=True,
+        )
+        ad = ProGen3CausalAdapter(synth_spec, ckpt_dir, device=eff_dev, dtype="bfloat16")
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override="ar", dtype_name="bfloat16", device=eff_dev)
+
+    if detected == "protgpt3_causal":
+        fam_pg3 = "protgpt3_msa" if "msa" in ckpt_dir.name.lower() else "protgpt3"
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family=fam_pg3, paradigm="causal_lm", loader_kind="protgpt3_causal",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=1022,
+        )
+        ad = _load_protgpt3_causal(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override="ar", dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "dayhoff_causal":
+        fam_dh = "dayhoff_msa" if ("msa" in ckpt_dir.name.lower() or "hm" in ckpt_dir.name.lower()) else "dayhoff"
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family=fam_dh, paradigm="causal_lm", loader_kind="dayhoff_causal",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=8192, trust_remote_code=True,
+        )
+        ad = _load_dayhoff_causal(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override="ar", dtype_name=dtype_name, device=eff_dev)
+
+    if detected == "prot_t5":
+        return _load_prot_t5(model_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+
+    if detected in ("galactica_causal", "causal_ar"):
         return _resolve_progen2_or_hf_causal(
             model_spec,
+            ckpt_dir=ckpt_dir,
             device=eff_dev,
             dtype=dtype_name,
             model_root=model_root,
             progen2_bidirectional=progen2_bidirectional,
         )
 
-    # Generic local HF MaskedLM / MDM fallback
+    if detected == "esm_mlm":
+        synth_spec = GeneralPLMSpec(
+            arm=model_spec, family="esm2", paradigm="masked_lm", loader_kind="esm_mlm",
+            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=1024, trust_remote_code=True,
+        )
+        ad = _load_esm_mlm(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
+        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
+
+    # Generic local HF MaskedLM / MDM fallback with strict fail-fast AA20 validation
     from transformers import AutoModelForMaskedLM, AutoTokenizer
 
-    ckpt_dir = _resolve_local_dir(model_spec, model_root=model_root)
     tokenizer = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True, trust_remote_code=True)
     model = AutoModelForMaskedLM.from_pretrained(
         str(ckpt_dir), local_files_only=True, trust_remote_code=True, torch_dtype=torch_dt
     ).eval().to(eff_dev)
     model.requires_grad_(False)
-    aa20_ids = [int(tokenizer.convert_tokens_to_ids(aa)) for aa in AA20]
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    aa20_ids = _validate_aa20_ids([tokenizer.convert_tokens_to_ids(aa) for aa in AA20], unk_id, model_spec)
+    if tokenizer.mask_token_id is None:
+        raise ValueError(f"{model_spec}: generic MaskedLM tokenizer declares no mask_token_id")
     mask_id = int(tokenizer.mask_token_id)
     pad_id = int(tokenizer.pad_token_id) if tokenizer.pad_token_id is not None else 0
     cls_cls = MDMOpenEvaluator if fam == "mdm" else MaskedLMOpenEvaluator
