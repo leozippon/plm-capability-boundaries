@@ -20,6 +20,62 @@ if str(ROOT) not in sys.path:
 
 from src.capability.core.io import sha256_file  # noqa: E402
 from src.capability.memory_capacity.analysis import summarize_memory_capacity_campaign  # noqa: E402
+from src.capability.memory_theory.io_utils import write_json_with_sha256  # noqa: E402
+
+
+def _compact_stage1_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Strip raw per-cell point dumps while preserving all fitted laws, CIs, and provenance."""
+    out = dict(summary)
+    out["compact"] = True
+
+    sat_compact: dict[str, Any] = {}
+    for paradigm, scales in (summary.get("saturation_curves_by_scale_exposure") or {}).items():
+        if not isinstance(scales, dict):
+            continue
+        sat_compact[paradigm] = {}
+        for scale_id, exposures in scales.items():
+            if not isinstance(exposures, dict):
+                continue
+            max_e = max(exposures.keys(), key=lambda k: int(k))
+            sat_compact[paradigm][scale_id] = {
+                "n_exposure_slices": len(exposures),
+                "max_exposure_epoch": int(max_e),
+                "max_exposure_slice": exposures[max_e],
+            }
+    out["saturation_curves_by_scale_exposure"] = sat_compact
+
+    exp_compact: dict[str, Any] = {}
+    for paradigm, block in (summary.get("exposure_discount_curves") or {}).items():
+        if not isinstance(block, dict):
+            continue
+        b = {k: v for k, v in block.items() if k not in ("pooled_points", "points")}
+        if isinstance(block.get("by_scale"), dict):
+            b["by_scale"] = {
+                sc: {k: v for k, v in sb.items() if k not in ("points", "curve_points")}
+                for sc, sb in block["by_scale"].items()
+                if isinstance(sb, dict)
+            }
+        exp_compact[paradigm] = b
+    out["exposure_discount_curves"] = exp_compact
+
+    ar_mlm = dict(summary.get("ar_vs_mlm_comparison") or {})
+    ar_mlm.pop("paired_cells", None)
+    if isinstance(ar_mlm.get("ar_vs_mlm_15"), dict):
+        ar_mlm["ar_vs_mlm_15"] = {
+            k: v for k, v in ar_mlm["ar_vs_mlm_15"].items() if k != "paired_cells"
+        }
+    out["ar_vs_mlm_comparison"] = ar_mlm
+
+    abl_compact: dict[str, Any] = {}
+    for k, v in (summary.get("ablations") or {}).items():
+        if isinstance(v, dict):
+            abl_compact[k] = {
+                sk: sv for sk, sv in v.items() if sk not in ("pairs", "paired_observations", "rows")
+            }
+        else:
+            abl_compact[k] = v
+    out["ablations"] = abl_compact
+    return out
 
 
 def _fmt_ci(stat: dict[str, Any] | None, digits: int = 3) -> str:
@@ -202,16 +258,25 @@ def main(argv: list[str] | None = None) -> int:
         default=20261127,
         help="Deterministic RNG seed for bootstrap resampling (default: 20261127)",
     )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Write a compact summary JSON (<500 KB) omitting raw per-cell point dumps while keeping all calibrated laws and CIs.",
+    )
     args = parser.parse_args(argv)
 
     summary = summarize_memory_capacity_campaign(
         args.runs_dir,
         extra_runs_dirs=args.extra_runs_dir,
-        out_path=args.out,
+        out_path=None if args.compact else args.out,
         bootstrap_draws=args.bootstrap_draws,
         seed=args.seed,
     )
-    digest = sha256_file(args.out)
+    if args.compact:
+        summary = _compact_stage1_summary(summary)
+        digest = write_json_with_sha256(args.out, summary)
+    else:
+        digest = sha256_file(args.out)
     print(render_markdown_report(summary, args.out, digest), flush=True)
     return 0
 

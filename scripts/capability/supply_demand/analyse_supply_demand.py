@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="Threshold in bits/res for delta_h_res takeoff detection (default: 0.05).",
     )
+    p.add_argument(
+        "--compact",
+        action="store_true",
+        help="Write a compact summary JSON (<500 KB) omitting per-milestone raw trajectories while keeping all per-run scalar summaries and aggregate tables.",
+    )
     return p.parse_args()
 
 
@@ -62,6 +67,13 @@ def main() -> None:
         include_in_progress=not args.completed_only,
         res_takeoff_threshold_bpr=args.res_takeoff_threshold,
     )
+    if args.compact:
+        summary = dict(summary)
+        summary["compact"] = True
+        summary["runs"] = [
+            {k: v for k, v in r.items() if k != "trajectory"}
+            for r in summary["runs"]
+        ]
     digest = write_json_with_sha256(args.out, summary)
 
     print(
