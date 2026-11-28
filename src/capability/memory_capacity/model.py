@@ -6,6 +6,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .spec import (
     INPUT_VOCAB_SIZE,
@@ -192,6 +193,7 @@ class UniformVocabTransformer(nn.Module):
         output_vocab_size: int = VOCAB_AA,
         rope_base: float = 10000.0,
         norm_eps: float = 1e-6,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         if isinstance(spec, str):
@@ -207,6 +209,7 @@ class UniformVocabTransformer(nn.Module):
         self.output_vocab_size = int(output_vocab_size)
         self.rope_base = float(rope_base)
         self.is_causal = canon_paradigm == "ar"
+        self.gradient_checkpointing = bool(gradient_checkpointing)
 
         self.tok_emb = nn.Embedding(self.input_vocab_size, spec.d_model)
         self.blocks = nn.ModuleList(
@@ -270,8 +273,12 @@ class UniformVocabTransformer(nn.Module):
         cos, sin = self._get_rope_tables(cur_seq_len, input_ids.device)
 
         x = self.tok_emb(input_ids)
+        use_ckpt = self.gradient_checkpointing and self.training and torch.is_grad_enabled()
         for block in self.blocks:
-            x = block(x, cos, sin)
+            if use_ckpt:
+                x = activation_checkpoint(block, x, cos, sin, use_reentrant=False)
+            else:
+                x = block(x, cos, sin)
         h = self.norm_f(x)
 
         amp_device = "cuda" if h.is_cuda else "cpu"

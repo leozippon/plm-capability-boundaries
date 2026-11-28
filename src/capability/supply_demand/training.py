@@ -13,8 +13,11 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 
+from ..memory_capacity.optimizers import build_named_optimizer, set_optimizer_lr
 from .corpus import (
     Stage2Bundle,
     atomic_write_json_with_sha256,
@@ -37,11 +40,80 @@ from .spec import (
     SCALE_SPECS,
     Stage2RunSpec,
     assert_no_forbidden_infra_strings,
+    objective_display_name,
+    should_enable_gradient_checkpointing,
+    vram_safe_micro_batch_cap,
 )
 
 RUN_RECEIPT_SCHEMA = "stage2_supply_demand_run"
 CHECKPOINT_SCHEMA = "stage2_supply_demand_ckpt"
 PREEMPT_EXIT_CODE = 143
+
+
+@dataclass(frozen=True)
+class DistributedContext:
+    """Active single-GPU or torchrun DDP execution context for Stage-2 runs."""
+
+    rank: int
+    local_rank: int
+    world_size: int
+    device: torch.device
+    is_distributed: bool
+
+
+def setup_distributed(device: torch.device | str | None = None) -> DistributedContext:
+    """Resolve single-GPU or initialize NCCL process group under torchrun."""
+    env_world = int(os.environ.get("WORLD_SIZE", "1"))
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(
+            os.environ.get("LOCAL_RANK", str(rank % max(1, torch.cuda.device_count())))
+        )
+        dev = (
+            torch.device("cuda", local_rank)
+            if torch.cuda.is_available()
+            else torch.device("cpu")
+        )
+        return DistributedContext(
+            rank=rank,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=dev,
+            is_distributed=world_size > 1,
+        )
+
+    if env_world > 1:
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        rank = int(os.environ.get("RANK", "0"))
+        if not torch.cuda.is_available():
+            raise RuntimeError("Distributed Stage-2 training with WORLD_SIZE > 1 requires CUDA")
+        torch.cuda.set_device(local_rank)
+        dev = torch.device("cuda", local_rank)
+        dist.init_process_group(backend="nccl", device_id=dev)
+        return DistributedContext(
+            rank=rank,
+            local_rank=local_rank,
+            world_size=env_world,
+            device=dev,
+            is_distributed=True,
+        )
+
+    if device is not None:
+        dev = torch.device(device)
+    elif torch.cuda.is_available():
+        dev = torch.device("cuda", 0)
+    else:
+        dev = torch.device("cpu")
+    if dev.type == "cuda" and dev.index is not None:
+        torch.cuda.set_device(dev.index)
+    return DistributedContext(
+        rank=0,
+        local_rank=dev.index or 0,
+        world_size=1,
+        device=dev,
+        is_distributed=False,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -110,28 +182,19 @@ def build_optimizer(
     peak_lr: float,
     weight_decay: float,
     device: torch.device,
-) -> torch.optim.AdamW:
-    """Create AdamW (fused on CUDA) with weight decay strictly on >=2D parameters."""
-    decay_params: list[nn.Parameter] = []
-    no_decay_params: list[nn.Parameter] = []
-    for p in model.parameters():
-        if not p.requires_grad:
-            continue
-        if p.ndim >= 2:
-            decay_params.append(p)
-        else:
-            no_decay_params.append(p)
-
-    groups = [
-        {"params": decay_params, "weight_decay": float(weight_decay)},
-        {"params": no_decay_params, "weight_decay": 0.0},
-    ]
-    return torch.optim.AdamW(
-        groups,
-        lr=float(peak_lr),
-        betas=(0.9, 0.95),
-        eps=1e-8,
-        fused=(device.type == "cuda"),
+    optimizer_name: str = "adamw",
+    muon_lr: float = 0.02,
+    muon_lr_scale: float | None = None,
+) -> torch.optim.Optimizer:
+    """Create fused AdamW or hybrid Muon (Newton-Schulz 5) + AdamW optimizer."""
+    return build_named_optimizer(
+        model,
+        optimizer_name=optimizer_name,
+        peak_lr=peak_lr,
+        weight_decay=weight_decay,
+        device=device,
+        muon_lr=muon_lr,
+        muon_lr_scale=muon_lr_scale,
     )
 
 
@@ -360,30 +423,29 @@ def execute_stage2_run(
     lease_manager: SharedLeaseManager | None = None,
     active_lease: ActiveLease | None = None,
     install_signal_handlers: bool = True,
+    gradient_checkpointing: bool | None = None,
 ) -> dict[str, Any]:
-    """Execute one Stage-2 controlled sampling run with Spot-safe step-level checkpoint/resume."""
+    """Execute one Stage-2 controlled sampling run with Spot-safe step-level checkpoint/resume and optional torchrun DDP."""
+    ctx = setup_distributed(device=device)
+    dev = ctx.device
     b_obj = bundle if isinstance(bundle, Stage2Bundle) else Stage2Bundle(bundle)
     out_root = Path(out_dir)
     runs_dir = out_root / "runs"
     ckpt_dir = out_root / "checkpoints"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.rank == 0:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.is_distributed:
+        dist.barrier()
 
     run_json_path = runs_dir / f"{run_spec.run_id}.json"
     latest_ckpt_path = ckpt_dir / f"{run_spec.run_id}_latest.pt"
     final_ckpt_path = ckpt_dir / f"{run_spec.run_id}_final.pt"
 
     if resume and is_run_completed(runs_dir, run_spec.run_id):
+        if ctx.is_distributed:
+            dist.barrier()
         return json.loads(run_json_path.read_text(encoding="utf-8"))
-
-    if device is not None:
-        dev = torch.device(device)
-    elif torch.cuda.is_available():
-        dev = torch.device("cuda", 0)
-    else:
-        dev = torch.device("cpu")
-    if dev.type == "cuda" and dev.index is not None:
-        torch.cuda.set_device(dev.index)
 
     splits = b_obj.load_arm_splits(run_spec.arm_id)
     train_store: PackedSequenceStore = splits["train"]
@@ -392,20 +454,55 @@ def execute_stage2_run(
     unseen_fold_store: PackedSequenceStore = splits["eval_unseen_fold"]
     global_nat_store: PackedSequenceStore | None = splits.get("eval_global_natural")
 
-    megascale_data = b_obj.load_megascale()
-    proteingym_data = b_obj.load_proteingym()
-    contact_domains = b_obj.load_contacts()
+    megascale_data = b_obj.load_megascale() if ctx.rank == 0 else None
+    proteingym_data = b_obj.load_proteingym() if ctx.rank == 0 else None
+    contact_domains = b_obj.load_contacts() if ctx.rank == 0 else []
 
     scale_spec = SCALE_SPECS[run_spec.scale_id]
-    micro_bs = int(run_spec.batch_size)
-    grad_accum = int(run_spec.grad_accum_steps)
-    eff_bs = micro_bs * grad_accum
-    n_micro_per_epoch = math.ceil(float(train_store.n_sequences) / float(micro_bs))
-    steps_per_epoch = math.ceil(float(n_micro_per_epoch) / float(grad_accum))
+    total_vram_bytes = (
+        int(torch.cuda.get_device_properties(dev).total_memory)
+        if dev.type == "cuda"
+        else None
+    )
+    req_grad_ckpt = (
+        gradient_checkpointing
+        if gradient_checkpointing is not None
+        else run_spec.gradient_checkpointing
+    )
+    use_grad_ckpt = should_enable_gradient_checkpointing(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        requested=req_grad_ckpt,
+    )
+    vram_cap = vram_safe_micro_batch_cap(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        default_cap=int(run_spec.batch_size),
+    )
+    # Preserve exact effective batch size while safely splitting micro-batches on smaller GPUs
+    requested_per_rank_bs = int(run_spec.batch_size)
+    micro_bs = min(requested_per_rank_bs, vram_cap)
+    split_factor = max(1, math.ceil(float(requested_per_rank_bs) / float(micro_bs)))
+    grad_accum = int(run_spec.grad_accum_steps) * split_factor
+    eff_bs = micro_bs * grad_accum * int(ctx.world_size)
+    n_micro_per_epoch_total = math.ceil(float(train_store.n_sequences) / float(micro_bs))
+    # Under DDP, pad micro-batch count to a multiple of world_size so all ranks execute equal steps
+    if ctx.is_distributed and (n_micro_per_epoch_total % ctx.world_size != 0):
+        n_micro_per_epoch_total += ctx.world_size - (n_micro_per_epoch_total % ctx.world_size)
+    n_micro_per_rank = n_micro_per_epoch_total // ctx.world_size
+    steps_per_epoch = math.ceil(float(n_micro_per_rank) / float(grad_accum))
     total_steps = steps_per_epoch * int(run_spec.max_epochs)
     peak_lr = compute_peak_lr(scale_spec.base_lr, eff_bs, override=run_spec.peak_lr_override)
     warmup_steps = compute_warmup_steps(total_steps, override=run_spec.warmup_steps_override)
-    eff_eval_bs = int(eval_batch_size) if eval_batch_size is not None else max(micro_bs, 128)
+    eval_vram_cap = vram_safe_micro_batch_cap(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        default_cap=int(eval_batch_size) if eval_batch_size is not None else max(micro_bs, 128),
+    )
+    eff_eval_bs = min(
+        int(eval_batch_size) if eval_batch_size is not None else max(micro_bs, 128),
+        max(micro_bs, eval_vram_cap),
+    )
 
     prev_tf32_matmul = torch.backends.cuda.matmul.allow_tf32
     prev_tf32_cudnn = torch.backends.cudnn.allow_tf32
@@ -447,6 +544,7 @@ def execute_stage2_run(
             scale_spec,
             run_spec.objective,
             max_seq_len=run_spec.max_seq_len,
+            gradient_checkpointing=use_grad_ckpt,
         ).to(dev)
         param_counts = count_model_parameters(raw_model, scale_spec)
         optimizer = build_optimizer(
@@ -454,6 +552,9 @@ def execute_stage2_run(
             peak_lr=peak_lr,
             weight_decay=run_spec.weight_decay,
             device=dev,
+            optimizer_name=run_spec.optimizer,
+            muon_lr=run_spec.muon_lr,
+            muon_lr_scale=run_spec.muon_lr_scale,
         )
 
         # Resume state defaults
@@ -487,16 +588,23 @@ def execute_stage2_run(
                 epoch_loss_sum = 0.0
                 epoch_loss_steps = 0
             else:
-                # If preempted on the final step BEFORE end-of-epoch eval/finalization,
-                # stay on saved_epoch with resume_step_in_epoch == steps_per_epoch so the
-                # loop executes 0 training steps and completes milestone/final eval cleanly.
                 cur_epoch = saved_epoch
                 resume_step_in_epoch = saved_step_in_ep
                 epoch_loss_sum = float(ckpt.get("epoch_loss_sum", 0.0))
                 epoch_loss_steps = int(ckpt.get("epoch_loss_steps", 0))
 
-        train_model: nn.Module = torch.compile(raw_model) if use_compile else raw_model
-        eval_model: nn.Module = train_model
+        compiled_model: nn.Module = torch.compile(raw_model) if use_compile else raw_model
+        if ctx.is_distributed:
+            train_model: nn.Module = DDP(
+                compiled_model,
+                device_ids=[ctx.local_rank],
+                broadcast_buffers=False,
+                gradient_as_bucket_view=True,
+            )
+            eval_model: nn.Module = compiled_model
+        else:
+            train_model = compiled_model
+            eval_model = compiled_model
 
         t_run_start = time.perf_counter()
         last_ckpt_mono = time.monotonic()
@@ -509,6 +617,7 @@ def execute_stage2_run(
                 "run_id": run_spec.run_id,
                 "arm_id": run_spec.arm_id,
                 "objective": run_spec.objective,
+                "paradigm_display": objective_display_name(run_spec.objective),
                 "scale_id": run_spec.scale_id,
                 "parameter_counts": param_counts,
                 "scale_spec": scale_spec.to_dict(),
@@ -521,6 +630,7 @@ def execute_stage2_run(
                     "n_eval_unseen_fold": unseen_fold_store.n_sequences,
                 },
                 "training_config": {
+                    "world_size": int(ctx.world_size),
                     "micro_batch_size": micro_bs,
                     "grad_accum_steps": grad_accum,
                     "effective_batch_size": eff_bs,
@@ -529,6 +639,9 @@ def execute_stage2_run(
                     "peak_lr": peak_lr,
                     "warmup_steps": warmup_steps,
                     "lr_schedule": run_spec.lr_schedule,
+                    "optimizer": run_spec.optimizer,
+                    "muon_lr": float(run_spec.muon_lr) if run_spec.optimizer == "muon" else None,
+                    "gradient_checkpointing": bool(use_grad_ckpt),
                     "precision": run_spec.precision,
                 },
                 "epoch_done": int(epoch_done),
@@ -548,27 +661,30 @@ def execute_stage2_run(
             step_in_ep: int,
             eval_done: bool,
         ) -> None:
-            wall = prior_wall_sec + (time.perf_counter() - t_run_start)
-            ckpt_payload = {
-                "schema": CHECKPOINT_SCHEMA,
-                "run_spec": run_spec.to_dict(),
-                "epoch": int(epoch_num),
-                "step_in_epoch": int(step_in_ep),
-                "eval_done": bool(eval_done),
-                "global_step": int(global_step),
-                "tokens_seen": int(tokens_seen),
-                "elapsed_wall_sec": float(wall),
-                "epoch_loss_sum": float(epoch_loss_sum),
-                "epoch_loss_steps": int(epoch_loss_steps),
-                "model_state_dict": raw_model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "init_eval": init_eval,
-                "milestones": milestones,
-            }
-            atomic_torch_save(path, ckpt_payload)
+            if ctx.rank == 0:
+                wall = prior_wall_sec + (time.perf_counter() - t_run_start)
+                ckpt_payload = {
+                    "schema": CHECKPOINT_SCHEMA,
+                    "run_spec": run_spec.to_dict(),
+                    "epoch": int(epoch_num),
+                    "step_in_epoch": int(step_in_ep),
+                    "eval_done": bool(eval_done),
+                    "global_step": int(global_step),
+                    "tokens_seen": int(tokens_seen),
+                    "elapsed_wall_sec": float(wall),
+                    "epoch_loss_sum": float(epoch_loss_sum),
+                    "epoch_loss_steps": int(epoch_loss_steps),
+                    "model_state_dict": raw_model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "init_eval": init_eval,
+                    "milestones": milestones,
+                }
+                atomic_torch_save(path, ckpt_payload)
+            if ctx.is_distributed:
+                dist.barrier()
 
         def _touch_lease() -> None:
-            if lease_manager is not None and active_lease is not None:
+            if ctx.rank == 0 and lease_manager is not None and active_lease is not None:
                 lease_manager.heartbeat(active_lease)
 
         def _run_milestone_eval(
@@ -579,73 +695,79 @@ def execute_stage2_run(
             mean_train_loss_nats: float | None,
             include_downstream: bool,
             include_contacts: bool,
-        ) -> dict[str, Any]:
-            _touch_lease()
-            three_tier = evaluate_three_tier_bits(
-                eval_model,
-                train_sub_store=train_sub_store,
-                unseen_homolog_store=homolog_store,
-                unseen_fold_store=unseen_fold_store,
-                global_natural_store=global_nat_store,
-                objective=run_spec.objective,
-                batch_size=eff_eval_bs,
-                precision=run_spec.precision,
-                n_draws=n_eval_draws,
-                loo_probes=loo_probes,
-                eval_seed=run_spec.seed + 7919,
-            )
-            rec: dict[str, Any] = {
-                "epoch": int(epoch_num),
-                "global_step": int(global_step),
-                "tokens_seen": int(tokens_seen),
-                "lr": float(last_lr),
-                "elapsed_wall_sec": float(prior_wall_sec + (time.perf_counter() - t_run_start)),
-                "train_loss_nats": mean_train_loss_nats,
-                "train_loss_bits_per_res": (
-                    None if mean_train_loss_nats is None else float(mean_train_loss_nats / LN2)
-                ),
-                "three_tier_bits": three_tier,
-            }
+        ) -> dict[str, Any] | None:
+            rec: dict[str, Any] | None = None
+            if ctx.rank == 0:
+                _touch_lease()
+                three_tier = evaluate_three_tier_bits(
+                    eval_model,
+                    train_sub_store=train_sub_store,
+                    unseen_homolog_store=homolog_store,
+                    unseen_fold_store=unseen_fold_store,
+                    global_natural_store=global_nat_store,
+                    objective=run_spec.objective,
+                    batch_size=eff_eval_bs,
+                    precision=run_spec.precision,
+                    n_draws=n_eval_draws,
+                    loo_probes=loo_probes,
+                    eval_seed=run_spec.seed + 7919,
+                    mask_rate=run_spec.effective_mask_rate,
+                    eval_temperature_calibration=bool(run_spec.eval_temperature_calibration),
+                )
+                rec = {
+                    "epoch": int(epoch_num),
+                    "global_step": int(global_step),
+                    "tokens_seen": int(tokens_seen),
+                    "lr": float(last_lr),
+                    "elapsed_wall_sec": float(prior_wall_sec + (time.perf_counter() - t_run_start)),
+                    "train_loss_nats": mean_train_loss_nats,
+                    "train_loss_bits_per_res": (
+                        None if mean_train_loss_nats is None else float(mean_train_loss_nats / LN2)
+                    ),
+                    "three_tier_bits": three_tier,
+                }
 
-            if include_downstream and megascale_data is not None:
-                _touch_lease()
-                rec["megascale"] = evaluate_megascale_ddg(
-                    eval_model,
-                    megascale_data,
-                    objective=run_spec.objective,
-                    batch_size=eff_eval_bs,
-                    precision=run_spec.precision,
-                )
-            if include_downstream and proteingym_data is not None:
-                _touch_lease()
-                rec["proteingym_milestone"] = evaluate_proteingym_substitutions(
-                    eval_model,
-                    proteingym_data,
-                    objective=run_spec.objective,
-                    milestone_only=True,
-                    batch_size=eff_eval_bs,
-                    precision=run_spec.precision,
-                )
-                if is_final and run_spec.eval_full_proteingym_at_final:
+                if include_downstream and megascale_data is not None:
                     _touch_lease()
-                    rec["proteingym_full"] = evaluate_proteingym_substitutions(
+                    rec["megascale"] = evaluate_megascale_ddg(
                         eval_model,
-                        proteingym_data,
+                        megascale_data,
                         objective=run_spec.objective,
-                        milestone_only=False,
                         batch_size=eff_eval_bs,
                         precision=run_spec.precision,
                     )
-            if include_contacts and contact_domains:
+                if include_downstream and proteingym_data is not None:
+                    _touch_lease()
+                    rec["proteingym_milestone"] = evaluate_proteingym_substitutions(
+                        eval_model,
+                        proteingym_data,
+                        objective=run_spec.objective,
+                        milestone_only=True,
+                        batch_size=eff_eval_bs,
+                        precision=run_spec.precision,
+                    )
+                    if is_final and run_spec.eval_full_proteingym_at_final:
+                        _touch_lease()
+                        rec["proteingym_full"] = evaluate_proteingym_substitutions(
+                            eval_model,
+                            proteingym_data,
+                            objective=run_spec.objective,
+                            milestone_only=False,
+                            batch_size=eff_eval_bs,
+                            precision=run_spec.precision,
+                        )
+                if include_contacts and contact_domains:
+                    _touch_lease()
+                    rec["contacts"] = evaluate_unseen_fold_contacts(
+                        eval_model,
+                        contact_domains,
+                        objective=run_spec.objective,
+                        batch_size=eff_eval_bs,
+                        precision=run_spec.precision,
+                    )
                 _touch_lease()
-                rec["contacts"] = evaluate_unseen_fold_contacts(
-                    eval_model,
-                    contact_domains,
-                    objective=run_spec.objective,
-                    batch_size=eff_eval_bs,
-                    precision=run_spec.precision,
-                )
-            _touch_lease()
+            if ctx.is_distributed:
+                dist.barrier()
             return rec
 
         # Initial random-baseline evaluation (epoch 0)
@@ -676,12 +798,21 @@ def execute_stage2_run(
 
         for epoch in range(cur_epoch, run_spec.max_epochs + 1):
             train_model.train()
-            micro_batches = _build_epoch_batches(
+            all_micro_batches = _build_epoch_batches(
                 train_store.n_sequences,
                 micro_bs,
                 seed=run_spec.seed,
                 epoch=epoch,
             )
+            if ctx.is_distributed:
+                if len(all_micro_batches) < n_micro_per_epoch_total:
+                    pad_cnt = n_micro_per_epoch_total - len(all_micro_batches)
+                    all_micro_batches = all_micro_batches + [
+                        all_micro_batches[i % len(all_micro_batches)] for i in range(pad_cnt)
+                    ]
+                micro_batches = all_micro_batches[ctx.rank :: ctx.world_size]
+            else:
+                micro_batches = all_micro_batches
 
             step_start = resume_step_in_epoch if epoch == cur_epoch else 0
             if step_start == 0:
@@ -699,8 +830,7 @@ def execute_stage2_run(
                     cooldown_fraction=run_spec.cooldown_fraction,
                     min_lr_ratio=run_spec.min_lr_ratio,
                 )
-                for group in optimizer.param_groups:
-                    group["lr"] = last_lr
+                set_optimizer_lr(optimizer, last_lr, peak_lr=peak_lr)
 
                 mb_lo = step_idx * grad_accum
                 mb_hi = min(len(micro_batches), mb_lo + grad_accum)
@@ -708,6 +838,7 @@ def execute_stage2_run(
 
                 optimizer.zero_grad(set_to_none=True)
                 step_loss_val = 0.0
+                step_tokens = 0
 
                 for mb_offset, mb_i in enumerate(range(mb_lo, mb_hi)):
                     idx_arr = micro_batches[mb_i]
@@ -719,65 +850,100 @@ def execute_stage2_run(
                         int(run_spec.seed) * 10_000_019
                         + int(epoch) * 100_003
                         + int(step_idx) * 97
-                        + int(mb_offset)
+                        + int(mb_offset) * 17
+                        + int(ctx.rank)
                     )
                     prepared = prepare_objective_batch(
                         run_spec.objective,
                         tokens,
                         lengths,
+                        mask_fraction=run_spec.effective_mask_rate,
                         generator=mask_gen,
                     )
-                    with autocast_ctx:
-                        logits = train_model(
-                            prepared.input_ids,
-                            prepared.attention_mask,
-                            right_padded=True,
-                        )
-                    loss = compute_objective_loss(logits, prepared)
-                    scaled_loss = loss / float(actual_accum)
-                    scaled_loss.backward()
+                    sync_ctx: Any = (
+                        train_model.no_sync()
+                        if (ctx.is_distributed and mb_offset < actual_accum - 1)
+                        else contextlib.nullcontext()
+                    )
+                    with sync_ctx:
+                        with autocast_ctx:
+                            logits = train_model(
+                                prepared.input_ids,
+                                prepared.attention_mask,
+                                right_padded=True,
+                            )
+                        loss = compute_objective_loss(logits, prepared)
+                        scaled_loss = loss / float(actual_accum)
+                        scaled_loss.backward()
 
                     step_loss_val += float(loss.detach().item()) / float(actual_accum)
-                    tokens_seen += int(lengths.sum().item())
+                    step_tokens += int(lengths.sum().item())
 
                 torch.nn.utils.clip_grad_norm_(raw_model.parameters(), max_norm=1.0)
                 optimizer.step()
 
+                if ctx.is_distributed:
+                    stats_t = torch.tensor(
+                        [step_loss_val, float(step_tokens)], dtype=torch.float64, device=dev
+                    )
+                    dist.all_reduce(stats_t, op=dist.ReduceOp.SUM)
+                    step_loss_val = float(stats_t[0].item()) / float(ctx.world_size)
+                    step_tokens = int(round(float(stats_t[1].item())))
+
+                tokens_seen += step_tokens
                 epoch_loss_sum += step_loss_val
                 epoch_loss_steps += 1
                 completed_step_in_epoch = step_idx + 1
 
-                # Immediate atomic preemption checkpoint flush on SIGTERM/SIGINT
-                if preempt_state["requested"]:
-                    _save_checkpoint(
-                        latest_ckpt_path,
-                        epoch_num=epoch,
-                        step_in_ep=completed_step_in_epoch,
-                        eval_done=False,
-                    )
-                    payload = _build_payload(
-                        status="preempted",
-                        epoch_done=epoch - 1 if completed_step_in_epoch < steps_per_epoch else epoch,
-                        step_in_epoch=completed_step_in_epoch,
-                    )
-                    payload["preempt_signal"] = preempt_state["signal"]
-                    payload["exit_code"] = PREEMPT_EXIT_CODE
-                    atomic_write_json_with_sha256(run_json_path, payload)
-                    if lease_manager is not None and active_lease is not None:
-                        lease_manager.release(active_lease)
-                    return payload
+                # Synchronized Spot preemption / periodic checkpoint check
+                should_check_sync = (not ctx.is_distributed) or (
+                    completed_step_in_epoch == steps_per_epoch or completed_step_in_epoch % 8 == 0
+                )
+                if should_check_sync:
+                    need_preempt = bool(preempt_state["requested"])
+                    now_mono = time.monotonic()
+                    need_periodic = (now_mono - last_ckpt_mono) >= run_spec.checkpoint_interval_sec
+                    if ctx.is_distributed:
+                        flags = torch.tensor(
+                            [1 if need_preempt else 0, 1 if (ctx.rank == 0 and need_periodic) else 0],
+                            dtype=torch.int64,
+                            device=dev,
+                        )
+                        dist.all_reduce(flags, op=dist.ReduceOp.MAX)
+                        need_preempt = bool(flags[0].item() > 0)
+                        need_periodic = bool(flags[1].item() > 0)
 
-                # Periodic atomic checkpointing + lease heartbeat
-                now_mono = time.monotonic()
-                if (now_mono - last_ckpt_mono) >= run_spec.checkpoint_interval_sec:
-                    _save_checkpoint(
-                        latest_ckpt_path,
-                        epoch_num=epoch,
-                        step_in_ep=completed_step_in_epoch,
-                        eval_done=False,
-                    )
-                    _touch_lease()
-                    last_ckpt_mono = now_mono
+                    if need_preempt:
+                        _save_checkpoint(
+                            latest_ckpt_path,
+                            epoch_num=epoch,
+                            step_in_ep=completed_step_in_epoch,
+                            eval_done=False,
+                        )
+                        payload = _build_payload(
+                            status="preempted",
+                            epoch_done=epoch - 1 if completed_step_in_epoch < steps_per_epoch else epoch,
+                            step_in_epoch=completed_step_in_epoch,
+                        )
+                        payload["preempt_signal"] = preempt_state["signal"]
+                        payload["exit_code"] = PREEMPT_EXIT_CODE
+                        if ctx.rank == 0:
+                            atomic_write_json_with_sha256(run_json_path, payload)
+                            if lease_manager is not None and active_lease is not None:
+                                lease_manager.release(active_lease)
+                        if ctx.is_distributed:
+                            dist.barrier()
+                        return payload
+
+                    if need_periodic:
+                        _save_checkpoint(
+                            latest_ckpt_path,
+                            epoch_num=epoch,
+                            step_in_ep=completed_step_in_epoch,
+                            eval_done=False,
+                        )
+                        _touch_lease()
+                        last_ckpt_mono = now_mono
 
             # End of epoch: run milestone evaluation if scheduled
             is_final = epoch == run_spec.max_epochs
@@ -791,13 +957,14 @@ def execute_stage2_run(
                     include_downstream=(is_final or run_spec.eval_downstream_at_milestones),
                     include_contacts=(is_final or run_spec.eval_contacts_at_milestones),
                 )
-                milestones.append(m_rec)
-                payload = _build_payload(
-                    status="complete" if is_final else "in_progress",
-                    epoch_done=epoch,
-                    step_in_epoch=steps_per_epoch,
-                )
-                atomic_write_json_with_sha256(run_json_path, payload)
+                if ctx.rank == 0 and m_rec is not None:
+                    milestones.append(m_rec)
+                    payload = _build_payload(
+                        status="complete" if is_final else "in_progress",
+                        epoch_done=epoch,
+                        step_in_epoch=steps_per_epoch,
+                    )
+                    atomic_write_json_with_sha256(run_json_path, payload)
 
                 if is_final:
                     if run_spec.save_final_checkpoint:
@@ -807,7 +974,7 @@ def execute_stage2_run(
                             step_in_ep=steps_per_epoch,
                             eval_done=True,
                         )
-                    if latest_ckpt_path.exists():
+                    if ctx.rank == 0 and latest_ckpt_path.exists():
                         latest_ckpt_path.unlink(missing_ok=True)
                 else:
                     _save_checkpoint(
@@ -816,6 +983,8 @@ def execute_stage2_run(
                         step_in_ep=steps_per_epoch,
                         eval_done=True,
                     )
+                if ctx.is_distributed:
+                    dist.barrier()
                 last_ckpt_mono = time.monotonic()
                 _touch_lease()
 

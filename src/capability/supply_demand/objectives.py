@@ -1,6 +1,7 @@
 """Variable-length sequence packing and exact AR / MLM-15% / OA-Uniform objectives."""
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -13,9 +14,11 @@ from .spec import (
     AA_TO_ID,
     BOS_TOKEN_ID,
     MASK_TOKEN_ID,
-    OBJECTIVES,
     PAD_TOKEN_ID,
     VOCAB_AA,
+    canonicalize_objective,
+    default_mask_rate_for_objective,
+    is_fixed_mask_objective,
 )
 
 
@@ -228,9 +231,10 @@ def prepare_mlm15_batch(
     lengths: torch.Tensor,
     *,
     mask_fraction: float = 0.15,
+    objective: str = "mlm_15",
     generator: torch.Generator | None = None,
 ) -> PreparedBatch:
-    """Dynamic per-sequence 15% MLM batch with k_i = max(1, round(0.15 * L_i)) masked real AAs."""
+    """Dynamic per-sequence fixed-rate MLM batch with k_i = max(1, round(mask_fraction * L_i))."""
     bsz, max_len = batch_tokens.shape
     device = batch_tokens.device
     pos = torch.arange(max_len, device=device, dtype=torch.long).unsqueeze(0)
@@ -249,7 +253,7 @@ def prepare_mlm15_batch(
     input_ids = torch.where(loss_mask, MASK_TOKEN_ID, targets)
 
     return PreparedBatch(
-        objective="mlm_15",
+        objective=canonicalize_objective(objective),
         input_ids=input_ids,
         attention_mask=valid_mask,
         targets=targets,
@@ -265,7 +269,7 @@ def prepare_oa_uniform_batch(
     *,
     generator: torch.Generator | None = None,
 ) -> PreparedBatch:
-    """Stratified per-sequence OA-Uniform batch with m_i uniform over 1..L_i real AA positions."""
+    """Stratified per-sequence MDM (OA-Uniform) batch with m_i uniform over 1..L_i real AA positions."""
     bsz, max_len = batch_tokens.shape
     device = batch_tokens.device
     pos = torch.arange(max_len, device=device, dtype=torch.long).unsqueeze(0)
@@ -297,21 +301,75 @@ def prepare_oa_uniform_batch(
     )
 
 
-def prepare_objective_batch(
-    objective: str,
+def prepare_mdm_cosine_batch(
     batch_tokens: torch.Tensor,
     lengths: torch.Tensor,
     *,
     generator: torch.Generator | None = None,
 ) -> PreparedBatch:
-    """Dispatch variable-length batch preparation to ar, mlm_15, or oa_uniform."""
-    if objective == "ar":
+    """Stratified cosine-warped MDM batch: m_i / L_i = 1 - cos(pi/2 * u_i), u_i ~ U(0, 1)."""
+    bsz, max_len = batch_tokens.shape
+    device = batch_tokens.device
+    pos = torch.arange(max_len, device=device, dtype=torch.long).unsqueeze(0)
+    valid_mask = pos < lengths.unsqueeze(1)
+
+    perm = torch.randperm(bsz, device=device, generator=generator, dtype=torch.long).float()
+    jitter = torch.rand(bsz, device=device, generator=generator, dtype=torch.float32)
+    u = (perm + jitter) / float(bsz)
+    rate = 1.0 - torch.cos(0.5 * math.pi * u)
+    m_mask = torch.clamp(
+        torch.floor(rate * lengths.to(dtype=torch.float32)).to(dtype=torch.long) + 1,
+        min=1,
+    )
+    m_mask = torch.minimum(m_mask, lengths.to(dtype=torch.long))
+
+    loss_mask = _sample_uniform_subset_mask(
+        lengths, m_mask, max_len, generator=generator
+    )
+    targets = torch.where(valid_mask, batch_tokens.to(dtype=torch.long), PAD_TOKEN_ID)
+    input_ids = torch.where(loss_mask, MASK_TOKEN_ID, targets)
+
+    return PreparedBatch(
+        objective="mdm_cosine",
+        input_ids=input_ids,
+        attention_mask=valid_mask,
+        targets=targets,
+        loss_mask=loss_mask,
+        n_loss_per_seq=m_mask,
+        lengths=lengths.to(dtype=torch.long),
+    )
+
+
+def prepare_objective_batch(
+    objective: str,
+    batch_tokens: torch.Tensor,
+    lengths: torch.Tensor,
+    *,
+    mask_fraction: float | None = None,
+    generator: torch.Generator | None = None,
+) -> PreparedBatch:
+    """Dispatch variable-length batch preparation to ar, mlm_{15,30,50}, mdm/oa_uniform, or mdm_cosine."""
+    canon = canonicalize_objective(objective)
+    if canon == "ar":
         return prepare_ar_batch(batch_tokens, lengths)
-    if objective == "mlm_15":
-        return prepare_mlm15_batch(batch_tokens, lengths, generator=generator)
-    if objective == "oa_uniform":
+    if is_fixed_mask_objective(canon):
+        eff_rate = (
+            float(mask_fraction)
+            if mask_fraction is not None
+            else default_mask_rate_for_objective(canon)
+        )
+        return prepare_mlm15_batch(
+            batch_tokens,
+            lengths,
+            mask_fraction=eff_rate,
+            objective=canon,
+            generator=generator,
+        )
+    if canon == "oa_uniform":
         return prepare_oa_uniform_batch(batch_tokens, lengths, generator=generator)
-    raise ValueError(f"Unsupported objective {objective!r}; expected {OBJECTIVES}")
+    if canon == "mdm_cosine":
+        return prepare_mdm_cosine_batch(batch_tokens, lengths, generator=generator)
+    raise ValueError(f"Unsupported objective {objective!r}")
 
 
 def compute_objective_loss(
@@ -321,9 +379,9 @@ def compute_objective_loss(
     """Compute exact fp32 objective loss in nats/residue with strict <PAD> exclusion.
 
     - ``ar``: token-averaged CE strictly over the L_i real AA positions.
-    - ``mlm_15``: token-averaged CE strictly over the k_i masked real AA positions.
-    - ``oa_uniform``: OA-ARDM per-sequence weighted CE:
-      ``mean_i( (1 / m_i) * sum_{j in M_i} CE_j )``, exact unbiased per-residue NELBO.
+    - ``mlm_15`` / ``mlm_30`` / ``mlm_50``: token-averaged CE strictly over the k_i masked real AA positions.
+    - ``oa_uniform`` (MDM) / ``mdm_cosine``: per-sequence length-weighted CE:
+      ``sum_i L_i * ((1 / m_i) * sum_{j in M_i} CE_j) / sum_i L_i``.
     """
     if logits.shape[-1] != VOCAB_AA:
         raise ValueError(f"Expected output vocab {VOCAB_AA}, got {logits.shape[-1]}")
@@ -340,12 +398,13 @@ def compute_objective_loss(
     )
     masked_ce = torch.where(prepared.loss_mask, tok_ce, torch.zeros_like(tok_ce))
 
-    if prepared.objective == "oa_uniform":
+    canon = canonicalize_objective(prepared.objective)
+    if canon in ("oa_uniform", "mdm_cosine"):
         per_seq = masked_ce.sum(dim=-1) / prepared.n_loss_per_seq.to(dtype=torch.float32)
         weights = prepared.lengths.to(dtype=torch.float32)
         return (per_seq * weights).sum() / weights.sum().clamp(min=1.0)
 
-    if prepared.objective in ("ar", "mlm_15"):
+    if canon == "ar" or is_fixed_mask_objective(canon):
         denom = prepared.loss_mask.sum().to(dtype=torch.float32).clamp(min=1.0)
         return masked_ce.sum() / denom
 

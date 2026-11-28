@@ -11,7 +11,12 @@ from typing import Any
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-from .spec import LOG2_20, assert_no_forbidden_infra_strings
+from .spec import (
+    LOG2_20,
+    assert_no_forbidden_infra_strings,
+    canonicalize_objective,
+    objective_display_name,
+)
 from .training import RUN_RECEIPT_SCHEMA
 
 ANALYSIS_SCHEMA: str = "plm_supply_demand_analysis_v1"
@@ -99,7 +104,14 @@ def _safe_corr(xs: Sequence[float], ys: Sequence[float]) -> dict[str, Any]:
 
 def _canonical_objective(raw: str) -> str:
     s = str(raw).strip().lower()
-    return "oa_uniform" if s == "mlm" else s
+    if s in ("mlm", "mdm", "mdm_uniform"):
+        return "oa_uniform"
+    if s == "oa_cosine":
+        return "mdm_cosine"
+    try:
+        return canonicalize_objective(s)
+    except ValueError:
+        return s
 
 
 def load_stage2_run_receipts(
@@ -255,6 +267,14 @@ def _extract_milestone_point(m: Mapping[str, Any]) -> dict[str, Any]:
         else None
     )
     ood_excess = max(0.0, h_uf - h0) if h_uf is not None else None
+    tcal = tt_all.get("temperature_calibration") if isinstance(tt_all.get("temperature_calibration"), Mapping) else {}
+    h_uf_cal = _safe_float(tt.get("H_unseen_fold_cal") or tcal.get("calibrated_bits_per_tok"))
+    exact_delta_cal = _safe_float(
+        tt.get("Delta_cal")
+        if tt.get("Delta_cal") is not None
+        else (tcal.get("Delta_cal") if tcal.get("Delta_cal") is not None else tcal.get("calibration_excess_bits"))
+    )
+    delta_cal = exact_delta_cal if exact_delta_cal is not None else ood_excess
 
     return {
         "epoch": int(m.get("epoch", 0)),
@@ -264,6 +284,8 @@ def _extract_milestone_point(m: Mapping[str, Any]) -> dict[str, Any]:
         "H_train": h_tr,
         "H_unseen_homolog": h_hom,
         "H_unseen_fold": h_uf,
+        "H_unseen_fold_cal": h_uf_cal,
+        "Delta_cal": delta_cal,
         "delta_h_univ": dh_univ,
         "delta_h_spec": dh_spec,
         "delta_h_res": dh_res,
@@ -505,10 +527,13 @@ def analyze_stage2_run(
                 )
 
     final_pt = pos_traj[-1] if pos_traj else (trajectory[-1] if trajectory else {})
+    p_display = objective_display_name(objective) if objective else ""
+    final_delta_cal = final_pt.get("Delta_cal")
     return {
         "run_id": str(doc["run_id"]),
         "arm_id": str(doc["arm_id"]),
         "objective": objective,
+        "paradigm_display": p_display,
         "scale_id": str(doc["scale_id"]),
         "status": str(doc.get("status", "unknown")),
         "epoch_done": int(doc.get("epoch_done", 0)),
@@ -516,10 +541,18 @@ def analyze_stage2_run(
         "n_params_non_embedding": p_non_emb,
         "n_train_sequences": int(corpus_stats.get("n_train_sequences") or 0),
         "n_train_unique_tokens": t_uniq,
+        "E_gen": e_conv_univ,
+        "E_mem": res_takeoff_epoch,
+        "W_window": adiabatic_gamma,
+        "W_window_lower_bound": adiabatic_gamma_lb,
+        "Delta_cal": final_delta_cal,
+        "H_unseen_fold_cal": final_pt.get("H_unseen_fold_cal"),
         "final_three_tier": {
             "H_train": final_pt.get("H_train"),
             "H_unseen_homolog": final_pt.get("H_unseen_homolog"),
             "H_unseen_fold": final_pt.get("H_unseen_fold"),
+            "H_unseen_fold_cal": final_pt.get("H_unseen_fold_cal"),
+            "Delta_cal": final_delta_cal,
             "delta_h_univ": final_pt.get("delta_h_univ"),
             "delta_h_spec": final_pt.get("delta_h_spec"),
             "delta_h_res": final_pt.get("delta_h_res"),
@@ -600,9 +633,17 @@ def summarize_supply_demand_campaign(
             for r in subset
             if r["adiabatic_window_gamma_lower_bound"] is not None
         ]
+        e_gens = [float(r["E_gen"]) for r in subset if r.get("E_gen") is not None]
+        d_cals = [float(r["Delta_cal"]) for r in subset if r.get("Delta_cal") is not None]
         by_objective[obj] = {
+            "paradigm_display": objective_display_name(obj),
             "n_runs": len(subset),
             "n_crossed_res_takeoff": len(takeoffs),
+            "E_gen": float(np.median(e_gens)) if e_gens else None,
+            "E_mem": float(np.median(takeoffs)) if takeoffs else None,
+            "W_window": float(np.median(gammas)) if gammas else None,
+            "W_window_lower_bound": float(np.median(gamma_lbs)) if gamma_lbs else None,
+            "Delta_cal": float(np.median(d_cals)) if d_cals else None,
             "res_takeoff_epoch_median": float(np.median(takeoffs)) if takeoffs else None,
             "res_takeoff_epoch_min": float(min(takeoffs)) if takeoffs else None,
             "res_takeoff_epoch_max": float(max(takeoffs)) if takeoffs else None,

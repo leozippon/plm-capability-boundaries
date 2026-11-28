@@ -19,8 +19,10 @@ from .spec import (
     canonicalize_paradigm,
     dataset_entropy_bits,
     gibbs_memorizable_bits,
+    is_fixed_mask_paradigm,
     mlm_fixed_mask_count,
     null_ordered_entropy_bits,
+    paradigm_display_name,
     vram_safe_micro_batch_cap,
 )
 
@@ -204,6 +206,8 @@ def summarize_memorization_metrics(
 
     return {
         "paradigm": canon_paradigm,
+        "paradigm_display": paradigm_display_name(canon_paradigm),
+        "vocab_size": int(vocab_size),
         "n_sequences_total": int(n_sequences_total),
         "eval_n_sequences": int(n_sequences_evaluated),
         "n_sequences_evaluated": int(n_sequences_evaluated),
@@ -361,6 +365,7 @@ def evaluate_mlm_joint_bits_16pt(
     eval_seed: int = 20261129,
     vocab_size: int = VOCAB_AA,
     special_token_id: int = SPECIAL_TOKEN_ID,
+    paradigm: str = "oa_uniform",
 ) -> dict[str, Any]:
     """16-stratum OA-ARDM discrete integral joint NELBO evaluation in bits for MLM."""
     t0 = time.perf_counter()
@@ -518,7 +523,7 @@ def evaluate_mlm_joint_bits_16pt(
         mc_se_seq_bits = math.sqrt(max(0.0, between_var_mean + within_var_mean))
 
         metrics = summarize_memorization_metrics(
-            paradigm="oa_uniform",
+            paradigm=canonicalize_paradigm(paradigm),
             n_sequences_total=n_total,
             n_sequences_evaluated=n_eval,
             seq_len=seq_len,
@@ -559,6 +564,7 @@ def evaluate_mlm_fixed_rate_bits(
     eval_seed: int = 20261141,
     vocab_size: int = VOCAB_AA,
     special_token_id: int = SPECIAL_TOKEN_ID,
+    paradigm: str = "mlm_15",
 ) -> dict[str, Any]:
     """Fixed-rate MLM evaluation (default k=38 for L=256) with exact Slepian-Wolf & pseudo bounds.
 
@@ -720,7 +726,7 @@ def evaluate_mlm_fixed_rate_bits(
         pseudo_bpp_total = pseudo_memorized_bits / float(denom_total_params)
 
         metrics = summarize_memorization_metrics(
-            paradigm="mlm_15",
+            paradigm=canonicalize_paradigm(paradigm),
             n_sequences_total=n_total,
             n_sequences_evaluated=n_eval,
             seq_len=seq_len,
@@ -910,8 +916,10 @@ def evaluate_run_checkpoint(
     mask_rate: float = MLM_15_MASK_RATE,
     mask_count: int | None = None,
     mlm_fixed_num_draws: int = DEFAULT_MLM_FIXED_NUM_DRAWS,
+    vocab_size: int = VOCAB_AA,
+    special_token_id: int = SPECIAL_TOKEN_ID,
 ) -> dict[str, Any]:
-    """Dispatch primary evaluation to AR, fixed-rate MLM-15%, or 16-point OA-Uniform evaluator."""
+    """Dispatch primary evaluation to AR, fixed-rate MLM (15/30/50%), or 16-pt MDM/MDM-Cosine evaluator."""
     canon_paradigm = canonicalize_paradigm(paradigm)
     if canon_paradigm == "ar":
         return evaluate_ar_joint_bits(
@@ -921,8 +929,10 @@ def evaluate_run_checkpoint(
             n_params_non_embedding=n_params_non_embedding,
             n_params_total=n_params_total,
             precision=precision,
+            vocab_size=vocab_size,
+            special_token_id=special_token_id,
         )
-    if canon_paradigm == "mlm_15":
+    if is_fixed_mask_paradigm(canon_paradigm):
         return evaluate_mlm_fixed_rate_bits(
             model,
             data_gpu,
@@ -935,8 +945,11 @@ def evaluate_run_checkpoint(
             precision=precision,
             eval_max_sequences_mlm=eval_max_sequences_mlm,
             eval_seed=eval_seed,
+            vocab_size=vocab_size,
+            special_token_id=special_token_id,
+            paradigm=canon_paradigm,
         )
-    if canon_paradigm == "oa_uniform":
+    if canon_paradigm in ("oa_uniform", "mdm_cosine"):
         return evaluate_mlm_joint_bits_16pt(
             model,
             data_gpu,
@@ -946,5 +959,8 @@ def evaluate_run_checkpoint(
             precision=precision,
             eval_max_sequences_mlm=eval_max_sequences_mlm,
             eval_seed=eval_seed,
+            vocab_size=vocab_size,
+            special_token_id=special_token_id,
+            paradigm=canon_paradigm,
         )
     raise ValueError(f"Unsupported paradigm {paradigm!r}")

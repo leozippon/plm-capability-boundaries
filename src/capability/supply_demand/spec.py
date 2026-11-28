@@ -24,10 +24,101 @@ LOG2_20: float = math.log2(20.0)
 LN2: float = math.log(2.0)
 
 OBJECTIVES: tuple[str, ...] = ("ar", "mlm_15", "oa_uniform")
+ALL_OBJECTIVES: tuple[str, ...] = ("ar", "mlm_15", "mlm_30", "mlm_50", "oa_uniform", "mdm_cosine")
+FIXED_MASK_OBJECTIVE_RATES: dict[str, float] = {
+    "mlm_15": 0.15,
+    "mlm_30": 0.30,
+    "mlm_50": 0.50,
+}
+OBJECTIVE_ALIASES: dict[str, str] = {
+    "mlm": "oa_uniform",
+    "mdm": "oa_uniform",
+    "mdm_uniform": "oa_uniform",
+    "oa_cosine": "mdm_cosine",
+}
+OBJECTIVE_DISPLAY_NAMES: dict[str, str] = {
+    "ar": "AR",
+    "mlm_15": "MLM-15%",
+    "mlm_30": "MLM-30%",
+    "mlm_50": "MLM-50%",
+    "oa_uniform": "MDM",
+    "mdm_cosine": "MDM-Cosine",
+}
+OPTIMIZERS: tuple[str, ...] = ("adamw", "muon")
 PRECISIONS: tuple[str, ...] = ("bf16", "fp32_strict")
 LR_SCHEDULES: tuple[str, ...] = ("wsd", "cosine")
 
 DEFAULT_MILESTONE_EPOCHS: tuple[int, ...] = (1, 2, 5, 10, 20, 40, 80, 150, 300)
+
+HIGH_VRAM_THRESHOLD_BYTES: int = 110 * (1024 ** 3)
+MID_VRAM_THRESHOLD_BYTES: int = 56 * (1024 ** 3)
+LOW_VRAM_THRESHOLD_BYTES: int = 32 * (1024 ** 3)
+
+
+def canonicalize_objective(objective: str) -> str:
+    """Canonicalize Stage-2 objective identifier, aliasing 'mdm'/'mlm' -> 'oa_uniform'."""
+    raw = str(objective).strip().lower()
+    canon = OBJECTIVE_ALIASES.get(raw, raw)
+    if canon not in ALL_OBJECTIVES:
+        raise ValueError(
+            f"Unsupported objective {objective!r}; expected {ALL_OBJECTIVES} "
+            f"(or aliases {tuple(OBJECTIVE_ALIASES)})"
+        )
+    return canon
+
+
+def objective_display_name(objective: str) -> str:
+    """Return canonical unified-theory display label ('AR', 'MLM-15%', 'MDM', etc.)."""
+    canon = canonicalize_objective(objective)
+    return OBJECTIVE_DISPLAY_NAMES.get(canon, canon.upper())
+
+
+def is_fixed_mask_objective(objective: str) -> bool:
+    return canonicalize_objective(objective) in FIXED_MASK_OBJECTIVE_RATES
+
+
+def default_mask_rate_for_objective(objective: str) -> float:
+    return float(FIXED_MASK_OBJECTIVE_RATES.get(canonicalize_objective(objective), 0.15))
+
+
+def should_enable_gradient_checkpointing(
+    scale_id: str,
+    total_vram_bytes: int | None,
+    requested: bool | None = None,
+) -> bool:
+    """Auto-enable activation checkpointing for 650m on <110 GiB GPUs unless overridden."""
+    if requested is not None:
+        return bool(requested)
+    if scale_id == "650m" and total_vram_bytes is not None and total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+        return True
+    return False
+
+
+def vram_safe_micro_batch_cap(
+    scale_id: str,
+    total_vram_bytes: int | None,
+    default_cap: int,
+) -> int:
+    """Return a VRAM-safe per-GPU micro-batch cap for Stage-2 variable-length runs (L<=384)."""
+    cap = max(1, int(default_cap))
+    if total_vram_bytes is None or total_vram_bytes <= 0:
+        return cap
+    if scale_id == "650m":
+        if total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
+            return min(cap, 2)
+        if total_vram_bytes < MID_VRAM_THRESHOLD_BYTES:
+            return min(cap, 8)
+        if total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+            return min(cap, 16)
+        return min(cap, 32)
+    if scale_id == "150m":
+        if total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
+            return min(cap, 16)
+        if total_vram_bytes < MID_VRAM_THRESHOLD_BYTES:
+            return min(cap, 32)
+        if total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+            return min(cap, 64)
+    return cap
 
 FORBIDDEN_INFRA_RE = re.compile(
     r"(?:\b(?:[a-z0-9_-]*master-\d+|[a-z0-9_-]*worker-\d+|worker-\d+\.k8s|node[-_]?\d*|10\.\d+\.\d+\.\d+)\b)",
@@ -133,15 +224,17 @@ class ScaleSpec:
 
 
 SCALE_ORDER: tuple[str, ...] = ("0.5m", "2m", "8m", "35m", "150m")
+EXTENDED_SCALE_ORDER: tuple[str, ...] = ("0.5m", "2m", "8m", "35m", "150m", "650m")
 
 # Exact layer/head/width geometry matching Stage-1 memory_capacity SCALE_SPECS:
-# exact_non_embedding_params = 492,608 / 1,992,640 / 7,992,128 / 35,337,088 / 148,671,360
+# exact_non_embedding_params = 492,608 / 1,992,640 / 7,992,128 / 35,337,088 / 148,671,360 / 654,303,104
 SCALE_SPECS: dict[str, ScaleSpec] = {
     "0.5m": ScaleSpec("0.5m", 500_000, 3, 128, 4, 256, 2.0e-3, 256),
     "2m": ScaleSpec("2m", 2_000_000, 4, 192, 6, 608, 1.5e-3, 256),
     "8m": ScaleSpec("8m", 8_000_000, 6, 320, 5, 960, 1.2e-3, 256),
     "35m": ScaleSpec("35m", 35_000_000, 11, 512, 8, 1408, 8.0e-4, 128),
     "150m": ScaleSpec("150m", 150_000_000, 21, 768, 12, 2048, 6.0e-4, 64),
+    "650m": ScaleSpec("650m", 650_000_000, 33, 1280, 20, 3456, 3.0e-4, 32),
 }
 
 
@@ -189,6 +282,12 @@ class Stage2RunSpec:
     eval_downstream_at_milestones: bool = True
     eval_contacts_at_milestones: bool = True
     eval_full_proteingym_at_final: bool = True
+    eval_temperature_calibration: bool = True
+    optimizer: str = "adamw"
+    muon_lr: float = 0.02
+    muon_lr_scale: float | None = None
+    mask_rate: float | None = None
+    gradient_checkpointing: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -197,10 +296,8 @@ class Stage2RunSpec:
         if not self.arm_id:
             raise ValueError("arm_id must be non-empty")
         assert_no_forbidden_infra_strings(self.arm_id, label="arm_id")
-        if self.objective not in OBJECTIVES:
-            raise ValueError(
-                f"Unsupported objective {self.objective!r}; expected {OBJECTIVES}"
-            )
+        canon_obj = canonicalize_objective(self.objective)
+        object.__setattr__(self, "objective", canon_obj)
         if self.scale_id not in SCALE_SPECS:
             raise ValueError(
                 f"Unknown scale_id {self.scale_id!r}; expected {tuple(SCALE_SPECS)}"
@@ -215,6 +312,20 @@ class Stage2RunSpec:
             raise ValueError(
                 f"Unsupported precision {self.precision!r}; expected {PRECISIONS}"
             )
+        opt_norm = str(self.optimizer).strip().lower()
+        if opt_norm not in OPTIMIZERS:
+            raise ValueError(f"Unsupported optimizer {self.optimizer!r}; expected {OPTIMIZERS}")
+        object.__setattr__(self, "optimizer", opt_norm)
+        if float(self.muon_lr) <= 0.0 or not math.isfinite(float(self.muon_lr)):
+            raise ValueError(f"muon_lr must be positive finite, got {self.muon_lr!r}")
+        if self.muon_lr_scale is not None and (
+            float(self.muon_lr_scale) <= 0.0 or not math.isfinite(float(self.muon_lr_scale))
+        ):
+            raise ValueError(f"muon_lr_scale must be positive finite, got {self.muon_lr_scale!r}")
+        if self.mask_rate is not None and (
+            not (0.0 < float(self.mask_rate) <= 1.0) or not math.isfinite(float(self.mask_rate))
+        ):
+            raise ValueError(f"mask_rate must be in (0, 1], got {self.mask_rate!r}")
         if not (0.0 <= self.cooldown_fraction < 1.0):
             raise ValueError(f"cooldown_fraction must be in [0, 1), got {self.cooldown_fraction}")
         if not (0.0 < self.min_lr_ratio <= 1.0):
@@ -241,6 +352,16 @@ class Stage2RunSpec:
         else:
             norm = choose_milestone_epochs(self.max_epochs)
         object.__setattr__(self, "eval_epochs", norm)
+
+    @property
+    def effective_mask_rate(self) -> float:
+        if self.mask_rate is not None:
+            return float(self.mask_rate)
+        return default_mask_rate_for_objective(self.objective)
+
+    @property
+    def paradigm_display(self) -> str:
+        return objective_display_name(self.objective)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -270,14 +391,21 @@ class Stage2RunSpec:
             "eval_downstream_at_milestones": bool(self.eval_downstream_at_milestones),
             "eval_contacts_at_milestones": bool(self.eval_contacts_at_milestones),
             "eval_full_proteingym_at_final": bool(self.eval_full_proteingym_at_final),
+            "eval_temperature_calibration": bool(self.eval_temperature_calibration),
+            "optimizer": self.optimizer,
+            "muon_lr": float(self.muon_lr),
+            "muon_lr_scale": None if self.muon_lr_scale is None else float(self.muon_lr_scale),
+            "mask_rate": None if self.mask_rate is None else float(self.mask_rate),
+            "gradient_checkpointing": self.gradient_checkpointing,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Stage2RunSpec:
+        raw_gc = data.get("gradient_checkpointing", None)
         return cls(
             run_id=str(data["run_id"]),
             arm_id=str(data["arm_id"]),
-            objective=str(data["objective"]),
+            objective=canonicalize_objective(str(data["objective"])),
             scale_id=str(data["scale_id"]),
             max_epochs=int(data["max_epochs"]),
             eval_epochs=tuple(int(e) for e in data.get("eval_epochs", ())),
@@ -309,4 +437,14 @@ class Stage2RunSpec:
             eval_full_proteingym_at_final=bool(
                 data.get("eval_full_proteingym_at_final", True)
             ),
+            eval_temperature_calibration=bool(
+                data.get("eval_temperature_calibration", True)
+            ),
+            optimizer=str(data.get("optimizer", "adamw")),
+            muon_lr=float(data.get("muon_lr", 0.02)),
+            muon_lr_scale=(
+                None if data.get("muon_lr_scale") is None else float(data["muon_lr_scale"])
+            ),
+            mask_rate=None if data.get("mask_rate") is None else float(data["mask_rate"]),
+            gradient_checkpointing=None if raw_gc is None else bool(raw_gc),
         )
