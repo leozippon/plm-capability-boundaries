@@ -277,12 +277,20 @@ class AdaptiveEarlyStopTracker:
             return None
 
         # Phase B (i): Data ceiling reached
+        # For mlm_15, conditional pseudo-bits omit the log2(N) sequence-ID cost so
+        # pseudo_bits / H_gibbs can approach/exceed 1.0 before h_15 reaches ceiling;
+        # gate mlm_15 strictly on masked-token xent <= mlm_xent_ceiling_bpt (0.04 bpt).
         xent_ceiling = (
             self.config.ar_xent_ceiling_bpt
             if canon_paradigm == "ar"
             else self.config.mlm_xent_ceiling_bpt
         )
-        if frac_gibbs >= self.config.data_ceiling_frac_gibbs or tok_xent <= xent_ceiling:
+        hit_data_ceiling = (
+            (tok_xent <= xent_ceiling)
+            if canon_paradigm == "mlm_15"
+            else (frac_gibbs >= self.config.data_ceiling_frac_gibbs or tok_xent <= xent_ceiling)
+        )
+        if hit_data_ceiling:
             self.prev_epoch = int(epoch)
             self.prev_c_eff = c_eff
             self.activate_cooldown(
@@ -641,7 +649,16 @@ def verify_checkpoint_compatibility(
             )
 
 
-def _capture_rng_states(mask_gen: torch.Generator | None = None) -> dict[str, Any]:
+def _capture_rng_states(
+    mask_gen: torch.Generator | None = None,
+    *,
+    mask_gen_states_by_rank: list[torch.Tensor | None] | None = None,
+) -> dict[str, Any]:
+    local_mask_state = (
+        mask_gen.get_state().detach().to(device="cpu", dtype=torch.uint8)
+        if mask_gen is not None
+        else None
+    )
     states: dict[str, Any] = {
         "python_random": random.getstate(),
         "numpy_random": np.random.get_state(),
@@ -649,9 +666,8 @@ def _capture_rng_states(mask_gen: torch.Generator | None = None) -> dict[str, An
         "torch_cuda": (
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         ),
-        "mask_gen_state": (
-            mask_gen.get_state().detach().cpu() if mask_gen is not None else None
-        ),
+        "mask_gen_state": local_mask_state,
+        "mask_gen_states_by_rank": mask_gen_states_by_rank,
     }
     return states
 
@@ -1032,8 +1048,16 @@ def execute_run(
                         )
                     rng_states = ckpt.get("rng_states")
                     _restore_rng_states(rng_states)
-                    if isinstance(rng_states, dict) and rng_states.get("mask_gen_state") is not None:
-                        resume_mask_gen_state = rng_states["mask_gen_state"]
+                    if isinstance(rng_states, dict):
+                        by_rank = rng_states.get("mask_gen_states_by_rank")
+                        if (
+                            isinstance(by_rank, list)
+                            and ctx.rank < len(by_rank)
+                            and by_rank[ctx.rank] is not None
+                        ):
+                            resume_mask_gen_state = by_rank[ctx.rank]
+                        elif rng_states.get("mask_gen_state") is not None:
+                            resume_mask_gen_state = rng_states["mask_gen_state"]
 
         eval_model: nn.Module = torch.compile(raw_model) if use_compile else raw_model
         if ctx.is_distributed:
@@ -1138,11 +1162,30 @@ def execute_run(
             epoch_done_val: int,
             current_epoch_val: int,
             step_in_epoch_val: int,
-            epoch_loss_sum_val: float,
+            epoch_loss_sum_tensor: torch.Tensor,
             mask_gen_obj: torch.Generator | None,
             elapsed_val: float,
             target_path: Path,
         ) -> None:
+            mask_states_by_rank: list[torch.Tensor | None] | None = None
+            loss_for_ckpt = float(epoch_loss_sum_tensor.item())
+            if ctx.is_distributed:
+                avg_loss_t = epoch_loss_sum_tensor.detach().clone()
+                dist.all_reduce(avg_loss_t, op=dist.ReduceOp.AVG)
+                loss_for_ckpt = float(avg_loss_t.item())
+
+                local_m = (
+                    mask_gen_obj.get_state().detach().to(device="cpu", dtype=torch.uint8)
+                    if mask_gen_obj is not None
+                    else None
+                )
+                gathered: list[torch.Tensor | None] | None = (
+                    [None for _ in range(ctx.world_size)] if ctx.rank == 0 else None
+                )
+                dist.gather_object(local_m, gathered, dst=0)
+                if ctx.rank == 0:
+                    mask_states_by_rank = gathered
+
             if ctx.rank == 0:
                 ckpt_payload = {
                     "schema": CHECKPOINT_SCHEMA,
@@ -1156,10 +1199,13 @@ def execute_run(
                     "global_batch_size": int(global_batch_size),
                     "warmup_steps": int(warmup_steps),
                     "last_lr": float(last_lr),
-                    "epoch_loss_sum": float(epoch_loss_sum_val),
+                    "epoch_loss_sum": float(loss_for_ckpt),
                     "model_state_dict": raw_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
-                    "rng_states": _capture_rng_states(mask_gen_obj),
+                    "rng_states": _capture_rng_states(
+                        mask_gen_obj,
+                        mask_gen_states_by_rank=mask_states_by_rank,
+                    ),
                     "wsd_early_stop_state": early_stop.to_dict(),
                     "init_eval": init_eval,
                     "exposures": exposures,
@@ -1212,7 +1258,8 @@ def execute_run(
                 and resume_step_in_epoch > 0
                 and resume_mask_gen_state is not None
             ):
-                mask_gen.set_state(resume_mask_gen_state.to(device=ctx.device, dtype=torch.uint8))
+                # PyTorch Generator.set_state strictly requires a CPU ByteTensor even for CUDA generators.
+                mask_gen.set_state(resume_mask_gen_state.to(device="cpu", dtype=torch.uint8))
                 resume_mask_gen_state = None
             else:
                 mask_gen.manual_seed(
@@ -1294,14 +1341,16 @@ def execute_run(
 
                 epoch_loss_sum += loss.detach().to(torch.float64)
 
-                # Spot-safe SIGTERM/SIGINT preemption & periodic time-based checkpoint check
+                # Spot-safe SIGTERM/SIGINT preemption & periodic time-based checkpoint check.
+                # Under DDP, sync cadence MUST be strictly rank-invariant (never conditioned on
+                # local signal delivery) so all ranks enter dist.all_reduce together without deadlock.
                 next_step_in_epoch = step_in_epoch + 1
-                should_check_sync = (
-                    (not ctx.is_distributed)
-                    or (preempt_signal != 0)
-                    or (next_step_in_epoch == steps_per_epoch)
-                    or (next_step_in_epoch % 8 == 0)
-                )
+                if ctx.is_distributed:
+                    should_check_sync = (next_step_in_epoch == steps_per_epoch) or (
+                        next_step_in_epoch % 8 == 0
+                    )
+                else:
+                    should_check_sync = True
                 if should_check_sync:
                     need_preempt = preempt_signal != 0
                     need_periodic = (
@@ -1324,7 +1373,7 @@ def execute_run(
                             epoch_done_val=epoch - 1,
                             current_epoch_val=epoch,
                             step_in_epoch_val=next_step_in_epoch,
-                            epoch_loss_sum_val=float(epoch_loss_sum.item()),
+                            epoch_loss_sum_tensor=epoch_loss_sum,
                             mask_gen_obj=mask_gen,
                             elapsed_val=elapsed_now,
                             target_path=latest_ckpt_path,
@@ -1365,17 +1414,26 @@ def execute_run(
                     mlm_fixed_num_draws=mlm_fixed_num_draws,
                 )
 
-                # Two-phase adaptive early-stopping update (may trigger cooldown)
+                # Two-phase adaptive early-stopping update (rank 0 authoritative in DDP, broadcast to all)
                 if run_spec.lr_schedule == "wsd":
-                    early_stop.update(
-                        epoch=epoch,
-                        eval_rec=eval_rec,
-                        paradigm=run_spec.paradigm,
-                        global_step=global_step,
-                        steps_per_epoch=steps_per_epoch,
-                        max_epochs=run_spec.max_epochs,
-                        vocab_size=VOCAB_AA,
-                    )
+                    if (not ctx.is_distributed) or ctx.rank == 0:
+                        early_stop.update(
+                            epoch=epoch,
+                            eval_rec=eval_rec,
+                            paradigm=run_spec.paradigm,
+                            global_step=global_step,
+                            steps_per_epoch=steps_per_epoch,
+                            max_epochs=run_spec.max_epochs,
+                            vocab_size=VOCAB_AA,
+                        )
+                    if ctx.is_distributed:
+                        sync_state: list[Any] = [early_stop.to_dict() if ctx.rank == 0 else None]
+                        dist.broadcast_object_list(sync_state, src=0)
+                        if ctx.rank != 0:
+                            early_stop = AdaptiveEarlyStopTracker.from_dict(
+                                sync_state[0],
+                                fallback_config=es_cfg,
+                            )
                     target_stop_epoch = (
                         min(run_spec.max_epochs, early_stop.stop_epoch)
                         if early_stop.stop_epoch is not None

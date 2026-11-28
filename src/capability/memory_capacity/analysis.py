@@ -330,10 +330,13 @@ def estimate_ecrit_nonparametric(
 def fit_delayed_hill_exposure_curve(
     exposures: Sequence[float] | np.ndarray,
     c_eff_values: Sequence[float] | np.ndarray,
+    *,
+    min_signal_bpp: float = 0.02,
 ) -> dict[str, Any] | None:
     """Fit delayed-Hill write dynamics:
     c_eff(e) = c_inf * ((e - e_crit)^alpha / ((e - e_crit)^alpha + tau^alpha)) for e > e_crit,
     else 0, where e_50 = e_crit + tau and e_90 = e_crit + tau * 9^(1/alpha).
+    Returns None when the trajectory never reaches ``min_signal_bpp`` (pre-takeoff noise).
     """
     e_arr = np.asarray(exposures, dtype=np.float64)
     y_arr = np.asarray(c_eff_values, dtype=np.float64)
@@ -345,7 +348,7 @@ def fit_delayed_hill_exposure_curve(
     e_arr = e_arr[order]
     y_arr = y_arr[order]
     y_max = float(np.max(y_arr))
-    if y_max <= 0.0:
+    if y_max < float(min_signal_bpp):
         return None
 
     def _pred(c_inf: float, e_crit: float, tau: float, alpha: float) -> np.ndarray:
@@ -1121,18 +1124,27 @@ def _build_c_max_calibration_and_exposure_laws(
             traj_dbpt_emp = [pt["delta_bpt_empirical"] for pt in traj]
             traj_dbpt_2x = [pt["delta_bpt_at_2x"] for pt in traj]
 
+            e_crit_dbpt_emp = estimate_ecrit_nonparametric(traj_epochs, traj_dbpt_emp, 0.05)
+            e_crit_dbpt_2x = estimate_ecrit_nonparametric(traj_epochs, traj_dbpt_2x, 0.05)
+            has_takeoff_emp = e_crit_dbpt_emp is not None and (max(traj_c_emp, default=0.0) >= 0.02)
+            has_takeoff_2x = e_crit_dbpt_2x is not None and (max(traj_c_2x, default=0.0) >= 0.02)
+
             hill_2x = fit_hill_exposure_curve(traj_epochs, traj_c_2x)
             hill_plat = fit_hill_exposure_curve(traj_epochs, traj_c_emp)
-            delayed_hill_2x = fit_delayed_hill_exposure_curve(traj_epochs, traj_c_2x)
-            delayed_hill_plat = fit_delayed_hill_exposure_curve(traj_epochs, traj_c_emp)
+            delayed_hill_2x = (
+                fit_delayed_hill_exposure_curve(traj_epochs, traj_c_2x) if has_takeoff_2x else None
+            )
+            delayed_hill_plat = (
+                fit_delayed_hill_exposure_curve(traj_epochs, traj_c_emp) if has_takeoff_emp else None
+            )
 
             c_inf_emp = (
                 float(delayed_hill_plat["c_inf_bits_per_param"])
                 if delayed_hill_plat is not None
                 else (
                     float(hill_plat["c_inf_bits_per_param"])
-                    if hill_plat is not None
-                    else (max(traj_c_emp) if traj_c_emp else 0.0)
+                    if (has_takeoff_emp and hill_plat is not None)
+                    else (max(traj_c_emp) if (has_takeoff_emp and traj_c_emp) else 0.0)
                 )
             )
             c_inf_2x = (
@@ -1140,28 +1152,24 @@ def _build_c_max_calibration_and_exposure_laws(
                 if delayed_hill_2x is not None
                 else (
                     float(hill_2x["c_inf_bits_per_param"])
-                    if hill_2x is not None
-                    else (max(traj_c_2x) if traj_c_2x else 0.0)
+                    if (has_takeoff_2x and hill_2x is not None)
+                    else (max(traj_c_2x) if (has_takeoff_2x and traj_c_2x) else 0.0)
                 )
             )
             e_crit_np = {
-                "e_crit_delta_bpt_0p05": estimate_ecrit_nonparametric(
-                    traj_epochs, traj_dbpt_emp, 0.05
-                ),
-                "e_crit_delta_bpt_0p05_at_2x": estimate_ecrit_nonparametric(
-                    traj_epochs, traj_dbpt_2x, 0.05
-                ),
+                "e_crit_delta_bpt_0p05": e_crit_dbpt_emp,
+                "e_crit_delta_bpt_0p05_at_2x": e_crit_dbpt_2x,
                 "e_crit_frac_c_inf_0p05": (
                     estimate_ecrit_nonparametric(traj_epochs, traj_c_emp, 0.05 * c_inf_emp)
-                    if c_inf_emp > 0.0
+                    if (has_takeoff_emp and c_inf_emp > 0.0)
                     else None
                 ),
                 "e_crit_frac_c_inf_0p05_at_2x": (
                     estimate_ecrit_nonparametric(traj_epochs, traj_c_2x, 0.05 * c_inf_2x)
-                    if c_inf_2x > 0.0
+                    if (has_takeoff_2x and c_inf_2x > 0.0)
                     else None
                 ),
-                "c_inf_reference_empirical": c_inf_emp if c_inf_emp > 0.0 else None,
+                "c_inf_reference_empirical": c_inf_emp if (has_takeoff_emp and c_inf_emp > 0.0) else None,
             }
             by_scale_exp[s] = {
                 "n_exposures": len(traj),
@@ -1306,34 +1314,49 @@ def _build_c_max_calibration_and_exposure_laws(
         anchor_pmax_list = [pt["c_eff_plateau_max_mean"] for pt in anchor_only_pts]
         anchor_dbpt_list = [pt["delta_bpt_empirical_mean"] for pt in anchor_only_pts]
 
+        pooled_e_crit_dbpt = estimate_ecrit_nonparametric(anchor_epochs_list, anchor_dbpt_list, 0.05)
+        pooled_has_takeoff = pooled_e_crit_dbpt is not None and (max(anchor_cemp_list, default=0.0) >= 0.02)
+
         pooled_hill_2x = fit_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
         pooled_hill_emp = fit_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
         pooled_hill_pmax = fit_hill_exposure_curve(anchor_epochs_list, anchor_pmax_list)
-        pooled_delayed_2x = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
-        pooled_delayed_emp = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
-        pooled_delayed_pmax = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_pmax_list)
+        pooled_delayed_2x = (
+            fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
+            if pooled_has_takeoff
+            else None
+        )
+        pooled_delayed_emp = (
+            fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
+            if pooled_has_takeoff
+            else None
+        )
+        pooled_delayed_pmax = (
+            fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_pmax_list)
+            if pooled_has_takeoff
+            else None
+        )
 
         pooled_c_inf_ref = (
             float(pooled_delayed_emp["c_inf_bits_per_param"])
             if pooled_delayed_emp is not None
             else (
                 float(pooled_hill_emp["c_inf_bits_per_param"])
-                if pooled_hill_emp is not None
-                else (max(anchor_cemp_list) if anchor_cemp_list else 0.0)
+                if (pooled_has_takeoff and pooled_hill_emp is not None)
+                else (max(anchor_cemp_list) if (pooled_has_takeoff and anchor_cemp_list) else 0.0)
             )
         )
         pooled_e_crit_np = {
-            "e_crit_delta_bpt_0p05": estimate_ecrit_nonparametric(
-                anchor_epochs_list, anchor_dbpt_list, 0.05
-            ),
+            "e_crit_delta_bpt_0p05": pooled_e_crit_dbpt,
             "e_crit_frac_c_inf_0p05": (
                 estimate_ecrit_nonparametric(
                     anchor_epochs_list, anchor_cemp_list, 0.05 * pooled_c_inf_ref
                 )
-                if pooled_c_inf_ref > 0.0
+                if (pooled_has_takeoff and pooled_c_inf_ref > 0.0)
                 else None
             ),
-            "c_inf_reference_empirical": pooled_c_inf_ref if pooled_c_inf_ref > 0.0 else None,
+            "c_inf_reference_empirical": (
+                pooled_c_inf_ref if (pooled_has_takeoff and pooled_c_inf_ref > 0.0) else None
+            ),
         }
 
         exposure_discount_curves[paradigm] = {

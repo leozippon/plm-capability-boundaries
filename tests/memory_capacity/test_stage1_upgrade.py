@@ -268,6 +268,46 @@ def test_wsd_schedule_and_two_phase_adaptive_early_stopping() -> None:
     assert rc == "data_ceiling"
     assert ceil_tracker.stop_epoch == 2 + 20
 
+    # MLM-15% data ceiling MUST gate on masked-token xent <= 0.04 bpt, NOT pseudo/H_gibbs >= 0.995
+    mlm15_tracker = AdaptiveEarlyStopTracker(config=cfg)
+    mlm15_tracker.update(
+        epoch=5,
+        eval_rec={"mean_tok_xent_bits": 1.0, "bits_per_non_emb_param": 0.6, "fraction_of_H_gibbs": 0.7},
+        paradigm="mlm_15",
+        global_step=50,
+        steps_per_epoch=10,
+        max_epochs=200,
+    )
+    mlm15_tracker.update(
+        epoch=10,
+        eval_rec={"mean_tok_xent_bits": 0.2, "bits_per_non_emb_param": 0.85, "fraction_of_H_gibbs": 0.98},
+        paradigm="mlm_15",
+        global_step=100,
+        steps_per_epoch=10,
+        max_epochs=200,
+    )
+    assert mlm15_tracker.takeoff_detected and not mlm15_tracker.cooldown_triggered
+    # pseudo/H_gibbs = 1.02 >= 0.995 but h_15 = 0.087 > 0.04 -> must NOT trigger data_ceiling
+    r_no_ceil = mlm15_tracker.update(
+        epoch=20,
+        eval_rec={"mean_tok_xent_bits": 0.087, "bits_per_non_emb_param": 0.91, "fraction_of_H_gibbs": 1.02},
+        paradigm="mlm_15",
+        global_step=200,
+        steps_per_epoch=10,
+        max_epochs=200,
+    )
+    assert r_no_ceil is None and not mlm15_tracker.cooldown_triggered
+    # h_15 = 0.035 <= 0.04 -> MUST trigger data_ceiling
+    r_yes_ceil = mlm15_tracker.update(
+        epoch=35,
+        eval_rec={"mean_tok_xent_bits": 0.035, "bits_per_non_emb_param": 0.92, "fraction_of_H_gibbs": 1.03},
+        paradigm="mlm_15",
+        global_step=350,
+        steps_per_epoch=10,
+        max_epochs=200,
+    )
+    assert r_yes_ceil == "data_ceiling" and mlm15_tracker.cooldown_triggered
+
 
 def test_end_to_end_wsd_early_stop_cooldown_and_mlm15_diagnostics(tmp_path: Path) -> None:
     out_dir = tmp_path / "wsd_early_stop"
@@ -666,3 +706,251 @@ def test_shared_fs_lease_claim_expire_steal_and_spot_worker_cli(tmp_path: Path) 
     assert f"[COMPLETE single_gpu] run={spec_a.run_id}" in proc.stdout
     assert (spot_out / "runs" / f"{spec_a.run_id}.json").is_file()
     assert not (spot_out / "leases" / f"{spec_a.run_id}.lease.json").exists()
+
+
+def test_pretakeoff_flat_curve_suppresses_spurious_ecrit_and_delayed_hill(tmp_path: Path) -> None:
+    epochs = np.array([1, 2, 5, 10, 25, 50, 100, 200, 400], dtype=np.float64)
+    flat_y = np.linspace(0.0, 0.0007, epochs.size)
+    assert fit_delayed_hill_exposure_curve(epochs, flat_y) is None
+
+    runs_dir = tmp_path / "flat_runs"
+    runs_dir.mkdir(parents=True)
+    spec_05 = SCALE_SPECS["0.5m"]
+    p_ne = spec_05.exact_non_embedding_params
+    p_tot = spec_05.exact_total_params
+    p_emb = spec_05.exact_embedding_params
+    for mult in (0.5, 1.0, 2.0, 4.0):
+        n_seq = max(8, int(round((mult * 3.5 * p_ne) / (SEQ_LEN * LOG2_20))))
+        h_null = null_ordered_entropy_bits(n_seq)
+        h_data = dataset_entropy_bits(n_seq)
+        h_gibbs = gibbs_memorizable_bits(n_seq)
+        exps = []
+        for ep, c_ep in zip(epochs, flat_y):
+            mem_bits = float(c_ep) * p_ne
+            mean_seq_xent = (h_null - mem_bits) / n_seq
+            mean_tok_xent = mean_seq_xent / SEQ_LEN
+            exps.append(
+                {
+                    "epoch": int(ep),
+                    "step": int(ep) * 10,
+                    "tokens_seen": int(ep) * n_seq * SEQ_LEN,
+                    "lr": 1e-3,
+                    "elapsed_sec": float(ep),
+                    "train_loss_last_epoch_bits_per_tok": mean_tok_xent,
+                    "eval_n_sequences": n_seq,
+                    "mean_seq_xent_bits": mean_seq_xent,
+                    "mean_tok_xent_bits": mean_tok_xent,
+                    "eval_mc_se_seq_bits": 0.01,
+                    "total_model_xent_bits": h_null - mem_bits,
+                    "memorized_bits": mem_bits,
+                    "memorized_bits_se": 0.01 * n_seq,
+                    "bits_per_non_emb_param": mem_bits / p_ne,
+                    "bits_per_total_param": mem_bits / p_tot,
+                    "fraction_of_H_data": mem_bits / h_data,
+                    "fraction_of_H_gibbs": mem_bits / h_gibbs,
+                }
+            )
+        doc = {
+            "schema": "plm_parametric_capacity_run_v1",
+            "status": "complete",
+            "run_id": f"primary_mlm_0p5m_r{str(mult).replace('.', 'p')}",
+            "track": "primary",
+            "paradigm": "mlm",
+            "scale_id": "0.5m",
+            "multiplier": mult,
+            "n_sequences": n_seq,
+            "seq_len": SEQ_LEN,
+            "vocab_size": VOCAB_AA,
+            "n_params_non_embedding": p_ne,
+            "n_params_embedding": p_emb,
+            "n_params_total": p_tot,
+            "weight_decay": 0.0,
+            "precision": "bf16",
+            "max_epochs": 400,
+            "seed": 20261128,
+            "data_seed": 20261127,
+            "H_null_ordered_bits": h_null,
+            "H_data_bits": h_data,
+            "H_gibbs_max_bits": h_gibbs,
+            "exposures": exps,
+        }
+        write_json_with_sha256(runs_dir / f"{doc['run_id']}.json", doc)
+
+    summary = summarize_memory_capacity_campaign(runs_dir, bootstrap_draws=50)
+    oa_exp = summary["exposure_discount_curves"]["oa_uniform"]
+    assert oa_exp["pooled_delayed_hill_fit_empirical"] is None
+    assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_delta_bpt_0p05"] is None
+    assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_frac_c_inf_0p05"] is None
+    assert oa_exp["by_scale"]["0.5m"]["delayed_hill_fit_empirical"] is None
+    assert oa_exp["by_scale"]["0.5m"]["e_crit_nonparametric"]["e_crit_frac_c_inf_0p05"] is None
+
+
+def test_spot_worker_skips_deterministic_failure_and_completes_healthy_run(tmp_path: Path) -> None:
+    # A run with corrupt pre-existing checkpoint (mismatched run_spec_hash) fails deterministically;
+    # worker must skip it instead of looping forever and still finish the healthy second run.
+    bad_spec = RunSpec(
+        run_id="spot_bad_ckpt_run",
+        track="primary",
+        paradigm="ar",
+        scale_id="0.5m",
+        multiplier=0.25,
+        n_sequences=8,
+        max_epochs=1,
+        eval_epochs=(1,),
+        weight_decay=0.0,
+        precision="fp32_strict",
+        seed=20261128,
+        data_seed=20261127,
+        save_checkpoint=False,
+        ddp_preferred=False,
+        lr_schedule="wsd",
+    )
+    good_spec = RunSpec(**{**bad_spec.to_dict(), "run_id": "spot_good_run"})
+    spot_out = tmp_path / "spot_fail_skip"
+    ckpt_dir = spot_out / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "run_spec_hash": "0" * 64,
+            "run_spec": bad_spec.to_dict(),
+            "epoch_done": 0,
+            "current_epoch": 1,
+            "step_in_epoch": 1,
+        },
+        ckpt_dir / f"{bad_spec.run_id}_latest.pt",
+    )
+    manifest_path = tmp_path / "manifest_fail_skip.json"
+    manifest_path.write_text(
+        json.dumps({"runs": [bad_spec.to_dict(), good_spec.to_dict()]}, indent=2),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SPOT_WORKER_SCRIPT),
+            "--manifest",
+            str(manifest_path),
+            "--out-dir",
+            str(spot_out),
+            "--gpus",
+            "cpu",
+            "--mode",
+            "single_gpu",
+            "--no-compile",
+            "--max-run-retries",
+            "0",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert f"[FAILED single_gpu] run={bad_spec.run_id}" in proc.stderr
+    assert f"[COMPLETE single_gpu] run={good_spec.run_id}" in proc.stdout
+    assert (spot_out / "runs" / f"{good_spec.run_id}.json").is_file()
+    assert not (spot_out / "runs" / f"{bad_spec.run_id}.json").exists()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_mid_epoch_sigterm_flush_and_exact_gpu_resume(tmp_path: Path) -> None:
+    spec = RunSpec(
+        run_id="test_cuda_mid_epoch_resume",
+        track="primary",
+        paradigm="mlm_15",
+        scale_id="0.5m",
+        multiplier=0.25,
+        n_sequences=16,
+        max_epochs=2,
+        eval_epochs=(1, 2),
+        weight_decay=0.0,
+        precision="fp32_strict",
+        seed=20261128,
+        data_seed=20261127,
+        save_checkpoint=False,
+        ddp_preferred=False,
+        lr_schedule="wsd",
+    )
+
+    ref_dir = tmp_path / "cuda_ref"
+    ref_res = train_memory_capacity_run(
+        spec,
+        out_dir=ref_dir,
+        device="cuda:0",
+        use_compile=False,
+        seq_len=64,
+        batch_size_override=4,
+        eval_max_sequences_mlm=16,
+        loo_max_sequences_mlm=8,
+        loo_probes_per_seq=4,
+        mlm_fixed_num_draws=4,
+        checkpoint_interval_sec=0.0,
+    )
+
+    preempt_dir = tmp_path / "cuda_preempt"
+    helper_code = f"""
+import os, signal, sys
+import torch
+sys.path.insert(0, {str(REPO_ROOT)!r})
+from src.capability.memory_capacity import RunSpec, execute_run
+
+spec = RunSpec.from_dict({spec.to_dict()!r})
+orig_step = torch.optim.AdamW.step
+calls = [0]
+def wrapped_step(self, *args, **kwargs):
+    out = orig_step(self, *args, **kwargs)
+    calls[0] += 1
+    if calls[0] == 5:
+        os.kill(os.getpid(), signal.SIGTERM)
+    return out
+torch.optim.AdamW.step = wrapped_step
+execute_run(
+    spec,
+    out_dir={str(preempt_dir)!r},
+    device="cuda:0",
+    use_compile=False,
+    seq_len=64,
+    batch_size_override=4,
+    eval_max_sequences_mlm=16,
+    loo_max_sequences_mlm=8,
+    loo_probes_per_seq=4,
+    mlm_fixed_num_draws=4,
+    checkpoint_interval_sec=0.0,
+)
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", helper_code],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == PREEMPTION_EXIT_CODE, proc.stderr
+
+    latest_ckpt = preempt_dir / "checkpoints" / f"{spec.run_id}_latest.pt"
+    assert latest_ckpt.is_file()
+    ckpt = torch.load(latest_ckpt, map_location="cpu", weights_only=False)
+    assert ckpt["current_epoch"] == 2
+    assert ckpt["step_in_epoch"] == 1
+    assert ckpt["rng_states"]["mask_gen_state"].device.type == "cpu"
+
+    resumed_res = train_memory_capacity_run(
+        spec,
+        out_dir=preempt_dir,
+        device="cuda:0",
+        use_compile=False,
+        seq_len=64,
+        batch_size_override=4,
+        eval_max_sequences_mlm=16,
+        loo_max_sequences_mlm=8,
+        loo_probes_per_seq=4,
+        mlm_fixed_num_draws=4,
+        checkpoint_interval_sec=0.0,
+    )
+    assert resumed_res["status"] == "complete"
+    assert resumed_res["final_eval"]["global_step"] == ref_res["final_eval"]["global_step"]
+    assert resumed_res["final_eval"]["mean_masked_token_xent_bits"] == pytest.approx(
+        ref_res["final_eval"]["mean_masked_token_xent_bits"], abs=1e-5
+    )
+    assert resumed_res["final_eval"]["train_loss_last_epoch_bits_per_tok"] == pytest.approx(
+        ref_res["final_eval"]["train_loss_last_epoch_bits_per_tok"], abs=1e-5
+    )

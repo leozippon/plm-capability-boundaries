@@ -192,13 +192,19 @@ def _run_spot_pool(args: argparse.Namespace) -> int:
     multi_gpu = (not use_cpu) and (len(worker_slots) > 1)
     run_single_phase = args.mode in ("single_gpu", "auto")
     run_ddp_phase = args.mode in ("ddp", "auto") and multi_gpu
+    failure_counts: dict[str, int] = {}
+    failed_run_ids: set[str] = set()
+    max_retries = max(0, int(args.max_run_retries))
+
     single_predicate = (
-        (lambda s: True)
+        (lambda s: s.run_id not in failed_run_ids)
         if (args.allow_ddp_on_single_gpu or not multi_gpu)
-        else (lambda s: not s.ddp_preferred)
+        else (lambda s: (not s.ddp_preferred) and (s.run_id not in failed_run_ids))
     )
     ddp_predicate = (
-        (lambda s: True) if args.mode == "ddp" else (lambda s: s.ddp_preferred)
+        (lambda s: s.run_id not in failed_run_ids)
+        if args.mode == "ddp"
+        else (lambda s: s.ddp_preferred and (s.run_id not in failed_run_ids))
     )
 
     try:
@@ -281,8 +287,12 @@ def _run_spot_pool(args: argparse.Namespace) -> int:
                             flush=True,
                         )
                     else:
+                        failure_counts[spec.run_id] = failure_counts.get(spec.run_id, 0) + 1
+                        if failure_counts[spec.run_id] > max_retries:
+                            failed_run_ids.add(spec.run_id)
                         print(
-                            f"{_utc_now()} [FAILED single_gpu] run={spec.run_id} rc={rc} elapsed={elapsed:.1f}s",
+                            f"{_utc_now()} [FAILED single_gpu] run={spec.run_id} rc={rc} "
+                            f"failures={failure_counts[spec.run_id]}/{max_retries + 1} elapsed={elapsed:.1f}s",
                             file=sys.stderr,
                             flush=True,
                         )
@@ -372,8 +382,12 @@ def _run_spot_pool(args: argparse.Namespace) -> int:
                     )
                     return PREEMPTION_EXIT_CODE
                 else:
+                    failure_counts[spec.run_id] = failure_counts.get(spec.run_id, 0) + 1
+                    if failure_counts[spec.run_id] > max_retries:
+                        failed_run_ids.add(spec.run_id)
                     print(
-                        f"{_utc_now()} [FAILED ddp] run={spec.run_id} rc={rc} elapsed={elapsed:.1f}s",
+                        f"{_utc_now()} [FAILED ddp] run={spec.run_id} rc={rc} "
+                        f"failures={failure_counts[spec.run_id]}/{max_retries + 1} elapsed={elapsed:.1f}s",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -500,6 +514,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--fail-fast",
         action="store_true",
         help="Abort worker pool immediately if any child exits nonzero (other than preemption 143)",
+    )
+    parser.add_argument(
+        "--max-run-retries",
+        type=int,
+        default=0,
+        help="Retries per run_id after non-preemption failure before skipping in this worker session (default: 0)",
     )
     return parser
 
