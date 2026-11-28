@@ -178,6 +178,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Directory containing completed per-run JSON receipts (<out_dir>/runs or <out_dir>)",
     )
     parser.add_argument(
+        "--extra-runs-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help="Optional additional runs directory to merge (e.g. combining Batch-1 and Stage-1 WSD; WSD/higher max_epochs wins per cell)",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         required=True,
@@ -199,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = summarize_memory_capacity_campaign(
         args.runs_dir,
+        extra_runs_dirs=args.extra_runs_dir,
         out_path=args.out,
         bootstrap_draws=args.bootstrap_draws,
         seed=args.seed,

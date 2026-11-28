@@ -1012,23 +1012,31 @@ def _select_anchor_epoch(
     sat_epochs_by_scale: dict[str, list[int]],
     *,
     paradigm: str | None = None,
+    all_cells: Mapping[tuple[str, str, int], Mapping[str, Any]] | None = None,
+    min_signal_bpp: float = 0.02,
 ) -> int | None:
-    """Select the highest saturated common epoch across scales for a paradigm.
+    """Select the highest saturated common epoch across scales with post-takeoff signal.
 
-    Never forces mlm_15 or oa_uniform onto AR's legacy e=400 anchor when higher
-    saturated epochs exist; preserves e=400 automatically for Batch-1 AR campaigns
-    where 400 is the highest multi-scale saturated epoch.
+    Filters out dead pre-takeoff epochs (c_eff < min_signal_bpp across all scales) whenever
+    any post-takeoff epoch exists, so mixing Batch-1 truncated MLM/OA runs (e=400, c_eff=0)
+    with Stage-1 WSD runs (e=4000/10000) anchors on the active regime.
     """
     if not sat_epochs_by_scale:
         return None
     counts: dict[int, int] = {}
-    for es in sat_epochs_by_scale.values():
+    active_counts: dict[int, int] = {}
+    for s, es in sat_epochs_by_scale.items():
         for e in es:
             counts[e] = counts.get(e, 0) + 1
-    multi_scale_epochs = [e for e, cnt in counts.items() if cnt >= 2]
+            if all_cells is not None and paradigm is not None:
+                cell = all_cells.get((paradigm, s, e))
+                if cell is not None and float(cell.get("c_eff_empirical", 0.0)) >= min_signal_bpp:
+                    active_counts[e] = active_counts.get(e, 0) + 1
+    use_counts = active_counts if active_counts else counts
+    multi_scale_epochs = [e for e, cnt in use_counts.items() if cnt >= 2]
     if multi_scale_epochs:
         return max(multi_scale_epochs)
-    return max(counts.keys())
+    return max(use_counts.keys())
 
 
 def _build_c_max_calibration_and_exposure_laws(
@@ -1047,7 +1055,9 @@ def _build_c_max_calibration_and_exposure_laws(
     for p_idx, paradigm in enumerate(paradigms):
         p_seed = seed + p_idx * 500
         sat_epochs_map = _saturated_epochs_by_scale(all_cells, paradigm)
-        anchor_epoch = _select_anchor_epoch(sat_epochs_map, paradigm=paradigm)
+        anchor_epoch = _select_anchor_epoch(
+            sat_epochs_map, paradigm=paradigm, all_cells=all_cells
+        )
         if anchor_epoch is None:
             continue
 
@@ -2110,19 +2120,90 @@ def _build_ablations(
     }
 
 
+def _deduplicate_primary_runs(
+    runs: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Deduplicate overlapping primary/WSD runs per (paradigm, scale_id, multiplier).
+
+    Prefers stage1_wsd over legacy Batch-1 cosine runs, and longer max_epochs
+    (e.g. 25k asymptotic probes over 4k base pilots) so each cell uses the highest-horizon
+    authoritative trajectory. Non-primary ablation tracks are preserved verbatim.
+    """
+    best_primary: dict[tuple[str, str, float], dict[str, Any]] = {}
+    non_primary: list[dict[str, Any]] = []
+    n_superseded = 0
+
+    def _rank(run: dict[str, Any]) -> tuple[int, int, str]:
+        return (
+            1 if str(run.get("track")) == "stage1_wsd" else 0,
+            int(run.get("max_epochs", 0)),
+            str(run.get("run_id", "")),
+        )
+
+    for run in runs:
+        if run.get("track") not in PRIMARY_TRACKS:
+            non_primary.append(run)
+            continue
+        key = (
+            str(run["paradigm"]),
+            str(run["scale_id"]),
+            round(float(run["multiplier"]), 6),
+        )
+        prev = best_primary.get(key)
+        if prev is None:
+            best_primary[key] = run
+        elif _rank(run) > _rank(prev):
+            best_primary[key] = run
+            n_superseded += 1
+        else:
+            n_superseded += 1
+
+    merged = sorted(
+        best_primary.values(),
+        key=lambda r: (str(r["paradigm"]), _scale_sort_key(str(r["scale_id"])), float(r["multiplier"])),
+    ) + non_primary
+    return merged, n_superseded
+
+
 def summarize_memory_capacity_campaign(
     runs_dir: Path,
     *,
+    extra_runs_dirs: Sequence[Path] | None = None,
     out_path: Path | None = None,
     bootstrap_draws: int = 2000,
     seed: int = 20261127,
 ) -> dict[str, Any]:
     """Aggregate completed run receipts into the canonical parametric capacity summary."""
-    completed_runs, provenance = _load_completed_runs(Path(runs_dir))
-    if not completed_runs:
+    all_dirs = [Path(runs_dir)] + [Path(d) for d in (extra_runs_dirs or ())]
+    raw_completed: list[dict[str, Any]] = []
+    n_sidecars = 0
+    n_incomplete = 0
+    n_ignored = 0
+    resolved_names: list[str] = []
+    for d in all_dirs:
+        runs_i, prov_i = _load_completed_runs(d)
+        raw_completed.extend(runs_i)
+        n_sidecars += int(prov_i["n_sidecars_verified"])
+        n_incomplete += int(prov_i["n_incomplete_runs_skipped"])
+        n_ignored += int(prov_i["n_non_run_files_ignored"])
+        resolved_names.append(str(prov_i["resolved_runs_dir"]))
+
+    if not raw_completed:
         raise ValueError(
-            f"No completed {sorted(ACCEPTED_RUN_SCHEMAS)} receipts found in {runs_dir}"
+            f"No completed {sorted(ACCEPTED_RUN_SCHEMAS)} receipts found in {all_dirs}"
         )
+
+    completed_runs, n_superseded = _deduplicate_primary_runs(raw_completed)
+    provenance = {
+        "resolved_runs_dir": resolved_names[0] if len(resolved_names) == 1 else ",".join(resolved_names),
+        "n_source_dirs": len(all_dirs),
+        "n_completed_runs_raw": len(raw_completed),
+        "n_superseded_primary_runs": n_superseded,
+        "n_completed_runs": len(completed_runs),
+        "n_sidecars_verified": n_sidecars,
+        "n_incomplete_runs_skipped": n_incomplete,
+        "n_non_run_files_ignored": n_ignored,
+    }
 
     all_obs = _flatten_observations(completed_runs)
     primary_obs = [r for r in all_obs if r["track"] in PRIMARY_TRACKS]

@@ -643,6 +643,68 @@ def test_legacy_batch1_json_compatibility_ecrit_and_mlm15_analysis(tmp_path: Pat
     assert _select_anchor_epoch({"0.5m": [1, 400, 4000], "2m": [1, 400, 4000]}, paradigm="mlm_15") == 4000
     assert _select_anchor_epoch({"0.5m": [1, 400], "2m": [1, 400], "35m": [1, 200]}, paradigm="ar") == 400
 
+    # Verify multi-directory merge prefers stage1_wsd / higher max_epochs over legacy Batch-1 runs
+    wsd_dir = tmp_path / "wsd_override"
+    wsd_dir.mkdir()
+    p_ne = SCALE_SPECS["0.5m"].exact_non_embedding_params
+    p_tot = SCALE_SPECS["0.5m"].exact_total_params
+    p_emb = SCALE_SPECS["0.5m"].exact_embedding_params
+    n_seq_2x = max(8, int(round((2.0 * 3.5 * p_ne) / (SEQ_LEN * LOG2_20))))
+    h_null_2x = null_ordered_entropy_bits(n_seq_2x)
+    h_data_2x = dataset_entropy_bits(n_seq_2x)
+    h_gibbs_2x = gibbs_memorizable_bits(n_seq_2x)
+    wsd_doc = {
+        "schema": "plm_parametric_capacity_run_v1",
+        "status": "complete",
+        "run_id": "wsd_ar_0p5m_r2p00",
+        "track": "stage1_wsd",
+        "paradigm": "ar",
+        "scale_id": "0.5m",
+        "multiplier": 2.0,
+        "n_sequences": n_seq_2x,
+        "seq_len": SEQ_LEN,
+        "vocab_size": VOCAB_AA,
+        "n_params_non_embedding": p_ne,
+        "n_params_embedding": p_emb,
+        "n_params_total": p_tot,
+        "weight_decay": 0.0,
+        "precision": "bf16",
+        "max_epochs": 1500,
+        "seed": 20261128,
+        "data_seed": 20261127,
+        "H_null_ordered_bits": h_null_2x,
+        "H_data_bits": h_data_2x,
+        "H_gibbs_max_bits": h_gibbs_2x,
+        "exposures": [
+            {
+                "epoch": 1500,
+                "step": 15000,
+                "tokens_seen": 1500 * n_seq_2x * SEQ_LEN,
+                "lr": 1e-4,
+                "elapsed_sec": 100.0,
+                "train_loss_last_epoch_bits_per_tok": 1.0,
+                "eval_n_sequences": n_seq_2x,
+                "mean_seq_xent_bits": (h_null_2x - 2.95 * p_ne) / n_seq_2x,
+                "mean_tok_xent_bits": (h_null_2x - 2.95 * p_ne) / (n_seq_2x * SEQ_LEN),
+                "eval_mc_se_seq_bits": 0.0,
+                "total_model_xent_bits": h_null_2x - 2.95 * p_ne,
+                "memorized_bits": 2.95 * p_ne,
+                "memorized_bits_se": 0.0,
+                "bits_per_non_emb_param": 2.95,
+                "bits_per_total_param": (2.95 * p_ne) / p_tot,
+                "fraction_of_H_data": (2.95 * p_ne) / h_data_2x,
+                "fraction_of_H_gibbs": (2.95 * p_ne) / h_gibbs_2x,
+            }
+        ],
+    }
+    write_json_with_sha256(wsd_dir / "wsd_ar_0p5m_r2p00.json", wsd_doc)
+    merged_summary = summarize_memory_capacity_campaign(
+        runs_dir, extra_runs_dirs=[wsd_dir], bootstrap_draws=50
+    )
+    assert merged_summary["provenance"]["n_source_dirs"] == 2
+    assert merged_summary["provenance"]["n_superseded_primary_runs"] == 1
+    assert merged_summary["c_max_calibration"]["by_paradigm"]["ar"]["asymptotic_and_metric_summary"]["max_observed_epoch"] == 1500
+
 
 def test_shared_fs_lease_claim_expire_steal_and_spot_worker_cli(tmp_path: Path) -> None:
     now = [1000.0]
