@@ -14,6 +14,7 @@ import argparse
 import gzip
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -110,11 +111,68 @@ def _load_cath_s40_superfamily_map(cath_s40_dir: Path) -> dict[str, str]:
     return out
 
 
-def _assign_synthetic_or_cath_h(dom_id: str, cath_map: dict[str, str]) -> tuple[str, str]:
+def _cluster_folds_with_foldseek(
+    pdb_dir: Path,
+    *,
+    foldseek_bin: Path,
+    work_dir: Path,
+    threads: int = 16,
+) -> dict[str, str]:
+    """Connected-component Foldseek 3Di structural fold clustering (zero transitive fold leakage)."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    clu_prefix = work_dir / "fold_clu"
+    tmp_sub = work_dir / "tmp"
+    subprocess.run(
+        [
+            str(foldseek_bin),
+            "easy-cluster",
+            str(pdb_dir),
+            str(clu_prefix),
+            str(tmp_sub),
+            "--cluster-mode",
+            "1",
+            "-c",
+            "0.5",
+            "-e",
+            "1e-2",
+            "--threads",
+            str(int(threads)),
+            "-v",
+            "1",
+        ],
+        check=True,
+    )
+    tsv_path = work_dir / "fold_clu_cluster.tsv"
+    out: dict[str, str] = {}
+    if tsv_path.is_file():
+        with tsv_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) < 2:
+                    continue
+                rep = cols[0].strip()
+                mem = cols[1].strip()
+                for suf in (".pdb.gz", ".cif.gz", ".pdb", ".cif"):
+                    if rep.endswith(suf):
+                        rep = rep[: -len(suf)]
+                    if mem.endswith(suf):
+                        mem = mem[: -len(suf)]
+                if rep and mem:
+                    out[mem] = f"FS_FOLD_{rep}"
+    return out
+
+
+def _assign_fold_cluster(
+    dom_id: str,
+    cath_map: dict[str, str],
+    fs_fold_map: dict[str, str],
+) -> tuple[str, str]:
     sf = cath_map.get(dom_id)
     if sf:
         return sf, cath_topology_of(sf)
-    # Fallback grouping by 4-char PDB code when CATH list lacks explicit H column
+    fs_fold = fs_fold_map.get(dom_id)
+    if fs_fold:
+        return fs_fold, fs_fold
     pdb4 = dom_id[:4].lower()
     h_num = sum((idx + 1) * ord(ch) for idx, ch in enumerate(pdb4))
     c_id = (h_num % 4) + 1
@@ -210,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"[mm3d-bundle] Parsed {len(parsed):,} valid CATH-S40 3D domains.", flush=True)
         three_di_map: dict[str, tuple[str, str]] = {}
+        fs_fold_map: dict[str, str] = {}
+        fold_clustering_method = "cath_headers" if cath_map else "pdb4_fallback"
         if foldseek_bin is not None and parsed:
             print("[mm3d-bundle] Running Foldseek structureto3didescriptor ...", flush=True)
             three_di_map = extract_foldseek_3di_map(
@@ -218,6 +278,15 @@ def main(argv: list[str] | None = None) -> int:
                 work_dir=tmp_dir / "fs_work",
                 threads=int(args.threads),
             )
+            if not cath_map:
+                print("[mm3d-bundle] Running Foldseek connected-component structural fold clustering ...", flush=True)
+                fs_fold_map = _cluster_folds_with_foldseek(
+                    pdb_dir,
+                    foldseek_bin=foldseek_bin,
+                    work_dir=tmp_dir / "fs_fold_clu",
+                    threads=int(args.threads),
+                )
+                fold_clustering_method = "foldseek_connected_component_3di_c0.5_e1e-2"
 
         records: list[MultimodalDomainRecord] = []
         for dom_id, (seq, coords, cb_coords, cb_mask) in sorted(parsed.items()):
@@ -229,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 continue
             geom = compute_backbone_geom_features(cb_coords, cb_mask, coords_ncaco=coords)
-            sf, topo = _assign_synthetic_or_cath_h(dom_id, cath_map)
+            sf, topo = _assign_fold_cluster(dom_id, cath_map, fs_fold_map)
             records.append(
                 MultimodalDomainRecord(
                     domain_id=dom_id,
@@ -359,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         "seed": int(args.seed),
         "n_domains_total": len(records),
         "n_unseen_fold_topologies": len(splits["unseen_fold_topologies"]),
+        "fold_clustering_method": fold_clustering_method,
         "fold_disjointness_verified": True,
         "used_foldseek_3di": bool(foldseek_bin is not None),
         "splits": split_summaries,
