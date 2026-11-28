@@ -342,7 +342,8 @@ def compute_objective_loss(
 
     if prepared.objective == "oa_uniform":
         per_seq = masked_ce.sum(dim=-1) / prepared.n_loss_per_seq.to(dtype=torch.float32)
-        return per_seq.mean()
+        weights = prepared.lengths.to(dtype=torch.float32)
+        return (per_seq * weights).sum() / weights.sum().clamp(min=1.0)
 
     if prepared.objective in ("ar", "mlm_15"):
         denom = prepared.loss_mask.sum().to(dtype=torch.float32).clamp(min=1.0)

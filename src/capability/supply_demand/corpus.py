@@ -179,14 +179,23 @@ def load_packed_split_npz(path: Path) -> tuple[PackedSequenceStore, dict[str, np
 # --------------------------------------------------------------------------- #
 
 
-def load_single_cath_mapping_tsv(path: Path) -> dict[str, str]:
-    """Load unambiguous single-C.A.T.H mapping ``accession -> C.A.T.H`` from a TSV or TSV.gz."""
+def load_single_cath_mapping_tsv(
+    path: Path,
+    *,
+    return_all_annotated: bool = False,
+) -> dict[str, str] | tuple[dict[str, str], set[str]]:
+    """Load unambiguous single-C.A.T.H mapping ``accession -> C.A.T.H`` from a TSV or TSV.gz.
+
+    When ``return_all_annotated=True``, returns ``(single_map, all_annotated_accs)`` where
+    ``all_annotated_accs`` includes multi-domain/multi-H accessions as well so they can be
+    excluded from unannotated singleton pools.
+    """
     opener = gzip.open if path.suffix == ".gz" else open
     acc_to_h: dict[str, str | None] = {}
     with opener(path, "rt", encoding="utf-8") as fh:
         first = fh.readline()
         if not first:
-            return {}
+            return ({}, set()) if return_all_annotated else {}
         fields = first.rstrip("\n").split("\t")
         has_header = len(fields) >= 2 and fields[0].lower() in ("uniprot", "accession")
         if not has_header and len(fields) >= 2 and CATH_H_RE.match(fields[1]):
@@ -204,7 +213,10 @@ def load_single_cath_mapping_tsv(path: Path) -> dict[str, str]:
             elif prev != sf:
                 # Multi-domain / ambiguous primary CATH superfamily -> mark excluded
                 acc_to_h[acc] = None
-    return {acc: sf for acc, sf in acc_to_h.items() if sf is not None}
+    single_map = {acc: sf for acc, sf in acc_to_h.items() if sf is not None}
+    if return_all_annotated:
+        return single_map, set(acc_to_h.keys())
+    return single_map
 
 
 def extract_uniref50_cath_table(
@@ -212,7 +224,8 @@ def extract_uniref50_cath_table(
     uniref50_accessions: set[str],
     *,
     output_tsv_gz: Path | None = None,
-) -> dict[str, str]:
+    return_all_annotated: bool = False,
+) -> dict[str, str] | tuple[dict[str, str], set[str]]:
     """Stream InterPro ``protein2ipr.dat.gz`` filtering ``G3DSA:<C.A.T.H>`` for UniRef50 accessions.
 
     Returns unambiguous single-CATH-H mapping ``accession -> C.A.T.H``. Uses native
@@ -293,6 +306,8 @@ def extract_uniref50_cath_table(
             tmp_path.unlink(missing_ok=True)
             raise
 
+    if return_all_annotated:
+        return single_map, set(acc_to_h.keys())
     return single_map
 
 
@@ -423,6 +438,7 @@ def build_controlled_natural_splits(
     excluded_eval_seq_hashes: set[str] | frozenset[str] = frozenset(),
     target_unique_tokens: int = 5_000_000,
     arm_family_targets: Sequence[int] = (64, 256, 1024, 4096),
+    allow_family_cap: bool = False,
     include_singleton_arm: bool = True,
     n_unseen_fold_eval: int = 2_048,
     min_unseen_topologies: int = 80,
@@ -608,12 +624,30 @@ def build_controlled_natural_splits(
         key=lambda h: (-sum(r.length for r in train_pool_by_h[h]), h),
     )
 
+    seen_realized_m: dict[int, str] = {}
     for target_m in arm_family_targets:
-        eff_m = min(int(target_m), len(eligible_h_ranked))
+        req_m = int(target_m)
+        if req_m > len(eligible_h_ranked):
+            if not allow_family_cap:
+                raise RuntimeError(
+                    f"Requested arm M={req_m} exceeds available train-eligible CATH "
+                    f"H-superfamilies ({len(eligible_h_ranked)}). Reduce arm_family_targets "
+                    "or pass allow_family_cap=True to emit an explicitly named M<eff>_all_cath arm."
+                )
+            eff_m = len(eligible_h_ranked)
+            arm_id = f"M{eff_m}_all_cath"
+        else:
+            eff_m = req_m
+            arm_id = f"M{req_m}"
         if eff_m < 1:
             raise RuntimeError(f"No train-eligible CATH superfamilies available for M={target_m}")
+        if eff_m in seen_realized_m:
+            raise RuntimeError(
+                f"Duplicate realized family count eff_m={eff_m} for requested M={req_m} "
+                f"(already produced by arm {seen_realized_m[eff_m]!r})"
+            )
+        seen_realized_m[eff_m] = arm_id
         active_hs = eligible_h_ranked[:eff_m]
-        arm_id = f"M{int(target_m)}"
 
         # Water-filling token allocation across active_hs to match target_unique_tokens
         fam_selected: dict[str, list[AnnotatedSequence]] = {h: [] for h in active_hs}

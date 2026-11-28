@@ -323,11 +323,87 @@ def test_shared_lease_manager_exclusivity_and_stale_reclaim(tmp_path: Path) -> N
     assert lease2 is not None
     assert lease2.owner_token != lease1.owner_token
 
+    # Old owner heartbeat MUST NOT clobber stolen lease2
+    assert mgr.heartbeat(lease1) is False
+    cur_doc = json.loads(lease2.path.read_text(encoding="utf-8"))
+    assert cur_doc["owner_token"] == lease2.owner_token
+
+    # Valid owner heartbeat preserves claimed_epoch_sec
+    assert mgr.heartbeat(lease2) is True
+    cur_doc2 = json.loads(lease2.path.read_text(encoding="utf-8"))
+    assert cur_doc2["owner_token"] == lease2.owner_token
+    assert math.isclose(cur_doc2["claimed_epoch_sec"], lease2.claimed_epoch_sec, rel_tol=1e-9)
+
     # Releasing old lease1 must NOT delete lease2
-    mgr.release(lease1)
+    assert mgr.release(lease1) is False
     assert lease2.path.is_file()
-    mgr.release(lease2)
+    assert mgr.release(lease2) is True
     assert not lease2.path.is_file()
+
+
+def test_resume_from_final_step_preemption_completes_eval_and_receipt(tmp_path: Path) -> None:
+    """P0 regression test: preempting on the final step of max_epochs must still finalize eval & receipt on resume."""
+    bundle = _make_tiny_bundle(tmp_path / "bundle", n_train=16, seed=13)
+    out_dir = tmp_path / "out"
+    spec = Stage2RunSpec(
+        run_id="final_step_preempt_run",
+        arm_id="M4",
+        objective="ar",
+        scale_id="0.5m",
+        max_epochs=2,
+        eval_epochs=(2,),
+        batch_size=8,
+        precision="fp32_strict",
+        eval_downstream_at_milestones=False,
+        eval_contacts_at_milestones=False,
+        eval_full_proteingym_at_final=False,
+    )
+    # Create a synthetic checkpoint representing preemption right after step 2/2 of epoch 2 BEFORE eval
+    torch.manual_seed(spec.seed)
+    model = VariableLengthProteinTransformer("0.5m", "ar", max_seq_len=spec.max_seq_len)
+    ckpt_dir = out_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "schema": "stage2_supply_demand_ckpt",
+            "run_spec": spec.to_dict(),
+            "epoch": 2,
+            "step_in_epoch": 2,  # == steps_per_epoch (16 / 8)
+            "eval_done": False,
+            "global_step": 4,
+            "tokens_seen": 1000,
+            "elapsed_wall_sec": 1.0,
+            "epoch_loss_sum": 6.0,
+            "epoch_loss_steps": 2,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": None,
+            "init_eval": None,
+            "milestones": [],
+        },
+        ckpt_dir / f"{spec.run_id}_latest.pt",
+    )
+
+    res = execute_stage2_run(
+        spec,
+        bundle,
+        out_dir,
+        device="cpu",
+        use_compile=False,
+        resume=True,
+        n_eval_draws=4,
+        loo_probes=4,
+        install_signal_handlers=False,
+    )
+    assert res["status"] == "complete"
+    assert res["global_step"] == 4  # Executed 0 extra training steps!
+    assert len(res["milestones"]) == 1
+    assert res["milestones"][0]["epoch"] == 2
+    run_json = out_dir / "runs" / f"{spec.run_id}.json"
+    assert run_json.is_file()
+    disk_doc = json.loads(run_json.read_text(encoding="utf-8"))
+    assert disk_doc["status"] == "complete"
+    assert (ckpt_dir / f"{spec.run_id}_final.pt").is_file()
+    assert not (ckpt_dir / f"{spec.run_id}_latest.pt").exists()
 
 
 def test_sigterm_preemption_atomic_checkpoint_and_exact_resume(tmp_path: Path) -> None:

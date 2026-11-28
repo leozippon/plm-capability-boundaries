@@ -125,3 +125,58 @@ def test_verify_fold_disjointness_catches_leakage() -> None:
             eval_global_natural=[],
             arms_data={"M_bad": {"train": leaked_train, "eval_unseen_homolog": []}},
         )
+
+
+def test_family_cap_fail_fast_explicit_naming_and_no_duplicates() -> None:
+    """Requesting M > available H-superfamilies must fail fast unless allow_family_cap=True."""
+    cath_recs, singletons = _make_synthetic_corpus(seed=77)
+    # Default allow_family_cap=False -> fail fast when M=4096 exceeds ~48 available
+    with pytest.raises(RuntimeError, match="exceeds available"):
+        build_controlled_natural_splits(
+            cath_recs,
+            singleton_uniref_pool=singletons,
+            target_unique_tokens=15_000,
+            arm_family_targets=(4, 4096),
+            allow_family_cap=False,
+            include_singleton_arm=False,
+            n_unseen_fold_eval=120,
+            min_unseen_topologies=6,
+            n_homolog_eval=40,
+            n_global_natural_eval=64,
+            seed=2026,
+        )
+
+    # With allow_family_cap=True -> explicitly named M<eff>_all_cath (never mislabeled M4096)
+    res = build_controlled_natural_splits(
+        cath_recs,
+        singleton_uniref_pool=singletons,
+        target_unique_tokens=15_000,
+        arm_family_targets=(4, 4096),
+        allow_family_cap=True,
+        include_singleton_arm=False,
+        n_unseen_fold_eval=120,
+        min_unseen_topologies=6,
+        n_homolog_eval=40,
+        n_global_natural_eval=64,
+        seed=2026,
+    )
+    assert "M4096" not in res["arms"]
+    capped_keys = [k for k in res["arms"] if k.endswith("_all_cath")]
+    assert len(capped_keys) == 1
+    assert res["arms"][capped_keys[0]]["realized_families"] < 4096
+
+    # Duplicate realized M (e.g. both 2048 and 4096 capping to same eff_m) must raise explicitly
+    with pytest.raises(RuntimeError, match="Duplicate realized family count"):
+        build_controlled_natural_splits(
+            cath_recs,
+            singleton_uniref_pool=singletons,
+            target_unique_tokens=15_000,
+            arm_family_targets=(4, 2048, 4096),
+            allow_family_cap=True,
+            include_singleton_arm=False,
+            n_unseen_fold_eval=120,
+            min_unseen_topologies=6,
+            n_homolog_eval=40,
+            n_global_natural_eval=64,
+            seed=2026,
+        )

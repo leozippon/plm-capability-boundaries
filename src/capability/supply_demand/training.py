@@ -141,11 +141,14 @@ def build_optimizer(
 
 
 def atomic_torch_save(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically persist a PyTorch checkpoint via tmp file + POSIX os.replace."""
+    """Atomically persist a PyTorch checkpoint via tmp file + fsync + POSIX os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
     try:
-        torch.save(payload, tmp)
+        with tmp.open("wb") as fh:
+            torch.save(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
     finally:
         if tmp.exists():
@@ -177,13 +180,15 @@ class ActiveLease:
     run_id: str
     path: Path
     owner_token: str
+    claimed_epoch_sec: float = 0.0
 
 
 class SharedLeaseManager:
     """Atomic filesystem lease manager for multi-worker Spot GPU concurrency on shared storage.
 
     Uses ``O_CREAT | O_EXCL`` for race-free claiming, heartbeat timestamps for liveness,
-    and stale-lease reclamation without persisting forbidden cluster/pod hostnames.
+    owner-verified heartbeat/release so stolen leases are never clobbered, and stale-lease
+    reclamation without persisting forbidden cluster/pod hostnames.
     """
 
     def __init__(
@@ -234,7 +239,12 @@ class SharedLeaseManager:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-                return ActiveLease(run_id=run_id, path=path, owner_token=owner_token)
+                return ActiveLease(
+                    run_id=run_id,
+                    path=path,
+                    owner_token=owner_token,
+                    claimed_epoch_sec=now,
+                )
             except FileExistsError:
                 if attempt == 0 and self._is_stale(path, now):
                     # Atomically evict stale lease via rename before retrying O_EXCL create
@@ -248,34 +258,57 @@ class SharedLeaseManager:
                 return None
         return None
 
-    def heartbeat(self, lease: ActiveLease) -> None:
-        """Refresh lease heartbeat timestamp atomically if still owned by this worker."""
-        if not lease.path.is_file():
-            return
+    def heartbeat(self, lease: ActiveLease) -> bool:
+        """Refresh lease heartbeat atomically ONLY if still owned by this worker.
+
+        Returns True if refreshed, False if the lease was lost or stolen by another worker.
+        """
+        try:
+            doc = json.loads(lease.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return False
+        if doc.get("owner_token") != lease.owner_token:
+            return False
+
         now = time.time()
         payload = {
             "run_id": lease.run_id,
             "owner_token": lease.owner_token,
+            "claimed_epoch_sec": float(doc.get("claimed_epoch_sec", lease.claimed_epoch_sec)),
             "heartbeat_epoch_sec": now,
         }
         tmp = lease.path.with_name(f".{lease.path.name}.hb-{os.getpid()}-{time.monotonic_ns()}")
         try:
-            tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            with tmp.open("wb") as fh:
+                fh.write(json.dumps(payload, sort_keys=True).encode("utf-8"))
+                fh.flush()
+                os.fsync(fh.fileno())
+            # Re-verify ownership immediately prior to replace
+            try:
+                cur_doc = json.loads(lease.path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return False
+            if cur_doc.get("owner_token") != lease.owner_token:
+                return False
             os.replace(tmp, lease.path)
+            return True
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
 
-    def release(self, lease: ActiveLease) -> None:
-        """Release lease only if currently owned by this worker."""
+    def release(self, lease: ActiveLease) -> bool:
+        """Release lease ONLY if ownership is verified; never unlink another worker's lease."""
         try:
             doc = json.loads(lease.path.read_text(encoding="utf-8"))
-            if doc.get("owner_token") == lease.owner_token:
-                lease.path.unlink(missing_ok=True)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return False
+        if doc.get("owner_token") != lease.owner_token:
+            return False
+        try:
+            lease.path.unlink()
+            return True
         except FileNotFoundError:
-            pass
-        except Exception:
-            lease.path.unlink(missing_ok=True)
+            return False
 
 
 # --------------------------------------------------------------------------- #
@@ -447,12 +480,16 @@ def execute_stage2_run(
             prior_wall_sec = float(ckpt.get("elapsed_wall_sec", 0.0))
             init_eval = ckpt.get("init_eval")
             milestones = list(ckpt.get("milestones", []))
-            if saved_step_in_ep >= steps_per_epoch:
+            saved_eval_done = bool(ckpt.get("eval_done", False))
+            if saved_step_in_ep >= steps_per_epoch and saved_eval_done:
                 cur_epoch = saved_epoch + 1
                 resume_step_in_epoch = 0
                 epoch_loss_sum = 0.0
                 epoch_loss_steps = 0
             else:
+                # If preempted on the final step BEFORE end-of-epoch eval/finalization,
+                # stay on saved_epoch with resume_step_in_epoch == steps_per_epoch so the
+                # loop executes 0 training steps and completes milestone/final eval cleanly.
                 cur_epoch = saved_epoch
                 resume_step_in_epoch = saved_step_in_ep
                 epoch_loss_sum = float(ckpt.get("epoch_loss_sum", 0.0))
@@ -504,13 +541,20 @@ def execute_stage2_run(
                 "final_eval": milestones[-1] if milestones else init_eval,
             }
 
-        def _save_checkpoint(path: Path, *, epoch_num: int, step_in_ep: int) -> None:
+        def _save_checkpoint(
+            path: Path,
+            *,
+            epoch_num: int,
+            step_in_ep: int,
+            eval_done: bool,
+        ) -> None:
             wall = prior_wall_sec + (time.perf_counter() - t_run_start)
             ckpt_payload = {
                 "schema": CHECKPOINT_SCHEMA,
                 "run_spec": run_spec.to_dict(),
                 "epoch": int(epoch_num),
                 "step_in_epoch": int(step_in_ep),
+                "eval_done": bool(eval_done),
                 "global_step": int(global_step),
                 "tokens_seen": int(tokens_seen),
                 "elapsed_wall_sec": float(wall),
@@ -523,6 +567,10 @@ def execute_stage2_run(
             }
             atomic_torch_save(path, ckpt_payload)
 
+        def _touch_lease() -> None:
+            if lease_manager is not None and active_lease is not None:
+                lease_manager.heartbeat(active_lease)
+
         def _run_milestone_eval(
             *,
             epoch_num: int,
@@ -532,6 +580,7 @@ def execute_stage2_run(
             include_downstream: bool,
             include_contacts: bool,
         ) -> dict[str, Any]:
+            _touch_lease()
             three_tier = evaluate_three_tier_bits(
                 eval_model,
                 train_sub_store=train_sub_store,
@@ -559,6 +608,7 @@ def execute_stage2_run(
             }
 
             if include_downstream and megascale_data is not None:
+                _touch_lease()
                 rec["megascale"] = evaluate_megascale_ddg(
                     eval_model,
                     megascale_data,
@@ -567,6 +617,7 @@ def execute_stage2_run(
                     precision=run_spec.precision,
                 )
             if include_downstream and proteingym_data is not None:
+                _touch_lease()
                 rec["proteingym_milestone"] = evaluate_proteingym_substitutions(
                     eval_model,
                     proteingym_data,
@@ -576,6 +627,7 @@ def execute_stage2_run(
                     precision=run_spec.precision,
                 )
                 if is_final and run_spec.eval_full_proteingym_at_final:
+                    _touch_lease()
                     rec["proteingym_full"] = evaluate_proteingym_substitutions(
                         eval_model,
                         proteingym_data,
@@ -585,6 +637,7 @@ def execute_stage2_run(
                         precision=run_spec.precision,
                     )
             if include_contacts and contact_domains:
+                _touch_lease()
                 rec["contacts"] = evaluate_unseen_fold_contacts(
                     eval_model,
                     contact_domains,
@@ -592,6 +645,7 @@ def execute_stage2_run(
                     batch_size=eff_eval_bs,
                     precision=run_spec.precision,
                 )
+            _touch_lease()
             return rec
 
         # Initial random-baseline evaluation (epoch 0)
@@ -606,7 +660,19 @@ def execute_stage2_run(
             )
 
         eval_epoch_set = set(run_spec.eval_epochs)
-        last_lr = peak_lr
+        last_lr = (
+            compute_lr(
+                global_step,
+                total_steps=total_steps,
+                peak_lr=peak_lr,
+                warmup_steps=warmup_steps,
+                schedule=run_spec.lr_schedule,
+                cooldown_fraction=run_spec.cooldown_fraction,
+                min_lr_ratio=run_spec.min_lr_ratio,
+            )
+            if global_step > 0
+            else peak_lr
+        )
 
         for epoch in range(cur_epoch, run_spec.max_epochs + 1):
             train_model.train()
@@ -687,6 +753,7 @@ def execute_stage2_run(
                         latest_ckpt_path,
                         epoch_num=epoch,
                         step_in_ep=completed_step_in_epoch,
+                        eval_done=False,
                     )
                     payload = _build_payload(
                         status="preempted",
@@ -707,9 +774,9 @@ def execute_stage2_run(
                         latest_ckpt_path,
                         epoch_num=epoch,
                         step_in_ep=completed_step_in_epoch,
+                        eval_done=False,
                     )
-                    if lease_manager is not None and active_lease is not None:
-                        lease_manager.heartbeat(active_lease)
+                    _touch_lease()
                     last_ckpt_mono = now_mono
 
             # End of epoch: run milestone evaluation if scheduled
@@ -734,14 +801,23 @@ def execute_stage2_run(
 
                 if is_final:
                     if run_spec.save_final_checkpoint:
-                        _save_checkpoint(final_ckpt_path, epoch_num=epoch, step_in_ep=steps_per_epoch)
+                        _save_checkpoint(
+                            final_ckpt_path,
+                            epoch_num=epoch,
+                            step_in_ep=steps_per_epoch,
+                            eval_done=True,
+                        )
                     if latest_ckpt_path.exists():
                         latest_ckpt_path.unlink(missing_ok=True)
                 else:
-                    _save_checkpoint(latest_ckpt_path, epoch_num=epoch, step_in_ep=steps_per_epoch)
+                    _save_checkpoint(
+                        latest_ckpt_path,
+                        epoch_num=epoch,
+                        step_in_ep=steps_per_epoch,
+                        eval_done=True,
+                    )
                 last_ckpt_mono = time.monotonic()
-                if lease_manager is not None and active_lease is not None:
-                    lease_manager.heartbeat(active_lease)
+                _touch_lease()
 
             # Reset resume offset after finishing resumed epoch
             resume_step_in_epoch = 0

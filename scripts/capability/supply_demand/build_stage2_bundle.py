@@ -76,6 +76,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--target-unique-tokens", type=int, default=5_000_000)
     p.add_argument("--arm-families", type=str, default="64,256,1024,4096")
+    p.add_argument(
+        "--allow-family-cap",
+        action="store_true",
+        help="Allow capping largest requested M to available train-eligible CATH H-superfamilies "
+        "(explicitly named M<eff>_all_cath; rejects duplicate realized M).",
+    )
     p.add_argument("--min-seq-len", type=int, default=50)
     p.add_argument("--max-seq-len", type=int, default=384)
     p.add_argument("--max-seqs-per-superfamily", type=int, default=2048)
@@ -183,10 +189,13 @@ def main() -> None:
     print(f"[stage2-bundle] Loading Swiss-Prot entry->acc map from {swissprot_gz}", flush=True)
     entry_to_acc = load_swissprot_entry_to_accession(swissprot_gz)
 
+    all_cath_annotated_accs: set[str] = set()
     if args.cath_table is not None:
         print(f"[stage2-bundle] Loading CATH table from {args.cath_table}", flush=True)
-        acc_to_cath_h = load_single_cath_mapping_tsv(args.cath_table)
-    elif args.use_full_protein2ipr:
+        acc_to_cath_h, all_cath_annotated_accs = load_single_cath_mapping_tsv(
+            args.cath_table, return_all_annotated=True
+        )
+    elif args.use_full_protein2ipr and args.prejoined_parquet is None:
         print(f"[stage2-bundle] Pass 1: collecting UniRef50 UniProt accessions ({args.min_seq_len}<=L<={args.max_seq_len})", flush=True)
         uniref_accs: set[str] = set()
         for _cid, acc, _seq in iter_uniref50_fasta(
@@ -195,27 +204,20 @@ def main() -> None:
             if not acc.startswith("UPI"):
                 uniref_accs.add(acc)
         print(f"[stage2-bundle] Collected {len(uniref_accs):,} non-UniParc UniRef50 accessions; streaming {protein2ipr_gz}", flush=True)
-        acc_to_cath_h = extract_uniref50_cath_table(
+        acc_to_cath_h, all_cath_annotated_accs = extract_uniref50_cath_table(
             protein2ipr_gz,
             uniref_accs,
             output_tsv_gz=args.save_extracted_cath,
+            return_all_annotated=True,
         )
     else:
         print(f"[stage2-bundle] Loading Swiss-Prot CATH table from {default_cath_tsv}", flush=True)
-        acc_to_cath_h = load_single_cath_mapping_tsv(default_cath_tsv)
+        acc_to_cath_h, all_cath_annotated_accs = load_single_cath_mapping_tsv(
+            default_cath_tsv, return_all_annotated=True
+        )
 
-    print(f"[stage2-bundle] Loaded {len(acc_to_cath_h):,} unambiguous single-CATH-H accessions", flush=True)
-
-    excluded_hashes, priority_topos = _collect_eval_wt_hashes_and_priority_topos(
-        data_root, acc_to_cath_h, entry_to_acc
-    )
-    print(
-        f"[stage2-bundle] Excluding {len(excluded_hashes):,} downstream WT hashes; "
-        f"{len(priority_topos):,} priority unseen-fold candidates",
-        flush=True,
-    )
-
-    # Load CATH-annotated records from prejoined parquet if supplied, else stream UniRef50
+    # Load pre-joined parquet BEFORE computing priority_topos so TrEMBL CATH topologies
+    # inform held-out selection AND multi-topology accessions are excluded from singletons.
     rng = np.random.default_rng(int(args.seed))
     fam_reservoirs: dict[str, list[AnnotatedSequence]] = defaultdict(list)
     fam_seen: dict[str, int] = defaultdict(int)
@@ -228,10 +230,17 @@ def main() -> None:
 
         print(f"[stage2-bundle] Loading pre-joined UniRef50-CATH parquet from {args.prejoined_parquet}", flush=True)
         pq_df = pd.read_parquet(args.prejoined_parquet)
+        # Track ALL parquet-annotated accessions (including multi-topology n_cath_t > 1)
+        # so multi-domain proteins containing held-out folds NEVER enter singleton_reservoir.
+        all_cath_annotated_accs.update(str(a) for a in pq_df["accession"].astype(str))
         if "n_cath_t" in pq_df.columns:
-            pq_df = pq_df[pq_df["n_cath_t"] == 1]
-        pq_df = pq_df[(pq_df["seq_len"] >= args.min_seq_len) & (pq_df["seq_len"] <= args.max_seq_len)]
-        for row in pq_df.itertuples(index=False):
+            pq_single = pq_df[pq_df["n_cath_t"] == 1]
+        else:
+            pq_single = pq_df
+        pq_single = pq_single[
+            (pq_single["seq_len"] >= args.min_seq_len) & (pq_single["seq_len"] <= args.max_seq_len)
+        ]
+        for row in pq_single.itertuples(index=False):
             cid = str(row.uniref50_id)
             acc = str(row.accession)
             sf = str(row.cath_h)
@@ -249,6 +258,22 @@ def main() -> None:
                     res[j] = rec
             total_scanned += 1
 
+    print(
+        f"[stage2-bundle] Loaded {len(acc_to_cath_h):,} unambiguous single-CATH-H accessions "
+        f"({len(all_cath_annotated_accs):,} total CATH-annotated excluded from singletons)",
+        flush=True,
+    )
+
+    excluded_hashes, priority_topos = _collect_eval_wt_hashes_and_priority_topos(
+        data_root, acc_to_cath_h, entry_to_acc
+    )
+    print(
+        f"[stage2-bundle] Excluding {len(excluded_hashes):,} downstream WT hashes; "
+        f"{len(priority_topos):,} priority unseen-fold candidates",
+        flush=True,
+    )
+
+    if args.prejoined_parquet is not None:
         # Collect disjoint unannotated UniRef50 singleton reps for M_max_singleton (fast early-exit scan)
         target_sing_scan = max(args.singleton_pool_cap * 3, 100_000)
         if uniref_fasta.is_file():
@@ -256,7 +281,7 @@ def main() -> None:
             for cid, acc, seq in iter_uniref50_fasta(
                 uniref_fasta, min_len=args.min_seq_len, max_len=args.max_seq_len
             ):
-                if acc in acc_to_cath_h:
+                if acc in all_cath_annotated_accs:
                     continue
                 singleton_seen += 1
                 if len(singleton_reservoir) < args.singleton_pool_cap:
@@ -293,7 +318,7 @@ def main() -> None:
                     j = int(rng.integers(0, fam_seen[sf]))
                     if j < args.max_seqs_per_superfamily:
                         res[j] = rec
-            else:
+            elif acc not in all_cath_annotated_accs:
                 singleton_seen += 1
                 if len(singleton_reservoir) < args.singleton_pool_cap:
                     singleton_reservoir.append(
@@ -322,6 +347,7 @@ def main() -> None:
         excluded_eval_seq_hashes=excluded_hashes,
         target_unique_tokens=int(args.target_unique_tokens),
         arm_family_targets=arm_targets,
+        allow_family_cap=bool(args.allow_family_cap),
         include_singleton_arm=True,
         n_unseen_fold_eval=int(args.n_unseen_fold),
         min_unseen_topologies=int(args.min_unseen_topologies),

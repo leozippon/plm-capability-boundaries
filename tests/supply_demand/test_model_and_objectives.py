@@ -165,3 +165,21 @@ def test_packed_sequence_store_roundtrip() -> None:
     assert toks.shape == (2, 56)
     assert lens.tolist() == [50, 20]
     assert (toks[1, 20:] == PAD_TOKEN_ID).all()
+
+
+def test_oa_uniform_loss_is_residue_weighted_across_lengths() -> None:
+    """OA-Uniform training loss must weight sequences proportionally to real length L_i."""
+    seqs = ["A" * 20, "C" * 60]
+    tokens, lengths = collate_variable_length_sequences(seqs, pad_to_multiple=8)
+    gen = torch.Generator().manual_seed(17)
+    prep = prepare_objective_batch("oa_uniform", tokens, lengths, generator=gen)
+
+    # Set logits so seq 0 has known CE_0 and seq 1 has known CE_1
+    logits = torch.zeros((2, tokens.shape[1], VOCAB_AA), dtype=torch.float32)
+    logits[0, :, 0] = 2.0  # seq 0 (len 20, target=0)
+    logits[1, :, 1] = 0.0  # seq 1 (len 60, target=1 -> uniform log(20))
+    ce0 = float(torch.nn.functional.cross_entropy(logits[0, :1], torch.tensor([0])).item())
+    ce1 = float(torch.nn.functional.cross_entropy(logits[1, :1], torch.tensor([1])).item())
+    expected = (20.0 * ce0 + 60.0 * ce1) / 80.0
+    got = float(compute_objective_loss(logits, prep).item())
+    assert math.isclose(got, expected, rel_tol=1e-5, abs_tol=1e-5)
