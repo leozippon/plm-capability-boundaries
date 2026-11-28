@@ -631,6 +631,17 @@ def test_legacy_batch1_json_compatibility_ecrit_and_mlm15_analysis(tmp_path: Pat
         assert ec["e_crit_delta_bpt_0p05"] is not None
         assert ec["e_crit_frac_c_inf_0p05"] is not None
         assert summary["exposure_discount_curves"][p]["pooled_delayed_hill_fit_empirical"] is not None
+        asymp_meta = summary["c_max_calibration"]["by_paradigm"][p]["asymptotic_and_metric_summary"]
+        assert asymp_meta["max_observed_epoch"] == 400
+        assert asymp_meta["delayed_hill_c_inf_pooled_bpp"] is not None
+
+    # Verify _select_anchor_epoch never forces mlm_15/oa_uniform onto AR's e=400 when higher epochs exist
+    from src.capability.memory_capacity.analysis import _select_anchor_epoch
+
+    assert _select_anchor_epoch({"0.5m": [1, 400, 4000]}, paradigm="mlm_15") == 4000
+    assert _select_anchor_epoch({"0.5m": [1, 400, 10000]}, paradigm="oa_uniform") == 10000
+    assert _select_anchor_epoch({"0.5m": [1, 400, 4000], "2m": [1, 400, 4000]}, paradigm="mlm_15") == 4000
+    assert _select_anchor_epoch({"0.5m": [1, 400], "2m": [1, 400], "35m": [1, 200]}, paradigm="ar") == 400
 
 
 def test_shared_fs_lease_claim_expire_steal_and_spot_worker_cli(tmp_path: Path) -> None:

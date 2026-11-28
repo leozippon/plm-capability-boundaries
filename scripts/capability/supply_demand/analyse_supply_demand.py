@@ -69,17 +69,23 @@ def main() -> None:
         f"({summary['n_runs_complete']} complete) -> {args.out} (sha256={digest[:16]}...)"
     )
     print(
-        f"{'run_id':34s} {'ep':>4s} {'e_res':>6s} {'dhU_pk':>7s} "
-        f"{'MS_e*':>5s} {'MS_pk':>6s} {'MS_drp':>7s} {'PG_pk':>6s} {'PG_drp':>7s}"
+        f"{'run_id':34s} {'ep':>4s} {'e_res':>6s} {'Gamma':>6s} {'clipR':>5s} {'calEx':>6s} "
+        f"{'dhU_pk':>7s} {'MS_e*':>5s} {'MS_pk':>6s} {'MS_drp':>7s} {'PG_pk':>6s} {'PG_drp':>7s}"
     )
     for r in summary["runs"]:
         pk = r["peaks_and_drops"]
+        ft = r["final_three_tier"]
         ms = pk["megascale_overall"]
         pg = pk["proteingym_assay"]
         du = pk["delta_h_univ"]
+        gam = r["adiabatic_window_gamma"]
+        gam_s = _fmt(gam, 1) if gam is not None else (f">{_fmt(r['adiabatic_window_gamma_lower_bound'], 0)}" if r["adiabatic_window_gamma_lower_bound"] is not None else "-")
         print(
             f"{r['run_id']:34s} {r['epoch_done']:4d} "
-            f"{_fmt(r['res_takeoff_epoch'], 1):>6s} {_fmt(du['peak_value']):>7s} "
+            f"{_fmt(r['res_takeoff_epoch'], 1):>6s} {gam_s:>6s} "
+            f"{_fmt(ft.get('clipped_memorized_res_bits'), 2):>5s} "
+            f"{_fmt(ft.get('ood_miscalibration_excess'), 2):>6s} "
+            f"{_fmt(du['peak_value']):>7s} "
             f"{str(ms['peak_epoch'] or '-'):>5s} {_fmt(ms['peak_value']):>6s} "
             f"{_fmt(ms['overfitting_drop']):>7s} {_fmt(pg['peak_value']):>6s} "
             f"{_fmt(pg['overfitting_drop']):>7s}"

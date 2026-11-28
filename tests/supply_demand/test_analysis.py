@@ -16,6 +16,7 @@ from src.capability.supply_demand import (
     ANALYSIS_SCHEMA,
     RUN_RECEIPT_SCHEMA,
     analyze_stage2_run,
+    compute_temperature_calibrated_bits,
     interpolate_stage1_c_eff,
     load_stage1_capacity_lookup,
     summarize_supply_demand_campaign,
@@ -229,3 +230,52 @@ def test_stage2_analysis_peaks_absorption_inversion_and_stage1_alignment(tmp_pat
     assert "Analyzed 2 Stage-2 runs" in proc.stdout
     assert out_json.is_file()
     assert out_json.with_name(out_json.name + ".sha256").is_file()
+
+
+def test_clipped_bits_sustained_takeoff_adiabatic_window_and_temperature_calibration() -> None:
+    import torch
+
+    # 1. Sustained res_takeoff_epoch ignores transient ep=1 MC jitter (+0.055 -> -0.10)
+    oa_doc = _make_receipt(
+        "s2b_t0p7_oa_uniform_2m_e300",
+        "T0p7",
+        "oa_uniform",
+        [
+            (1, 0.20, 0.04, 0.055, 0.01, 0.02, 0.52),
+            (2, 0.24, 0.05, 0.01, 0.02, 0.03, 0.53),
+            (10, 0.23, 0.13, -0.05, 0.02, 0.04, 0.54),
+            (80, -0.20, 1.20, -0.08, 0.01, 0.05, 0.53),
+            (300, -0.95, 2.70, 0.13, -0.05, 0.05, 0.51),
+        ],
+    )
+    oa_res = analyze_stage2_run(oa_doc)
+    assert oa_res["e_crit_res"] is not None and oa_res["e_crit_res"] > 100.0
+    assert oa_res["e_conv_univ"] is not None and oa_res["e_conv_univ"] <= 2.0
+    assert oa_res["adiabatic_window_gamma"] is not None and oa_res["adiabatic_window_gamma"] > 100.0
+
+    # 2. Clipped training bits stay bounded in [0, log2(20)] even when H_unseen_fold blows up to 28 bpr
+    blowup_doc = _make_receipt(
+        "s2a_m64_ar_35m_blowup",
+        "M64",
+        "ar",
+        [
+            (1, 0.20, 0.05, 0.00, 0.02, 0.02, 0.55),
+            (5, 0.18, 0.24, 0.07, 0.06, 0.06, 0.56),
+            (300, -24.0, 3.50, 24.75, -0.01, 0.01, 0.54),
+        ],
+    )
+    b_res = analyze_stage2_run(blowup_doc)
+    ft = b_res["final_three_tier"]
+    assert ft["positive_univ_bits"] == pytest.approx(0.0)
+    assert ft["ood_miscalibration_excess"] == pytest.approx(24.0, abs=0.05)
+    assert 0.0 <= ft["clipped_memorized_res_bits"] <= 4.33
+
+    # 3. Scalar temperature calibration separates logit-norm blowup from representation error
+    torch.manual_seed(7)
+    logits = torch.randn(32, 20)
+    targets = torch.randint(0, 20, (32,))
+    base = compute_temperature_calibrated_bits(logits, targets)
+    scaled = compute_temperature_calibrated_bits(logits * 10.0, targets)
+    assert scaled["raw_bits_per_tok"] > base["raw_bits_per_tok"] * 2.0
+    assert scaled["calibrated_bits_per_tok"] == pytest.approx(base["calibrated_bits_per_tok"], abs=1e-3)
+    assert scaled["calibration_excess_bits"] > 5.0

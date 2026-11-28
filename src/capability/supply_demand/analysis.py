@@ -40,8 +40,14 @@ def _log_linear_first_crossing(
     epochs: Sequence[float],
     values: Sequence[float],
     threshold: float,
+    *,
+    sustained: bool = False,
 ) -> float | None:
-    """First exposure e > 0 where values cross >= threshold via log-linear interpolation."""
+    """First exposure e > 0 where values cross >= threshold via log-linear interpolation.
+
+    When ``sustained=True``, requires all subsequent observations from the crossing onward
+    to remain >= threshold (suppressing single-epoch ep=1 Monte-Carlo jitter).
+    """
     pts = [
         (float(e), float(v))
         for e, v in zip(epochs, values)
@@ -51,15 +57,19 @@ def _log_linear_first_crossing(
         return None
     pts.sort(key=lambda kv: kv[0])
     thr = float(threshold)
+    n = len(pts)
     for idx, (e1, v1) in enumerate(pts):
-        if v1 >= thr:
-            if idx == 0:
-                return e1
-            e0, v0 = pts[idx - 1]
-            if v1 <= v0 + 1e-15:
-                return e1
-            frac = min(max((thr - v0) / (v1 - v0), 0.0), 1.0)
-            return float(math.exp(math.log(e0) + frac * (math.log(e1) - math.log(e0))))
+        if v1 < thr:
+            continue
+        if sustained and any(v_later < thr - 1e-9 for _, v_later in pts[idx + 1 :]):
+            continue
+        if idx == 0:
+            return e1
+        e0, v0 = pts[idx - 1]
+        if v1 <= v0 + 1e-15:
+            return e1
+        frac = min(max((thr - v0) / (v1 - v0), 0.0), 1.0)
+        return float(math.exp(math.log(e0) + frac * (math.log(e1) - math.log(e0))))
     return None
 
 
@@ -229,18 +239,39 @@ def _extract_milestone_point(m: Mapping[str, Any]) -> dict[str, Any]:
     ct_lr = ct.get("long_range_sep_ge_24") or {}
     ct_s6 = ct.get("sep_ge_6") or {}
 
+    h0 = _safe_float(tt.get("H_0")) or LOG2_20
+    h_tr = _safe_float(tt.get("H_train"))
+    h_hom = _safe_float(tt.get("H_unseen_homolog"))
+    h_uf = _safe_float(tt.get("H_unseen_fold"))
+    dh_univ = _safe_float(tt.get("delta_h_univ"))
+    dh_spec = _safe_float(tt.get("delta_h_spec"))
+    dh_res = _safe_float(tt.get("delta_h_res"))
+
+    pos_univ = max(0.0, dh_univ) if dh_univ is not None else None
+    pos_spec = max(0.0, dh_spec) if dh_spec is not None else None
+    clipped_res = (
+        min(h0, max(0.0, h0 - h_tr - pos_univ - pos_spec))
+        if (h_tr is not None and pos_univ is not None and pos_spec is not None)
+        else None
+    )
+    ood_excess = max(0.0, h_uf - h0) if h_uf is not None else None
+
     return {
         "epoch": int(m.get("epoch", 0)),
         "global_step": int(m.get("global_step", 0)),
         "tokens_seen": int(m.get("tokens_seen", 0)),
         "lr": _safe_float(m.get("lr")),
-        "H_train": _safe_float(tt.get("H_train")),
-        "H_unseen_homolog": _safe_float(tt.get("H_unseen_homolog")),
-        "H_unseen_fold": _safe_float(tt.get("H_unseen_fold")),
-        "delta_h_univ": _safe_float(tt.get("delta_h_univ")),
-        "delta_h_spec": _safe_float(tt.get("delta_h_spec")),
-        "delta_h_res": _safe_float(tt.get("delta_h_res")),
+        "H_train": h_tr,
+        "H_unseen_homolog": h_hom,
+        "H_unseen_fold": h_uf,
+        "delta_h_univ": dh_univ,
+        "delta_h_spec": dh_spec,
+        "delta_h_res": dh_res,
         "delta_h_total": _safe_float(tt.get("delta_h_total")),
+        "positive_univ_bits": pos_univ,
+        "positive_spec_bits": pos_spec,
+        "clipped_memorized_res_bits": clipped_res,
+        "ood_miscalibration_excess": ood_excess,
         "loo_delta_h_univ": _safe_float(tt_loo.get("delta_h_univ")),
         "loo_delta_h_spec": _safe_float(tt_loo.get("delta_h_spec")),
         "loo_delta_h_res": _safe_float(tt_loo.get("delta_h_res")),
@@ -374,10 +405,34 @@ def analyze_stage2_run(
         [e for e, v in zip(pos_epochs, pos_dh_res) if v is not None],
         [float(v) for v in pos_dh_res if v is not None],
         res_takeoff_threshold_bpr,
+        sustained=True,
     )
 
     univ_peak_ep = peaks_and_drops["delta_h_univ"]["peak_epoch"]
     univ_peak_val = peaks_and_drops["delta_h_univ"]["peak_value"]
+    pos_univ_vals = [pt["positive_univ_bits"] for pt in pos_traj]
+    peak_pos_univ = max((float(v) for v in pos_univ_vals if v is not None), default=0.0)
+    e_conv_univ = (
+        _log_linear_first_crossing(
+            [e for e, v in zip(pos_epochs, pos_univ_vals) if v is not None],
+            [float(v) for v in pos_univ_vals if v is not None],
+            0.80 * peak_pos_univ,
+            sustained=False,
+        )
+        if peak_pos_univ > 0.02
+        else None
+    )
+    epoch_done = int(doc.get("epoch_done", 0))
+    adiabatic_gamma = (
+        float(res_takeoff_epoch / e_conv_univ)
+        if (res_takeoff_epoch is not None and e_conv_univ is not None and e_conv_univ > 0.0)
+        else None
+    )
+    adiabatic_gamma_lb = (
+        float(epoch_done / e_conv_univ)
+        if (res_takeoff_epoch is None and e_conv_univ is not None and e_conv_univ > 0.0 and epoch_done > 0)
+        else adiabatic_gamma
+    )
     pre_blowup_pts = [
         pt
         for pt in pos_traj
@@ -468,9 +523,17 @@ def analyze_stage2_run(
             "delta_h_univ": final_pt.get("delta_h_univ"),
             "delta_h_spec": final_pt.get("delta_h_spec"),
             "delta_h_res": final_pt.get("delta_h_res"),
+            "positive_univ_bits": final_pt.get("positive_univ_bits"),
+            "positive_spec_bits": final_pt.get("positive_spec_bits"),
+            "clipped_memorized_res_bits": final_pt.get("clipped_memorized_res_bits"),
+            "ood_miscalibration_excess": final_pt.get("ood_miscalibration_excess"),
         },
         "res_takeoff_threshold_bpr": float(res_takeoff_threshold_bpr),
+        "e_conv_univ": e_conv_univ,
+        "e_crit_res": res_takeoff_epoch,
         "res_takeoff_epoch": res_takeoff_epoch,
+        "adiabatic_window_gamma": adiabatic_gamma,
+        "adiabatic_window_gamma_lower_bound": adiabatic_gamma_lb,
         "stage1_e_crit": stage1_ecrit,
         "res_takeoff_to_stage1_ecrit_ratio": res_to_stage1_ratio,
         "absorption_order_holds": absorption_order_holds,
@@ -527,15 +590,62 @@ def summarize_supply_demand_campaign(
             for r in subset
             if r["peaks_and_drops"]["megascale_overall"]["overfitting_drop"] is not None
         ]
+        gammas = [
+            float(r["adiabatic_window_gamma"])
+            for r in subset
+            if r["adiabatic_window_gamma"] is not None
+        ]
+        gamma_lbs = [
+            float(r["adiabatic_window_gamma_lower_bound"])
+            for r in subset
+            if r["adiabatic_window_gamma_lower_bound"] is not None
+        ]
         by_objective[obj] = {
             "n_runs": len(subset),
             "n_crossed_res_takeoff": len(takeoffs),
             "res_takeoff_epoch_median": float(np.median(takeoffs)) if takeoffs else None,
             "res_takeoff_epoch_min": float(min(takeoffs)) if takeoffs else None,
             "res_takeoff_epoch_max": float(max(takeoffs)) if takeoffs else None,
+            "adiabatic_window_gamma_median": float(np.median(gammas)) if gammas else None,
+            "adiabatic_window_gamma_lower_bound_median": (
+                float(np.median(gamma_lbs)) if gamma_lbs else None
+            ),
             "stage1_e_crit": (stage1_lookup.get(obj) or {}).get("e_crit"),
             "megascale_peak_mean": float(np.mean(ms_peaks)) if ms_peaks else None,
             "megascale_overfitting_drop_mean": float(np.mean(ms_drops)) if ms_drops else None,
+        }
+
+    # 1b. Temporal adiabatic window grouped by (objective, scale, arm)
+    adiabatic_by_obj_scale: dict[str, dict[str, Any]] = {}
+    for obj, sc in sorted({(r["objective"], r["scale_id"]) for r in per_run}):
+        sub = [r for r in per_run if r["objective"] == obj and r["scale_id"] == sc]
+        gs = [float(r["adiabatic_window_gamma"]) for r in sub if r["adiabatic_window_gamma"] is not None]
+        glbs = [float(r["adiabatic_window_gamma_lower_bound"]) for r in sub if r["adiabatic_window_gamma_lower_bound"] is not None]
+        er = [float(r["e_crit_res"]) for r in sub if r["e_crit_res"] is not None]
+        ec = [float(r["e_conv_univ"]) for r in sub if r["e_conv_univ"] is not None]
+        adiabatic_by_obj_scale[f"{obj}:{sc}"] = {
+            "objective": obj,
+            "scale_id": sc,
+            "n_runs": len(sub),
+            "e_conv_univ_median": float(np.median(ec)) if ec else None,
+            "e_crit_res_median": float(np.median(er)) if er else None,
+            "gamma_median": float(np.median(gs)) if gs else None,
+            "gamma_lower_bound_median": float(np.median(glbs)) if glbs else None,
+        }
+    adiabatic_by_arm_obj: dict[str, dict[str, Any]] = {}
+    for arm, obj, sc in sorted({(r["arm_id"], r["objective"], r["scale_id"]) for r in per_run}):
+        sub = [r for r in per_run if r["arm_id"] == arm and r["objective"] == obj and r["scale_id"] == sc]
+        r0 = sub[0]
+        adiabatic_by_arm_obj[f"{arm}:{obj}:{sc}"] = {
+            "arm_id": arm,
+            "objective": obj,
+            "scale_id": sc,
+            "e_conv_univ": r0["e_conv_univ"],
+            "e_crit_res": r0["e_crit_res"],
+            "gamma": r0["adiabatic_window_gamma"],
+            "gamma_lower_bound": r0["adiabatic_window_gamma_lower_bound"],
+            "final_clipped_res_bits": r0["final_three_tier"]["clipped_memorized_res_bits"],
+            "final_ood_miscalibration_excess": r0["final_three_tier"]["ood_miscalibration_excess"],
         }
 
     # 2. Family-breadth (arm_id) summary across natural arms
@@ -650,6 +760,10 @@ def summarize_supply_demand_campaign(
         "res_takeoff_threshold_bpr": float(res_takeoff_threshold_bpr),
         "stage1_objectives_loaded": sorted(stage1_lookup.keys()),
         "by_objective": by_objective,
+        "adiabatic_window_summary": {
+            "by_objective_scale": adiabatic_by_obj_scale,
+            "by_arm_objective_scale": adiabatic_by_arm_obj,
+        },
         "by_arm": by_arm,
         "inversion_vs_delta_h_res_all_milestones": inversion_vs_delta_h_res,
         "inversion_vs_delta_h_res_post_peak": post_peak_inversion_vs_delta_h_res,

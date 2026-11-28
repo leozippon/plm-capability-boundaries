@@ -51,6 +51,70 @@ CONTACT_DISTANCE_ANGSTROM: float = 8.0
 _MUT_TOK_RE = re.compile(r"^([ACDEFGHIKLMNPQRSTVWY])(\d+)([ACDEFGHIKLMNPQRSTVWY])$")
 
 
+@torch.no_grad()
+def compute_temperature_calibrated_bits(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+    *,
+    log_tau_bounds: tuple[float, float] = (-4.0, 6.0),
+    n_iter: int = 32,
+) -> dict[str, float]:
+    """Compute raw vs scalar-temperature-calibrated cross-entropy min_{tau>0} H(p, q_tau) in bits/tok.
+
+    Separates true representation/ranking error from logit-norm temperature miscalibration:
+    scaling logits z -> alpha * z inflates raw_bits_per_tok while leaving calibrated_bits_per_tok invariant.
+    """
+    if valid_mask is not None:
+        flat_mask = valid_mask.reshape(-1).bool()
+        flat_logits = logits.reshape(-1, logits.shape[-1])[flat_mask].float()
+        flat_targets = targets.reshape(-1)[flat_mask].long()
+    else:
+        flat_logits = logits.reshape(-1, logits.shape[-1]).float()
+        flat_targets = targets.reshape(-1).long()
+
+    if flat_targets.numel() == 0:
+        return {
+            "raw_bits_per_tok": float("nan"),
+            "calibrated_bits_per_tok": float("nan"),
+            "optimal_temperature": float("nan"),
+            "calibration_excess_bits": float("nan"),
+        }
+
+    def _bits_at_log_tau(log_tau: float) -> float:
+        inv_tau = math.exp(-float(log_tau))
+        nll = F.cross_entropy(flat_logits * inv_tau, flat_targets, reduction="mean")
+        return float(nll.item() / LN2)
+
+    raw_bits = _bits_at_log_tau(0.0)
+
+    a, b = float(log_tau_bounds[0]), float(log_tau_bounds[1])
+    inv_phi = (math.sqrt(5.0) - 1.0) / 2.0
+    c = b - inv_phi * (b - a)
+    d = a + inv_phi * (b - a)
+    fc = _bits_at_log_tau(c)
+    fd = _bits_at_log_tau(d)
+    for _ in range(int(n_iter)):
+        if fc < fd:
+            b, d, fd = d, c, fc
+            c = b - inv_phi * (b - a)
+            fc = _bits_at_log_tau(c)
+        else:
+            a, c, fc = c, d, fd
+            d = a + inv_phi * (b - a)
+            fd = _bits_at_log_tau(d)
+
+    best_log_tau = 0.5 * (a + b)
+    cal_bits = min(raw_bits, _bits_at_log_tau(best_log_tau))
+    opt_tau = 1.0 if cal_bits == raw_bits else math.exp(best_log_tau)
+    return {
+        "raw_bits_per_tok": float(raw_bits),
+        "calibrated_bits_per_tok": float(cal_bits),
+        "optimal_temperature": float(opt_tau),
+        "calibration_excess_bits": float(max(0.0, raw_bits - cal_bits)),
+    }
+
+
 def _u64_to_i64(val: int) -> int:
     val &= (1 << 64) - 1
     return val - (1 << 64) if val >= (1 << 63) else val

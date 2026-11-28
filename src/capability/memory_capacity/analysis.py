@@ -1010,11 +1010,17 @@ def _saturated_epochs_by_scale(
 
 def _select_anchor_epoch(
     sat_epochs_by_scale: dict[str, list[int]],
+    *,
+    paradigm: str | None = None,
 ) -> int | None:
+    """Select the highest saturated common epoch across scales for a paradigm.
+
+    Never forces mlm_15 or oa_uniform onto AR's legacy e=400 anchor when higher
+    saturated epochs exist; preserves e=400 automatically for Batch-1 AR campaigns
+    where 400 is the highest multi-scale saturated epoch.
+    """
     if not sat_epochs_by_scale:
         return None
-    if any(400 in es for es in sat_epochs_by_scale.values()):
-        return 400
     counts: dict[int, int] = {}
     for es in sat_epochs_by_scale.values():
         for e in es:
@@ -1041,7 +1047,7 @@ def _build_c_max_calibration_and_exposure_laws(
     for p_idx, paradigm in enumerate(paradigms):
         p_seed = seed + p_idx * 500
         sat_epochs_map = _saturated_epochs_by_scale(all_cells, paradigm)
-        anchor_epoch = _select_anchor_epoch(sat_epochs_map)
+        anchor_epoch = _select_anchor_epoch(sat_epochs_map, paradigm=paradigm)
         if anchor_epoch is None:
             continue
 
@@ -1549,9 +1555,50 @@ def _build_c_max_calibration_and_exposure_laws(
             else None
         )
 
+        metric_semantics_map = {
+            "ar": "ar_joint_exact_bits_per_non_emb_param",
+            "oa_uniform": "oa_uniform_joint_nelbo_16pt_bits_per_non_emb_param",
+            "mlm_15": "mlm_15_dual_sw_and_symmetric_pseudo_bits_per_non_emb_param",
+        }
+        max_obs_by_scale: dict[str, dict[str, Any]] = {}
+        delayed_c_inf_by_scale: dict[str, float | None] = {}
+        for s in scales:
+            s_epochs = sat_epochs_map.get(s, [])
+            if not s_epochs:
+                continue
+            max_e = s_epochs[-1]
+            max_cell = all_cells[(paradigm, s, max_e)]
+            s_dh = by_scale_exp[s].get("delayed_hill_fit_empirical")
+            s_c_inf = float(s_dh["c_inf_bits_per_param"]) if s_dh is not None else None
+            delayed_c_inf_by_scale[s] = s_c_inf
+            entry_s: dict[str, Any] = {
+                "max_observed_epoch": int(max_e),
+                "c_eff_empirical_bpp": float(max_cell["c_eff_empirical"]),
+                "c_eff_at_2x_bpp": float(max_cell["c_eff_at_2x"]),
+                "delayed_hill_c_inf_bpp": s_c_inf,
+            }
+            if paradigm == "mlm_15":
+                entry_s["sw_bits_per_non_emb_param"] = max_cell.get("sw_bits_per_non_emb_param")
+                entry_s["pseudo_bits_per_non_emb_param"] = max_cell.get("pseudo_bits_per_non_emb_param")
+            max_obs_by_scale[s] = entry_s
+
+        asymptotic_summary: dict[str, Any] = {
+            "metric_semantics": metric_semantics_map.get(paradigm, paradigm),
+            "anchor_epoch": int(anchor_epoch),
+            "max_observed_epoch": max((v["max_observed_epoch"] for v in max_obs_by_scale.values()), default=None),
+            "delayed_hill_c_inf_pooled_bpp": (
+                float(pooled_delayed_emp["c_inf_bits_per_param"])
+                if pooled_delayed_emp is not None
+                else None
+            ),
+            "delayed_hill_c_inf_by_scale": delayed_c_inf_by_scale,
+            "max_observed_by_scale": max_obs_by_scale,
+        }
+
         c_max_calibration["by_paradigm"][paradigm] = {
             "anchor_epoch": anchor_epoch,
             "is_canonical_e400_anchor": anchor_epoch == 400,
+            "asymptotic_and_metric_summary": asymptotic_summary,
             "direct_anchor_unadjusted": {
                 "non_embedding_params": direct_non_emb_fit,
                 "total_params": direct_tot_fit,
