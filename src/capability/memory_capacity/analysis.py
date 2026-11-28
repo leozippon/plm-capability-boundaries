@@ -42,6 +42,7 @@ ACCEPTED_RUN_SCHEMAS = frozenset(
     {"memory_capacity_run_v1", "plm_parametric_capacity_run_v1"}
 )
 COMPLETED_STATUSES = frozenset({"completed", "complete"})
+PRIMARY_TRACKS = frozenset({"primary", "stage1_wsd"})
 
 NLP_REFERENCE_CONSTANTS_BITS_PER_PARAM: dict[str, dict[str, Any]] = {
     "morris_et_al_2025_gpt": {
@@ -1579,7 +1580,7 @@ def _build_ar_vs_mlm_and_loo_audit(
     primary_oa: dict[tuple[str, float, int], dict[str, Any]] = {}
     primary_mlm15: dict[tuple[str, float, int], dict[str, Any]] = {}
     for row in all_obs:
-        if row["track"] != "primary":
+        if row["track"] not in PRIMARY_TRACKS:
             continue
         key = (row["scale_id"], round(float(row["multiplier"]), 6), int(row["epoch"]))
         if row["paradigm"] == "ar":
@@ -1826,7 +1827,7 @@ def _build_ar_vs_mlm_and_loo_audit(
             ),
         }
 
-    primary_loo = [r for r in loo_records if r["track"] == "primary"]
+    primary_loo = [r for r in loo_records if r["track"] in PRIMARY_TRACKS]
     primary_loo_e400_sat = [
         r for r in primary_loo if r["epoch"] == 400 and r["multiplier"] >= 2.0 - 1e-9
     ]
@@ -1895,7 +1896,7 @@ def _build_ablations(
 ) -> dict[str, Any]:
     primary_map: dict[tuple[str, str, float, int], dict[str, Any]] = {}
     for row in all_obs:
-        if row["track"] == "primary":
+        if row["track"] in PRIMARY_TRACKS:
             key = (
                 row["paradigm"],
                 row["scale_id"],
@@ -2061,7 +2062,7 @@ def summarize_memory_capacity_campaign(
         )
 
     all_obs = _flatten_observations(completed_runs)
-    primary_obs = [r for r in all_obs if r["track"] == "primary"]
+    primary_obs = [r for r in all_obs if r["track"] in PRIMARY_TRACKS]
 
     saturation_curves, all_cells = _build_saturation_and_cells(primary_obs)
     c_max_calibration, exposure_discount_curves = _build_c_max_calibration_and_exposure_laws(

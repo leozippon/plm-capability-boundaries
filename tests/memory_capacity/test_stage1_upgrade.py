@@ -954,3 +954,63 @@ execute_run(
     assert resumed_res["final_eval"]["train_loss_last_epoch_bits_per_tok"] == pytest.approx(
         ref_res["final_eval"]["train_loss_last_epoch_bits_per_tok"], abs=1e-5
     )
+
+
+def test_stage1_wsd_calibration_manifest_grid_and_lpt_priority(tmp_path: Path) -> None:
+    from src.capability.memory_capacity import build_stage1_wsd_calibration_runs
+
+    runs = build_stage1_wsd_calibration_runs()
+    assert len(runs) == 70
+    assert len({r.run_id for r in runs}) == 70
+
+    by_p: dict[str, int] = {}
+    for r in runs:
+        by_p[r.paradigm] = by_p.get(r.paradigm, 0) + 1
+        assert r.track == "stage1_wsd"
+        assert r.lr_schedule == "wsd"
+        assert r.adaptive_early_stop is True
+        assert r.delete_transient_ckpt_on_complete is True
+        assert r.save_checkpoint is False
+        assert r.min_steps_per_epoch == 16
+        assert r.run_id.startswith(f"wsd_{r.paradigm}_")
+
+    assert by_p == {"ar": 23, "mlm_15": 25, "oa_uniform": 22}
+
+    # Verify single-GPU workers see 0.5m pilots (oa_uniform & mlm_15) first, then LPT
+    single_runs = [r for r in runs if not r.ddp_preferred]
+    pilot_count = sum(
+        1 for r in single_runs if r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15")
+    )
+    assert pilot_count == 13
+    assert all(
+        r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15")
+        for r in single_runs[:pilot_count]
+    )
+    non_pilot_costs = [
+        int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
+        for r in single_runs[pilot_count:]
+    ]
+    assert non_pilot_costs == sorted(non_pilot_costs, reverse=True)
+
+    # Verify DDP workers see 150m AR first, then remaining DDP runs in descending LPT
+    ddp_runs = [r for r in runs if r.ddp_preferred]
+    assert all(r.scale_id == "150m" and r.paradigm == "ar" for r in ddp_runs[:4])
+    rem_ddp_costs = [
+        int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
+        for r in ddp_runs[4:]
+    ]
+    assert rem_ddp_costs == sorted(rem_ddp_costs, reverse=True)
+
+    # CLI manifest builder roundtrip via load_run_manifest
+    manifest_script = REPO_ROOT / "scripts/capability/memory_capacity/build_stage1_wsd_manifest.py"
+    out_manifest = tmp_path / "stage1_wsd_manifest.json"
+    proc = subprocess.run(
+        [sys.executable, str(manifest_script), "--out", str(out_manifest)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Wrote 70 Stage-1 WSD runs" in proc.stdout
+    loaded = load_run_manifest(out_manifest)
+    assert [r.run_id for r in loaded] == [r.run_id for r in runs]

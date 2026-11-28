@@ -51,6 +51,7 @@ LEGACY_PARADIGM_ALIASES: dict[str, str] = {"mlm": "oa_uniform"}
 LR_SCHEDULES: tuple[str, ...] = ("wsd", "cosine")
 CAMPAIGN_TRACKS: tuple[str, ...] = (
     "primary",
+    "stage1_wsd",
     "ablation_wd",
     "ablation_fp32",
     "ablation_lr_horizon",
@@ -758,3 +759,92 @@ def get_campaign_run_map(
             model_seed=model_seed,
         )
     }
+
+
+def build_stage1_wsd_calibration_runs(
+    *,
+    data_seed: int = 20261127,
+    model_seed: int = 20261128,
+    min_steps_per_epoch: int = 16,
+) -> list[RunSpec]:
+    """Build the 70-run Stage-1 WSD adaptive-stopping calibration grid in LPT priority order.
+
+    Priority ordering:
+      - Single-GPU workers claim fast 0.5m pilots (oa_uniform & mlm_15) first, then remaining
+        single-GPU runs in descending LPT (estimated_tokens * n_params_non_embedding).
+      - DDP workers claim 150m AR first (descending LPT), then 35m and remaining DDP runs in
+        descending LPT (estimated_tokens * n_params_non_embedding) to prevent tail stragglers.
+    """
+    grid: list[tuple[str, str, tuple[float, ...], int, float | None]] = [
+        # (paradigm, scale_id, multipliers, max_epochs, ddp_min_mult; None -> never DDP, 0.0 -> always DDP)
+        ("ar", "0.5m", (0.5, 1.0, 2.0, 4.0, 8.0), 1500, None),
+        ("ar", "2m", (0.5, 1.0, 2.0, 4.0, 8.0), 1500, None),
+        ("ar", "8m", (0.5, 1.0, 2.0, 4.0, 8.0), 1500, None),
+        ("ar", "35m", (1.0, 2.0, 4.0, 8.0), 800, 0.0),
+        ("ar", "150m", (0.5, 1.0, 2.0, 4.0), 500, 0.0),
+        ("mlm_15", "0.5m", (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0), 4000, None),
+        ("mlm_15", "2m", (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0), 4000, None),
+        ("mlm_15", "8m", (0.25, 0.5, 1.0, 2.0, 4.0, 8.0), 3000, 2.0),
+        ("mlm_15", "35m", (0.25, 0.5, 1.0, 2.0, 4.0), 1500, 0.0),
+        ("oa_uniform", "0.5m", (0.25, 0.5, 1.0, 2.0, 4.0, 8.0), 10000, None),
+        ("oa_uniform", "2m", (0.25, 0.5, 1.0, 2.0, 4.0, 8.0), 8000, 4.0),
+        ("oa_uniform", "8m", (0.25, 0.5, 1.0, 2.0, 4.0), 5000, 1.0),
+        ("oa_uniform", "35m", (0.25, 0.5, 1.0, 2.0, 4.0), 3000, 0.0),
+    ]
+
+    runs: list[RunSpec] = []
+    for paradigm, scale_id, mults, max_epochs, ddp_min_mult in grid:
+        for mult in mults:
+            ddp_preferred = (ddp_min_mult is not None) and (mult >= ddp_min_mult - 1e-12)
+            run_id = (
+                f"wsd_{paradigm}_{slugify_token(scale_id)}"
+                f"_r{slugify_token(f'{mult:.2f}')}"
+            )
+            runs.append(
+                _make_run_spec(
+                    run_id=run_id,
+                    track="stage1_wsd",
+                    paradigm=paradigm,
+                    scale_id=scale_id,
+                    multiplier=mult,
+                    max_epochs=max_epochs,
+                    weight_decay=0.0,
+                    precision="bf16",
+                    seed=model_seed,
+                    data_seed=data_seed,
+                    save_checkpoint=False,
+                    ddp_preferred=ddp_preferred,
+                    lr_schedule="wsd",
+                    min_lr_ratio=0.05,
+                    min_steps_per_epoch=min_steps_per_epoch,
+                    adaptive_early_stop=True,
+                    delete_transient_ckpt_on_complete=True,
+                )
+            )
+
+    def _compute_cost(r: RunSpec) -> int:
+        return int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
+
+    def _priority_key(r: RunSpec) -> tuple[int, int, str]:
+        # Tier 0: Fast 0.5m pilots (oa_uniform & mlm_15) -> immediate pilot curves on 1-GPU slots
+        if (not r.ddp_preferred) and r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15"):
+            return (0, -_compute_cost(r), r.run_id)
+        # Tier 1: 150m AR DDP priority -> start heaviest flagship AR rung immediately on DDP nodes
+        if r.ddp_preferred and r.scale_id == "150m" and r.paradigm == "ar":
+            return (1, -_compute_cost(r), r.run_id)
+        # Tier 2: Remaining DDP runs (35m, 8m/2m high-r) in strict descending LPT order
+        if r.ddp_preferred:
+            return (2, -_compute_cost(r), r.run_id)
+        # Tier 3: Remaining single-GPU runs in strict descending LPT order
+        return (3, -_compute_cost(r), r.run_id)
+
+    runs.sort(key=_priority_key)
+
+    seen_ids: set[str] = set()
+    for r in runs:
+        if r.run_id in seen_ids:
+            raise ValueError(f"Duplicate Stage-1 WSD run_id generated: {r.run_id!r}")
+        seen_ids.add(r.run_id)
+        assert_no_forbidden_infra_strings(r.to_dict(), label=r.run_id)
+
+    return runs
