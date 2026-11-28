@@ -392,3 +392,92 @@ def test_real_dplm2_and_galactica_and_direct_paths_smoke(tmp_path: Path):
         ev_amp = load_open_audit_evaluator(str(amp_dir), device="cpu", dtype="float32")
         assert isinstance(ev_amp, MaskedLMOpenEvaluator)
 
+
+def test_esmc_sdk_hf_state_dict_roundtrip():
+    """Verify exact bidirectional key & tensor parity between raw SDK ESMC and HF EsmcForMaskedLM."""
+    from src.capability.open_model_audit.evaluators import (
+        convert_esmc_hf_state_dict_to_sdk,
+        convert_esmc_sdk_state_dict_to_hf,
+    )
+
+    torch.manual_seed(0)
+    d, h_mid = 32, 64
+    sdk = {
+        "model.embed.weight": torch.randn(64, d),
+        "model.transformer.blocks.0.attn.layernorm_qkv.0.weight": torch.randn(d),
+        "model.transformer.blocks.0.attn.layernorm_qkv.0.bias": torch.randn(d),
+        "model.transformer.blocks.0.attn.layernorm_qkv.1.weight": torch.randn(3 * d, d),
+        "model.transformer.blocks.0.attn.out_proj.weight": torch.randn(d, d),
+        "model.transformer.blocks.0.attn.q_ln.weight": torch.randn(d),
+        "model.transformer.blocks.0.attn.k_ln.weight": torch.randn(d),
+        "model.transformer.blocks.0.ffn.0.weight": torch.randn(d),
+        "model.transformer.blocks.0.ffn.0.bias": torch.randn(d),
+        "model.transformer.blocks.0.ffn.1.weight": torch.randn(2 * h_mid, d),
+        "model.transformer.blocks.0.ffn.3.weight": torch.randn(d, h_mid),
+        "model.transformer.norm.weight": torch.randn(d),
+        "model.sequence_head.0.weight": torch.randn(d, d),
+        "model.sequence_head.0.bias": torch.randn(d),
+        "model.sequence_head.2.weight": torch.randn(d),
+        "model.sequence_head.2.bias": torch.randn(d),
+        "model.sequence_head.3.weight": torch.randn(64, d),
+        "model.sequence_head.3.bias": torch.randn(64),
+    }
+    hf = convert_esmc_sdk_state_dict_to_hf(sdk)
+    assert "esmc.embed_tokens.weight" in hf
+    assert hf["esmc.layers.0.self_attn.q_proj.weight"].shape == (d, d)
+    assert hf["esmc.layers.0.mlp.gate_proj.weight"].shape == (h_mid, d)
+    assert hf["lm_head.decoder.weight"].shape == (64, d)
+
+    roundtrip = convert_esmc_hf_state_dict_to_sdk(hf)
+    for k, v in sdk.items():
+        clean_k = k.removeprefix("model.")
+        assert clean_k in roundtrip
+        assert torch.allclose(roundtrip[clean_k], v, atol=0.0)
+
+
+def test_esm3_bfloat16_plddt_autocast_consistency(tmp_path: Path):
+    """Reproduce esm/models/esm3.py:116 Float average_plddt vs BFloat16 plddt_projection under ESM3OpenEvaluator."""
+    from types import SimpleNamespace
+    from src.capability.open_model_audit.evaluators import ESM3OpenEvaluator
+
+    class _MockSeqTok:
+        mask_token_id = 32
+        unk_token_id = 3
+
+        def convert_tokens_to_ids(self, aa: str) -> int:
+            return 4 + AA20.index(aa)
+
+    class _MockBF16ESM3(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tokenizers = SimpleNamespace(sequence=_MockSeqTok())
+            self.plddt_projection = nn.Linear(16, 8, dtype=torch.bfloat16)
+            self.head = nn.Linear(8, 64, dtype=torch.bfloat16)
+            nn.init.zeros_(self.head.weight)
+            nn.init.zeros_(self.head.bias)
+
+        def encode(self, prot):
+            seq = prot.sequence if hasattr(prot, "sequence") else prot[0]
+            ids = [0] + [4 + AA20.index(aa) for aa in seq] + [2]
+            coords = prot.coordinates if hasattr(prot, "coordinates") else (prot[1] if isinstance(prot, tuple) else None)
+            struct = torch.zeros(len(ids), dtype=torch.long) if coords is not None else None
+            return SimpleNamespace(sequence=torch.tensor(ids, dtype=torch.long), structure=struct)
+
+        def forward(self, *, sequence_tokens, structure_tokens=None):
+            del structure_tokens
+            B, L = sequence_tokens.shape
+            # Mirror esm/models/esm3.py:116: float32 RBF features fed into bfloat16 Linear!
+            rbf_feats = torch.ones((B, L, 16), dtype=torch.float32, device=sequence_tokens.device)
+            h = self.plddt_projection(rbf_feats)
+            logits = self.head(h)
+            logits[..., 0] = 40.0  # non-AA token mass must be stripped
+            return SimpleNamespace(sequence_logits=logits)
+
+    bundle = _make_mini_bundle(tmp_path)
+    ev = ESM3OpenEvaluator(_MockBF16ESM3(), model_id="esm3-sm-open-v1", device="cpu")
+    assert ev.dtype == "bfloat16"
+    res = ev.evaluate_sequence_split(bundle.seen_cath_matched[:2], n_mlm15_draws=2, n_mdm_strata=2)
+    assert res["mlm_15"]["bits_per_res"] == pytest.approx(H0_BITS, abs=1e-3)
+    assert res["mdm_16"]["bits_per_res"] == pytest.approx(H0_BITS, abs=1e-3)
+
+

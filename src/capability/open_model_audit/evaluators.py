@@ -1559,6 +1559,8 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
 
     def __init__(self, model: Any, *, model_id: str = "esm3-sm-open-v1", device: str = "cuda:0") -> None:
         pcounts = count_model_parameters(model)
+        first_param = next(model.parameters(), None)
+        realised_dt = str(first_param.dtype).removeprefix("torch.") if first_param is not None else "float32"
         super().__init__(
             model_id=model_id,
             family_kind="structure_conditioned",
@@ -1567,7 +1569,7 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
             n_params_emb=pcounts["n_params_emb"],
             n_params_non_emb=pcounts["n_params_non_emb"],
             device=str(device),
-            dtype="float32",
+            dtype=realised_dt,
             supports_sequence_splits=True,
             supports_3d_panel=True,
             supports_3d_ablation=True,
@@ -1577,10 +1579,27 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
         seq_tok = model.tokenizers.sequence
         self._mask_id = int(seq_tok.mask_token_id)
         self._aa20_ids_t = torch.as_tensor(
-            [int(seq_tok.convert_tokens_to_ids(aa)) for aa in AA20],
+            _validate_aa20_ids(
+                [seq_tok.convert_tokens_to_ids(aa) for aa in AA20],
+                getattr(seq_tok, "unk_token_id", None),
+                model_id,
+            ),
             dtype=torch.long,
             device=self.device,
         )
+
+    def _esm3_autocast_ctx(self):
+        """Match ESM3 weight dtype during forward/encode (prevents Float vs BFloat16 in plddt_projection)."""
+        first_param = next(self.model.parameters(), None)
+        if first_param is None:
+            return nullcontext()
+        pdt = first_param.dtype
+        dev_type = torch.device(self.device).type
+        if pdt in (torch.bfloat16, torch.float16) and dev_type in ("cuda", "cpu"):
+            if dev_type == "cpu" and pdt == torch.float16:
+                return nullcontext()
+            return torch.autocast(device_type=dev_type, dtype=pdt)
+        return _precision_ctx(self.device, self.dtype)
 
     @torch.no_grad()
     def _eval_esm3_subset(
@@ -1593,9 +1612,14 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
         n_mdm_strata: int,
         eval_seed: int,
     ) -> dict[str, dict[str, Any]]:
-        from esm.sdk.api import ESMProtein  # type: ignore
+        try:
+            from esm.sdk.api import ESMProtein  # type: ignore
+        except ImportError:
+            ESMProtein = None  # type: ignore[assignment]
 
         def _encode_protein(seq: str, coords_ncaco: np.ndarray | None):
+            if ESMProtein is None:
+                return self.model.encode((seq, coords_ncaco))
             if coords_ncaco is None:
                 prot = ESMProtein(sequence=seq)
             else:
@@ -1606,7 +1630,8 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
                 atom37[:, 2, :] = coords_ncaco[:, 2, :]
                 atom37[:, 4, :] = coords_ncaco[:, 3, :]
                 prot = ESMProtein(sequence=seq, coordinates=torch.from_numpy(atom37))
-            return self.model.encode(prot)
+            with self._esm3_autocast_ctx():
+                return self.model.encode(prot)
 
         encoded = [_encode_protein(s, c) for s, c in zip(seqs, coords_list)]
         seq_lens = [len(s) for s in seqs]
@@ -1614,35 +1639,36 @@ class ESM3OpenEvaluator(OpenModelAuditEvaluator):
         def _run_mode(mode: str, n_steps: int) -> dict[str, Any]:
             seq_bits: list[list[float]] = [[] for _ in range(len(seqs))]
             cal = _CalibrationBuffer(seed=eval_seed + 17)
-            for seq_i, (seq, pt) in enumerate(zip(seqs, encoded)):
-                L = len(seq)
-                base_seq = pt.sequence.to(self.device)
-                struct_toks = pt.structure.to(self.device) if getattr(pt, "structure", None) is not None else None
-                for step in range(n_steps):
-                    if mode == "mlm_15":
-                        m = deterministic_fixed_rate_mask(
-                            seq_i, L, draw_idx=step, mask_rate=0.15, eval_seed=eval_seed + 100
+            with self._esm3_autocast_ctx():
+                for seq_i, (seq, pt) in enumerate(zip(seqs, encoded)):
+                    L = len(seq)
+                    base_seq = pt.sequence.to(self.device)
+                    struct_toks = pt.structure.to(self.device) if getattr(pt, "structure", None) is not None else None
+                    for step in range(n_steps):
+                        if mode == "mlm_15":
+                            m = deterministic_fixed_rate_mask(
+                                seq_i, L, draw_idx=step, mask_rate=0.15, eval_seed=eval_seed + 100
+                            )
+                        else:
+                            m, _mc, _u = deterministic_mdm_stratum_mask(
+                                seq_i, L, stratum=step, n_strata=n_steps, eval_seed=eval_seed
+                            )
+                        pos = np.flatnonzero(m)
+                        masked_seq = base_seq.clone()
+                        masked_seq[1 + torch.as_tensor(pos, dtype=torch.long, device=self.device)] = self._mask_id
+                        out = self.model.forward(
+                            sequence_tokens=masked_seq.unsqueeze(0),
+                            structure_tokens=struct_toks.unsqueeze(0) if struct_toks is not None else None,
                         )
-                    else:
-                        m, _mc, _u = deterministic_mdm_stratum_mask(
-                            seq_i, L, stratum=step, n_strata=n_steps, eval_seed=eval_seed
-                        )
-                    pos = np.flatnonzero(m)
-                    masked_seq = base_seq.clone()
-                    masked_seq[1 + torch.as_tensor(pos, dtype=torch.long, device=self.device)] = self._mask_id
-                    out = self.model.forward(
-                        sequence_tokens=masked_seq.unsqueeze(0),
-                        structure_tokens=struct_toks.unsqueeze(0) if struct_toks is not None else None,
-                    )
-                    logits = out.sequence_logits[0].float()
-                    tok_idx = torch.as_tensor(1 + pos, dtype=torch.long, device=self.device)
-                    z20 = aa20_restricted_logits(logits.index_select(0, tok_idx), self._aa20_ids_t)
-                    y_np = np.asarray([AA20_INDEX[seq[int(p)]] for p in pos], dtype=np.int64)
-                    y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
-                    ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
-                    seq_bits[seq_i].append(float(ce_bits.mean().item()))
-                    w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
-                    cal.add(z20.detach().cpu().numpy(), y_np, weights=w_site)
+                        logits = out.sequence_logits[0].float()
+                        tok_idx = torch.as_tensor(1 + pos, dtype=torch.long, device=self.device)
+                        z20 = aa20_restricted_logits(logits.index_select(0, tok_idx), self._aa20_ids_t)
+                        y_np = np.asarray([AA20_INDEX[seq[int(p)]] for p in pos], dtype=np.int64)
+                        y_t = torch.as_tensor(y_np, dtype=torch.long, device=self.device)
+                        ce_bits = F.cross_entropy(z20, y_t, reduction="none").to(torch.float64) / LN2
+                        seq_bits[seq_i].append(float(ce_bits.mean().item()))
+                        w_site = np.full(len(pos), float(L) / float(n_steps * len(pos)), dtype=np.float64)
+                        cal.add(z20.detach().cpu().numpy(), y_np, weights=w_site)
             z, y, w = cal.finalize()
             return _summarize_seq_bits([float(np.mean(v)) for v in seq_bits], seq_lens, logits_20=z, targets_20=y, weights=w)
 
@@ -2168,6 +2194,430 @@ def _load_prot_t5(
     )
 
 
+def _strip_state_dict_prefix(sd: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Unwrap nested state_dict containers and strip common ``model.``/``module.`` prefixes."""
+    if "state_dict" in sd and isinstance(sd["state_dict"], Mapping):
+        sd = sd["state_dict"]  # type: ignore[assignment]
+    elif "model" in sd and isinstance(sd["model"], Mapping):
+        sd = sd["model"]  # type: ignore[assignment]
+    out: dict[str, torch.Tensor] = {}
+    for k, v in sd.items():
+        if not isinstance(v, torch.Tensor):
+            continue
+        nk = str(k)
+        for pref in ("module.", "model."):
+            if nk.startswith(pref):
+                nk = nk[len(pref) :]
+        out[nk] = v
+    return out
+
+
+def convert_esmc_sdk_state_dict_to_hf(sdk_sd: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Convert raw EvolutionaryScale SDK ESMC state_dict keys into HuggingFace ``EsmcForMaskedLM`` keys."""
+    sd = _strip_state_dict_prefix(sdk_sd)
+    if "esmc.embed_tokens.weight" in sd:
+        return dict(sd)
+    hf: dict[str, torch.Tensor] = {}
+    if "embed.weight" in sd:
+        hf["esmc.embed_tokens.weight"] = sd["embed.weight"]
+    if "transformer.norm.weight" in sd:
+        hf["esmc.norm.weight"] = sd["transformer.norm.weight"]
+    if "transformer.norm.bias" in sd:
+        hf["esmc.norm.bias"] = sd["transformer.norm.bias"]
+    seq_head_map = {
+        "sequence_head.0.weight": "lm_head.dense.weight",
+        "sequence_head.0.bias": "lm_head.dense.bias",
+        "sequence_head.2.weight": "lm_head.layer_norm.weight",
+        "sequence_head.2.bias": "lm_head.layer_norm.bias",
+        "sequence_head.3.weight": "lm_head.decoder.weight",
+        "sequence_head.3.bias": "lm_head.decoder.bias",
+    }
+    for sk, hk in seq_head_map.items():
+        if sk in sd:
+            hf[hk] = sd[sk]
+
+    block_indices = sorted(
+        {
+            int(k.split(".")[2])
+            for k in sd
+            if k.startswith("transformer.blocks.") and len(k.split(".")) > 3 and k.split(".")[2].isdigit()
+        }
+    )
+    for i in block_indices:
+        sp = f"transformer.blocks.{i}"
+        hp = f"esmc.layers.{i}"
+        for s_suf, h_suf in (
+            ("attn.layernorm_qkv.0.weight", "input_layernorm.weight"),
+            ("attn.layernorm_qkv.0.bias", "input_layernorm.bias"),
+            ("attn.out_proj.weight", "self_attn.o_proj.weight"),
+            ("attn.q_ln.weight", "self_attn.q_norm.weight"),
+            ("attn.k_ln.weight", "self_attn.k_norm.weight"),
+            ("ffn.0.weight", "post_attention_layernorm.weight"),
+            ("ffn.0.bias", "post_attention_layernorm.bias"),
+            ("ffn.3.weight", "mlp.down_proj.weight"),
+        ):
+            if f"{sp}.{s_suf}" in sd:
+                hf[f"{hp}.{h_suf}"] = sd[f"{sp}.{s_suf}"]
+        qkv_k = f"{sp}.attn.layernorm_qkv.1.weight"
+        if qkv_k in sd:
+            q, k_w, v = sd[qkv_k].chunk(3, dim=0)
+            hf[f"{hp}.self_attn.q_proj.weight"] = q
+            hf[f"{hp}.self_attn.k_proj.weight"] = k_w
+            hf[f"{hp}.self_attn.v_proj.weight"] = v
+        ffn1_k = f"{sp}.ffn.1.weight"
+        if ffn1_k in sd:
+            # EvolutionaryScale SwiGLU: x1, x2 = x.chunk(2, dim=-1); F.silu(x1) * x2 -> [gate, up]
+            gate, up = sd[ffn1_k].chunk(2, dim=0)
+            hf[f"{hp}.mlp.gate_proj.weight"] = gate
+            hf[f"{hp}.mlp.up_proj.weight"] = up
+    return hf
+
+
+def convert_esmc_hf_state_dict_to_sdk(hf_sd: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Convert HuggingFace ``EsmcForMaskedLM`` state_dict keys into raw EvolutionaryScale SDK ESMC keys."""
+    sd = _strip_state_dict_prefix(hf_sd)
+    if "embed.weight" in sd:
+        return dict(sd)
+    sdk: dict[str, torch.Tensor] = {}
+    if "esmc.embed_tokens.weight" in sd:
+        sdk["embed.weight"] = sd["esmc.embed_tokens.weight"]
+    if "esmc.norm.weight" in sd:
+        sdk["transformer.norm.weight"] = sd["esmc.norm.weight"]
+    if "esmc.norm.bias" in sd:
+        sdk["transformer.norm.bias"] = sd["esmc.norm.bias"]
+    head_map = {
+        "lm_head.dense.weight": "sequence_head.0.weight",
+        "lm_head.dense.bias": "sequence_head.0.bias",
+        "lm_head.layer_norm.weight": "sequence_head.2.weight",
+        "lm_head.layer_norm.bias": "sequence_head.2.bias",
+        "lm_head.decoder.weight": "sequence_head.3.weight",
+        "lm_head.decoder.bias": "sequence_head.3.bias",
+    }
+    for hk, sk in head_map.items():
+        if hk in sd:
+            sdk[sk] = sd[hk]
+
+    layer_indices = sorted(
+        {
+            int(k.split(".")[2])
+            for k in sd
+            if k.startswith("esmc.layers.") and len(k.split(".")) > 3 and k.split(".")[2].isdigit()
+        }
+    )
+    for i in layer_indices:
+        hp = f"esmc.layers.{i}"
+        sp = f"transformer.blocks.{i}"
+        for h_suf, s_suf in (
+            ("input_layernorm.weight", "attn.layernorm_qkv.0.weight"),
+            ("input_layernorm.bias", "attn.layernorm_qkv.0.bias"),
+            ("self_attn.o_proj.weight", "attn.out_proj.weight"),
+            ("self_attn.q_norm.weight", "attn.q_ln.weight"),
+            ("self_attn.k_norm.weight", "attn.k_ln.weight"),
+            ("post_attention_layernorm.weight", "ffn.0.weight"),
+            ("post_attention_layernorm.bias", "ffn.0.bias"),
+            ("mlp.down_proj.weight", "ffn.3.weight"),
+        ):
+            if f"{hp}.{h_suf}" in sd:
+                sdk[f"{sp}.{s_suf}"] = sd[f"{hp}.{h_suf}"]
+        q_k, k_k, v_k = (
+            f"{hp}.self_attn.q_proj.weight",
+            f"{hp}.self_attn.k_proj.weight",
+            f"{hp}.self_attn.v_proj.weight",
+        )
+        if q_k in sd and k_k in sd and v_k in sd:
+            sdk[f"{sp}.attn.layernorm_qkv.1.weight"] = torch.cat([sd[q_k], sd[k_k], sd[v_k]], dim=0)
+        g_k, u_k = f"{hp}.mlp.gate_proj.weight", f"{hp}.mlp.up_proj.weight"
+        if g_k in sd and u_k in sd:
+            sdk[f"{sp}.ffn.1.weight"] = torch.cat([sd[g_k], sd[u_k]], dim=0)
+    return sdk
+
+
+def _load_raw_state_dict_from_dir(ckpt_dir: Path) -> dict[str, torch.Tensor]:
+    """Load tensors from safetensors or PyTorch .pth/.pt/.bin shards inside ``ckpt_dir``."""
+    search_dirs = [ckpt_dir]
+    if (ckpt_dir / "data/weights").is_dir():
+        search_dirs.insert(0, ckpt_dir / "data/weights")
+    for sdir in search_dirs:
+        st_files = sorted(sdir.glob("*.safetensors"))
+        if st_files:
+            from safetensors.torch import load_file
+
+            merged: dict[str, torch.Tensor] = {}
+            for sf in st_files:
+                merged.update(load_file(str(sf), device="cpu"))
+            return _strip_state_dict_prefix(merged)
+        pt_files = sorted(
+            [p for p in sdir.iterdir() if p.is_file() and p.suffix in (".pth", ".pt", ".bin") and "optimizer" not in p.name.lower()]
+        )
+        if pt_files:
+            merged_pt: dict[str, torch.Tensor] = {}
+            for pf in pt_files:
+                loaded = torch.load(str(pf), map_location="cpu")
+                if isinstance(loaded, Mapping):
+                    merged_pt.update(_strip_state_dict_prefix(loaded))
+            if merged_pt:
+                return merged_pt
+    raise FileNotFoundError(f"No ESMC weight files (.safetensors/.pth/.pt/.bin) found under {ckpt_dir}")
+
+
+def _infer_esmc_dims(sdk_sd: Mapping[str, torch.Tensor]) -> tuple[int, int, int, int]:
+    """Infer ``(d_model, n_heads, n_layers, intermediate_size)`` from SDK ESMC weights."""
+    d_model = int(sdk_sd["embed.weight"].shape[1])
+    n_layers = (
+        max(
+            int(k.split(".")[2])
+            for k in sdk_sd
+            if k.startswith("transformer.blocks.") and len(k.split(".")) > 3 and k.split(".")[2].isdigit()
+        )
+        + 1
+    )
+    known_heads = {960: 15, 1152: 18, 2560: 40}
+    n_heads = known_heads.get(d_model, max(1, d_model // 64))
+    ffn1_k = "transformer.blocks.0.ffn.1.weight"
+    intermediate = int(sdk_sd[ffn1_k].shape[0] // 2) if ffn1_k in sdk_sd else int(round(d_model * 8 / 3))
+    return d_model, n_heads, n_layers, intermediate
+
+
+def _load_esmc_unified(
+    model_spec: str,
+    ckpt_dir: Path,
+    *,
+    device: str,
+    dtype: str,
+    family_override: str = "auto",
+) -> OpenModelAuditEvaluator:
+    """Load ESMC cleanly from either HF ``esmc-*-hf`` OR raw EvolutionaryScale SDK ``ESMC-*`` checkpoints."""
+    from src.capability.general_plm.adapters import _load_esmc_hf
+    from src.capability.general_plm.registry import GeneralPLMSpec
+
+    dtype_name, torch_dt = _resolve_torch_dtype(dtype)
+    cfg = _read_config_json(ckpt_dir)
+    is_hf_dir = cfg.get("model_type") == "esmc" and (
+        any(ckpt_dir.glob("*.safetensors")) or any(ckpt_dir.glob("*.bin"))
+    )
+
+    # 1. Fast path: native HF EsmcForMaskedLM directory under transformers>=5
+    hf_err: Exception | None = None
+    if is_hf_dir:
+        try:
+            synth_spec = GeneralPLMSpec(
+                arm=model_spec,
+                family="esmc",
+                paradigm="masked_lm",
+                loader_kind="esmc_hf",
+                candidate_dirs=(ckpt_dir.name,),
+                hf_repo=ckpt_dir.name,
+                max_residues=2048,
+                trust_remote_code=True,
+            )
+            ad = _load_esmc_hf(synth_spec, ckpt_dir, device=device, dtype=dtype_name)
+            return _wrap_general_plm_adapter(
+                ad, model_id=model_spec, family_override=family_override, dtype_name=dtype_name, device=device
+            )
+        except Exception as exc:
+            hf_err = exc
+
+    # 2. Load raw state dict (accepts both SDK `ESMC-*` and HF `esmc-*-hf`!)
+    raw_sd = _load_raw_state_dict_from_dir(ckpt_dir)
+    sdk_sd = convert_esmc_hf_state_dict_to_sdk(raw_sd) if "esmc.embed_tokens.weight" in raw_sd else raw_sd
+    hf_sd = convert_esmc_sdk_state_dict_to_hf(raw_sd) if "embed.weight" in raw_sd else raw_sd
+    d_model, n_heads, n_layers, intermediate = _infer_esmc_dims(sdk_sd)
+
+    # 2a. Try native transformers>=5 EsmcForMaskedLM with converted HF state_dict
+    try:
+        from transformers import EsmcConfig, EsmcForMaskedLM  # type: ignore
+
+        e_cfg = EsmcConfig(
+            vocab_size=int(hf_sd["esmc.embed_tokens.weight"].shape[0]),
+            hidden_size=d_model,
+            num_hidden_layers=n_layers,
+            num_attention_heads=n_heads,
+            intermediate_size=intermediate,
+            max_position_embeddings=2048,
+            pad_token_id=1,
+            bos_token_id=0,
+            eos_token_id=2,
+            mask_token_id=32,
+            tie_word_embeddings=False,
+        )
+        model = EsmcForMaskedLM(e_cfg)
+        missing, unexpected = model.load_state_dict(hf_sd, strict=False)
+        if missing:
+            raise RuntimeError(f"EsmcForMaskedLM missing keys after SDK->HF conversion: {missing[:6]}")
+        model = model.to(device=device, dtype=torch_dt).eval()
+        model.requires_grad_(False)
+        # Canonical ESMC token IDs (identical to ESM-2 / EsmSequenceTokenizer)
+        esmc_aa_order = "LAGVSERTIDPKQNFYMHWC"
+        aa_map = {aa: idx + 4 for idx, aa in enumerate(esmc_aa_order)}
+        aa20_ids = _validate_aa20_ids([aa_map[aa] for aa in AA20], 3, model_spec)
+        cls_cls = MDMOpenEvaluator if family_override == "mdm" else MaskedLMOpenEvaluator
+        return cls_cls(
+            model_id=model_spec,
+            model=model,
+            aa20_ids=aa20_ids,
+            mask_id=32,
+            pad_id=1,
+            cls_id=0,
+            eos_id=2,
+            max_residues=2048,
+            device=device,
+            dtype=dtype_name,
+            extra_metadata={
+                "checkpoint_dir": str(ckpt_dir),
+                "esmc_backend": "hf_converted_from_sdk",
+                "unexpected_keys": list(unexpected),
+            },
+        )
+    except Exception as conv_hf_err:
+        # 2b. Fallback: EvolutionaryScale `esm` SDK ESMC (accepts BOTH SDK and HF->SDK converted weights!)
+        try:
+            from esm.models.esmc import ESMC  # type: ignore
+            from esm.tokenization import get_esmc_model_tokenizers  # type: ignore
+
+            tok = get_esmc_model_tokenizers()
+            sdk_model = ESMC(
+                d_model=d_model,
+                n_heads=n_heads,
+                n_layers=n_layers,
+                tokenizer=tok,
+                use_flash_attn=False,
+            )
+            missing, unexpected = sdk_model.load_state_dict(sdk_sd, strict=False)
+            if missing:
+                raise RuntimeError(f"SDK ESMC missing keys: {missing[:6]}")
+            sdk_model = sdk_model.to(device=device, dtype=torch_dt).eval()
+            sdk_model.requires_grad_(False)
+            aa20_ids = _validate_aa20_ids(
+                [tok.convert_tokens_to_ids(aa) for aa in AA20],
+                getattr(tok, "unk_token_id", None),
+                model_spec,
+            )
+
+            def _sdk_fwd(input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+                del attention_mask
+                dev_type = torch.device(device).type
+                ctx = (
+                    torch.autocast(device_type=dev_type, dtype=torch_dt)
+                    if torch_dt in (torch.bfloat16, torch.float16) and dev_type in ("cuda", "cpu")
+                    else nullcontext()
+                )
+                with ctx:
+                    out = sdk_model(sequence_tokens=input_ids)
+                return out.sequence_logits.float()
+
+            cls_cls = MDMOpenEvaluator if family_override == "mdm" else MaskedLMOpenEvaluator
+            return cls_cls(
+                model_id=model_spec,
+                model=sdk_model,
+                aa20_ids=aa20_ids,
+                mask_id=int(tok.mask_token_id),
+                pad_id=int(tok.pad_token_id),
+                cls_id=int(tok.cls_token_id),
+                eos_id=int(tok.eos_token_id),
+                max_residues=2048,
+                device=device,
+                dtype=dtype_name,
+                forward_fn=_sdk_fwd,
+                extra_metadata={
+                    "checkpoint_dir": str(ckpt_dir),
+                    "esmc_backend": "esm_sdk",
+                    "unexpected_keys": list(unexpected),
+                },
+            )
+        except Exception as sdk_err:
+            raise RuntimeError(
+                f"{model_spec}: failed to load ESMC from {ckpt_dir} via HF ({hf_err or conv_hf_err}) "
+                f"and esm SDK ({sdk_err}). Use a runtime with transformers>=5 (EsmcForMaskedLM) or the 'esm' package."
+            ) from sdk_err
+
+
+def _load_esm3_evaluator(
+    model_spec: str,
+    *,
+    device: str,
+    dtype: str,
+    model_root: Path | str | None = None,
+) -> ESM3OpenEvaluator:
+    """Load ESM-3 offline from a local checkpoint dir or via ``ESM3.from_pretrained`` with matched dtype."""
+    try:
+        from esm.models.esm3 import ESM3  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            f"{model_spec}: ESM-3 requires the 'esm' package (e.g. runtimes/esm3/bin/python)"
+        ) from exc
+
+    dtype_name, torch_dt = _resolve_torch_dtype(dtype)
+    dev = torch.device(device)
+
+    local_dir: Path | None = None
+    try:
+        cand = _resolve_local_dir(model_spec, model_root=model_root)
+        if (cand / "data/weights/esm3_sm_open_v1.pth").is_file():
+            local_dir = cand
+    except FileNotFoundError:
+        local_dir = None
+
+    if local_dir is not None:
+        import esm.utils.constants.esm3 as esm3_const  # type: ignore
+        import esm.tokenization.function_tokenizer as esm3_ftok  # type: ignore
+        import esm.tokenization.residue_tokenizer as esm3_rtok  # type: ignore
+        from esm.models.function_decoder import FunctionTokenDecoder  # type: ignore
+        from esm.models.vqvae import StructureTokenDecoder, StructureTokenEncoder  # type: ignore
+        from esm.tokenization import get_esm3_model_tokenizers  # type: ignore
+        from esm.utils.constants.models import ESM3_OPEN_SMALL  # type: ignore
+
+        wdir = local_dir / "data/weights"
+        # Redirect esm's internal data_root() to local_dir so tokenizers load 100% offline (zero HF download!)
+        _local_data_root = lambda _model="esm3": local_dir  # noqa: E731
+        esm3_const.data_root = _local_data_root
+        if hasattr(esm3_ftok, "data_root"):
+            esm3_ftok.data_root = _local_data_root
+        if hasattr(esm3_rtok, "data_root"):
+            esm3_rtok.data_root = _local_data_root
+        # Also clear lru_cache / cache on any data_root reference if present
+        import esm.pretrained as esm_pre  # type: ignore
+        if hasattr(esm_pre, "data_root"):
+            esm_pre.data_root = _local_data_root
+
+        def _make_struct_enc(d: torch.device | str = "cpu"):
+            enc = StructureTokenEncoder(d_model=1024, n_heads=1, v_heads=128, n_layers=2, d_out=128, n_codes=4096).eval()
+            enc.load_state_dict(torch.load(str(wdir / "esm3_structure_encoder_v0.pth"), map_location=d))
+            return enc.to(d)
+
+        def _make_struct_dec(d: torch.device | str = "cpu"):
+            dec = StructureTokenDecoder(d_model=1280, n_heads=20, n_layers=30).eval()
+            dec.load_state_dict(torch.load(str(wdir / "esm3_structure_decoder_v0.pth"), map_location=d))
+            return dec.to(d)
+
+        def _make_func_dec(d: torch.device | str = "cpu"):
+            fdec = FunctionTokenDecoder().eval()
+            fdec.load_state_dict(torch.load(str(wdir / "esm3_function_decoder_v0.pth"), map_location=d))
+            return fdec.to(d)
+
+        with torch.device(dev):
+            esm3_model = ESM3(
+                d_model=1536,
+                n_heads=24,
+                v_heads=256,
+                n_layers=48,
+                structure_encoder_fn=_make_struct_enc,
+                structure_decoder_fn=_make_struct_dec,
+                function_decoder_fn=_make_func_dec,
+                tokenizers=get_esm3_model_tokenizers(ESM3_OPEN_SMALL),
+            ).eval()
+        state_dict = torch.load(str(wdir / "esm3_sm_open_v1.pth"), map_location=dev)
+        esm3_model.load_state_dict(state_dict)
+    else:
+        esm3_model = ESM3.from_pretrained(model_spec, device=dev).eval()
+
+    # Respect requested dtype (bfloat16 on CUDA/CPU or float32)
+    if dev.type == "cpu" and torch_dt == torch.float16:
+        torch_dt = torch.float32
+    esm3_model = esm3_model.to(device=dev, dtype=torch_dt).eval()
+    esm3_model.requires_grad_(False)
+    return ESM3OpenEvaluator(esm3_model, model_id=model_spec, device=device)
+
+
 def load_open_audit_evaluator(
     model_spec: str,
     *,
@@ -2214,14 +2664,9 @@ def load_open_audit_evaluator(
 
     # 2B. ESM-3 multi-track (requires esm SDK runtime)
     if fam == "esm3" or "esm3" in model_spec.lower():
-        try:
-            from esm.models.esm3 import ESM3  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                f"{model_spec}: ESM-3 requires the 'esm' package (e.g. runtimes/esm3/bin/python)"
-            ) from exc
-        esm3_model = ESM3.from_pretrained(model_spec, device=torch.device(eff_dev)).eval()
-        return ESM3OpenEvaluator(esm3_model, model_id=model_spec, device=eff_dev)
+        return _load_esm3_evaluator(
+            model_spec, device=eff_dev, dtype=dtype_name, model_root=model_root
+        )
 
     # 3. Exact registered General-PLM registry arms (with Cuihu search roots included)
     from src.capability.general_plm.adapters import (
@@ -2252,6 +2697,10 @@ def load_open_audit_evaluator(
         except FileNotFoundError:
             # Fall through to Cuihu alias & subdir resolution below
             pass
+        except RuntimeError:
+            if spec.family != "esmc":
+                raise
+            # Fall through to _load_esmc_unified (SDK <-> HF converter) when transformers<5 or raw SDK weights are staged
 
     # 4. Resolve local / Cuihu directory & dispatch by architecture/family (handles direct paths & unlisted variants!)
     ckpt_dir = _resolve_local_dir(model_spec, model_root=model_root)
@@ -2304,12 +2753,9 @@ def load_open_audit_evaluator(
         return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
 
     if detected == "esmc_hf":
-        synth_spec = GeneralPLMSpec(
-            arm=model_spec, family="esmc", paradigm="masked_lm", loader_kind="esmc_hf",
-            candidate_dirs=(ckpt_dir.name,), hf_repo=ckpt_dir.name, max_residues=2048, trust_remote_code=True,
+        return _load_esmc_unified(
+            model_spec, ckpt_dir, device=eff_dev, dtype=dtype_name, family_override=fam
         )
-        ad = _load_esmc_hf(synth_spec, ckpt_dir, device=eff_dev, dtype=dtype_name)
-        return _wrap_general_plm_adapter(ad, model_id=model_spec, family_override=fam, dtype_name=dtype_name, device=eff_dev)
 
     if detected == "proteinglm_mlm":
         synth_spec = GeneralPLMSpec(
