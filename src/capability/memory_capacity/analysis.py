@@ -1125,10 +1125,14 @@ def _build_c_max_calibration_and_exposure_laws(
             traj_dbpt_emp = [pt["delta_bpt_empirical"] for pt in traj]
             traj_dbpt_2x = [pt["delta_bpt_at_2x"] for pt in traj]
 
+            e_crit_c_eff_0p02_emp = estimate_ecrit_nonparametric(traj_epochs, traj_c_emp, 0.02)
+            e_crit_c_eff_0p05_emp = estimate_ecrit_nonparametric(traj_epochs, traj_c_emp, 0.05)
+            e_crit_c_eff_0p02_2x = estimate_ecrit_nonparametric(traj_epochs, traj_c_2x, 0.02)
+            e_crit_c_eff_0p05_2x = estimate_ecrit_nonparametric(traj_epochs, traj_c_2x, 0.05)
             e_crit_dbpt_emp = estimate_ecrit_nonparametric(traj_epochs, traj_dbpt_emp, 0.05)
             e_crit_dbpt_2x = estimate_ecrit_nonparametric(traj_epochs, traj_dbpt_2x, 0.05)
-            has_takeoff_emp = e_crit_dbpt_emp is not None and (max(traj_c_emp, default=0.0) >= 0.02)
-            has_takeoff_2x = e_crit_dbpt_2x is not None and (max(traj_c_2x, default=0.0) >= 0.02)
+            has_takeoff_emp = e_crit_c_eff_0p02_emp is not None
+            has_takeoff_2x = e_crit_c_eff_0p02_2x is not None
 
             hill_2x = fit_hill_exposure_curve(traj_epochs, traj_c_2x)
             hill_plat = fit_hill_exposure_curve(traj_epochs, traj_c_emp)
@@ -1158,6 +1162,10 @@ def _build_c_max_calibration_and_exposure_laws(
                 )
             )
             e_crit_np = {
+                "e_crit_c_eff_0p02": e_crit_c_eff_0p02_emp,
+                "e_crit_c_eff_0p05": e_crit_c_eff_0p05_emp,
+                "e_crit_c_eff_0p02_at_2x": e_crit_c_eff_0p02_2x,
+                "e_crit_c_eff_0p05_at_2x": e_crit_c_eff_0p05_2x,
                 "e_crit_delta_bpt_0p05": e_crit_dbpt_emp,
                 "e_crit_delta_bpt_0p05_at_2x": e_crit_dbpt_2x,
                 "e_crit_frac_c_inf_0p05": (
@@ -1315,8 +1323,14 @@ def _build_c_max_calibration_and_exposure_laws(
         anchor_pmax_list = [pt["c_eff_plateau_max_mean"] for pt in anchor_only_pts]
         anchor_dbpt_list = [pt["delta_bpt_empirical_mean"] for pt in anchor_only_pts]
 
+        pooled_e_crit_c_eff_0p02 = estimate_ecrit_nonparametric(
+            anchor_epochs_list, anchor_cemp_list, 0.02
+        )
+        pooled_e_crit_c_eff_0p05 = estimate_ecrit_nonparametric(
+            anchor_epochs_list, anchor_cemp_list, 0.05
+        )
         pooled_e_crit_dbpt = estimate_ecrit_nonparametric(anchor_epochs_list, anchor_dbpt_list, 0.05)
-        pooled_has_takeoff = pooled_e_crit_dbpt is not None and (max(anchor_cemp_list, default=0.0) >= 0.02)
+        pooled_has_takeoff = pooled_e_crit_c_eff_0p02 is not None
 
         pooled_hill_2x = fit_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
         pooled_hill_emp = fit_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
@@ -1347,6 +1361,8 @@ def _build_c_max_calibration_and_exposure_laws(
             )
         )
         pooled_e_crit_np = {
+            "e_crit_c_eff_0p02": pooled_e_crit_c_eff_0p02,
+            "e_crit_c_eff_0p05": pooled_e_crit_c_eff_0p05,
             "e_crit_delta_bpt_0p05": pooled_e_crit_dbpt,
             "e_crit_frac_c_inf_0p05": (
                 estimate_ecrit_nonparametric(

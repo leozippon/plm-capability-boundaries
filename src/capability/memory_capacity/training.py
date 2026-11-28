@@ -77,6 +77,7 @@ class AdaptiveEarlyStopConfig:
 
     enabled: bool = False
     takeoff_delta_bpt: float = 0.05
+    takeoff_c_eff_bpp: float = 0.02
     takeoff_consecutive_evals: int = 2
     data_ceiling_frac_gibbs: float = 0.995
     ar_xent_ceiling_bpt: float = 0.025
@@ -253,8 +254,14 @@ class AdaptiveEarlyStopTracker:
 
         delta_bpt = math.log2(float(vocab_size)) - tok_xent
 
-        # Phase A: Track takeoff even when cooldown already inactive/disabled for provenance
-        if delta_bpt >= self.config.takeoff_delta_bpt:
+        # Phase A: Track takeoff even when cooldown already inactive/disabled for provenance.
+        # Gate on either delta_bpt >= takeoff_delta_bpt OR capacity-units c_eff >= takeoff_c_eff_bpp
+        # (r-invariant so high-r runs such as r=8, 16 accurately record e_takeoff).
+        above_takeoff = (
+            delta_bpt >= self.config.takeoff_delta_bpt
+            or c_eff >= self.config.takeoff_c_eff_bpp
+        )
+        if above_takeoff:
             self.takeoff_streak += 1
             if (
                 not self.takeoff_detected
@@ -270,8 +277,8 @@ class AdaptiveEarlyStopTracker:
             self.prev_c_eff = c_eff
             return None
 
-        # Phase A invariant: NEVER plateau-stop while pre-takeoff or below delta_bpt threshold
-        if not self.takeoff_detected or delta_bpt < self.config.takeoff_delta_bpt:
+        # Phase A invariant: NEVER plateau-stop while pre-takeoff or below takeoff thresholds
+        if not self.takeoff_detected or not above_takeoff:
             self.plateau_intervals.clear()
             self.prev_epoch = int(epoch)
             self.prev_c_eff = c_eff

@@ -68,7 +68,7 @@ def test_three_paradigms_legacy_alias_and_tiny_batch_capping() -> None:
     assert canonicalize_paradigm("OA_UNIFORM") == "oa_uniform"
     assert canonicalize_paradigm("mlm_15") == "mlm_15"
     assert mlm_fixed_mask_count(256, 0.15) == 38
-    assert max(EVAL_EPOCHS) == 10_000
+    assert max(EVAL_EPOCHS) == 40_000
 
     # Batch-size capping guarantees >= min_steps_per_epoch on tiny datasets (e.g. 0.5m r=0.25)
     bs_tiny = choose_global_batch_size(393, 512, world_size=1, min_steps_per_epoch=16)
@@ -626,6 +626,8 @@ def test_legacy_batch1_json_compatibility_ecrit_and_mlm15_analysis(tmp_path: Pat
 
     for p in ("ar", "mlm_15", "oa_uniform"):
         ec = summary["exposure_discount_curves"][p]["pooled_e_crit_nonparametric"]
+        assert ec["e_crit_c_eff_0p02"] is not None
+        assert ec["e_crit_c_eff_0p05"] is not None
         assert ec["e_crit_delta_bpt_0p05"] is not None
         assert ec["e_crit_frac_c_inf_0p05"] is not None
         assert summary["exposure_discount_curves"][p]["pooled_delayed_hill_fit_empirical"] is not None
@@ -780,9 +782,12 @@ def test_pretakeoff_flat_curve_suppresses_spurious_ecrit_and_delayed_hill(tmp_pa
     summary = summarize_memory_capacity_campaign(runs_dir, bootstrap_draws=50)
     oa_exp = summary["exposure_discount_curves"]["oa_uniform"]
     assert oa_exp["pooled_delayed_hill_fit_empirical"] is None
+    assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_c_eff_0p02"] is None
+    assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_c_eff_0p05"] is None
     assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_delta_bpt_0p05"] is None
     assert oa_exp["pooled_e_crit_nonparametric"]["e_crit_frac_c_inf_0p05"] is None
     assert oa_exp["by_scale"]["0.5m"]["delayed_hill_fit_empirical"] is None
+    assert oa_exp["by_scale"]["0.5m"]["e_crit_nonparametric"]["e_crit_c_eff_0p02"] is None
     assert oa_exp["by_scale"]["0.5m"]["e_crit_nonparametric"]["e_crit_frac_c_inf_0p05"] is None
 
 
@@ -958,11 +963,14 @@ execute_run(
 
 
 def test_stage1_wsd_calibration_manifest_grid_and_lpt_priority(tmp_path: Path) -> None:
-    from src.capability.memory_capacity import build_stage1_wsd_calibration_runs
+    from src.capability.memory_capacity import EVAL_EPOCHS, build_stage1_wsd_calibration_runs
+
+    for ep in (12000, 16000, 20000, 25000, 30000, 40000):
+        assert ep in EVAL_EPOCHS
 
     runs = build_stage1_wsd_calibration_runs()
-    assert len(runs) == 70
-    assert len({r.run_id for r in runs}) == 70
+    assert len(runs) == 76
+    assert len({r.run_id for r in runs}) == 76
 
     by_p: dict[str, int] = {}
     for r in runs:
@@ -973,34 +981,67 @@ def test_stage1_wsd_calibration_manifest_grid_and_lpt_priority(tmp_path: Path) -
         assert r.delete_transient_ckpt_on_complete is True
         assert r.save_checkpoint is False
         assert r.min_steps_per_epoch == 16
-        assert r.run_id.startswith(f"wsd_{r.paradigm}_")
+        assert r.run_id.startswith((f"wsd_{r.paradigm}_", f"wsd_asymp_{r.paradigm}_"))
 
-    assert by_p == {"ar": 23, "mlm_15": 25, "oa_uniform": 22}
+    assert by_p == {"ar": 23, "mlm_15": 28, "oa_uniform": 25}
 
-    # Verify single-GPU workers see 0.5m pilots (oa_uniform & mlm_15) first, then LPT
+    asymp = [r for r in runs if r.run_id.startswith("wsd_asymp_")]
+    assert len(asymp) == 6
+    assert all((not r.ddp_preferred) and r.scale_id == "0.5m" for r in asymp)
+    assert {r.run_id for r in asymp} == {
+        "wsd_asymp_mlm_15_0p5m_r0p25",
+        "wsd_asymp_mlm_15_0p5m_r1p00",
+        "wsd_asymp_mlm_15_0p5m_r2p00",
+        "wsd_asymp_oa_uniform_0p5m_r0p25",
+        "wsd_asymp_oa_uniform_0p5m_r1p00",
+        "wsd_asymp_oa_uniform_0p5m_r2p00",
+    }
+    for r in asymp:
+        if r.paradigm == "mlm_15":
+            assert r.max_epochs == 25000 and 25000 in r.eval_epochs
+        else:
+            assert r.max_epochs == 40000 and 40000 in r.eval_epochs
+
+    # Verify single-GPU milestone priority: (0) 13 initial 0.5m pilots, (1) 6 asymp probes,
+    # (2) 0.5m AR + 2m r=(0.5,1,2) + 8m core single-GPU, (3) remaining single-GPU
     single_runs = [r for r in runs if not r.ddp_preferred]
-    pilot_count = sum(
-        1 for r in single_runs if r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15")
-    )
-    assert pilot_count == 13
+    assert len(single_runs) == 50
     assert all(
-        r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15")
-        for r in single_runs[:pilot_count]
+        (not r.run_id.startswith("wsd_asymp_"))
+        and r.scale_id == "0.5m"
+        and r.paradigm in ("oa_uniform", "mlm_15")
+        for r in single_runs[:13]
     )
-    non_pilot_costs = [
-        int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
-        for r in single_runs[pilot_count:]
-    ]
-    assert non_pilot_costs == sorted(non_pilot_costs, reverse=True)
+    assert all(r.run_id.startswith("wsd_asymp_") for r in single_runs[13:19])
 
-    # Verify DDP workers see 150m AR first, then remaining DDP runs in descending LPT
+    # Verify DDP milestone priority:
+    # (0) 150m AR r=(0.5,1,2), (1) 35m AR r=(1,2), (2) 8m mlm r=(2,4) & 8m oa r=(1,2),
+    # (3) 35m mlm/oa r=(0.5,1,2), (4) remaining DDP runs
     ddp_runs = [r for r in runs if r.ddp_preferred]
-    assert all(r.scale_id == "150m" and r.paradigm == "ar" for r in ddp_runs[:4])
-    rem_ddp_costs = [
-        int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
-        for r in ddp_runs[4:]
+    assert len(ddp_runs) == 26
+    assert [r.run_id for r in ddp_runs[:3]] == [
+        "wsd_ar_150m_r0p50",
+        "wsd_ar_150m_r1p00",
+        "wsd_ar_150m_r2p00",
     ]
-    assert rem_ddp_costs == sorted(rem_ddp_costs, reverse=True)
+    assert [r.run_id for r in ddp_runs[3:5]] == [
+        "wsd_ar_35m_r1p00",
+        "wsd_ar_35m_r2p00",
+    ]
+    assert {r.run_id for r in ddp_runs[5:9]} == {
+        "wsd_mlm_15_8m_r2p00",
+        "wsd_mlm_15_8m_r4p00",
+        "wsd_oa_uniform_8m_r1p00",
+        "wsd_oa_uniform_8m_r2p00",
+    }
+    assert {r.run_id for r in ddp_runs[9:15]} == {
+        "wsd_mlm_15_35m_r0p50",
+        "wsd_mlm_15_35m_r1p00",
+        "wsd_mlm_15_35m_r2p00",
+        "wsd_oa_uniform_35m_r0p50",
+        "wsd_oa_uniform_35m_r1p00",
+        "wsd_oa_uniform_35m_r2p00",
+    }
 
     # CLI manifest builder roundtrip via load_run_manifest
     manifest_script = REPO_ROOT / "scripts/capability/memory_capacity/build_stage1_wsd_manifest.py"
@@ -1012,9 +1053,38 @@ def test_stage1_wsd_calibration_manifest_grid_and_lpt_priority(tmp_path: Path) -
         text=True,
         check=True,
     )
-    assert "Wrote 70 Stage-1 WSD runs" in proc.stdout
+    assert "Wrote 76 Stage-1 WSD runs" in proc.stdout
     loaded = load_run_manifest(out_manifest)
     assert [r.run_id for r in loaded] == [r.run_id for r in runs]
+
+
+def test_adaptive_early_stop_high_r_capacity_takeoff() -> None:
+    cfg = AdaptiveEarlyStopConfig(enabled=True, takeoff_delta_bpt=0.05, takeoff_c_eff_bpp=0.02)
+    tracker = AdaptiveEarlyStopTracker(config=cfg)
+
+    # Pre-takeoff noise (delta_bpt=0.005 < 0.05 and c_eff=0.005 < 0.02): must NOT detect takeoff
+    tracker.update(
+        epoch=50,
+        eval_rec={"mean_tok_xent_bits": LOG2_20 - 0.005, "bits_per_non_emb_param": 0.005, "fraction_of_H_gibbs": 0.001},
+        paradigm="mlm_15",
+        global_step=1250,
+        steps_per_epoch=25,
+        max_epochs=4000,
+    )
+    assert tracker.takeoff_detected is False
+
+    # High-r regime (e.g. r=16): delta_bpt=0.02 < 0.05, but c_eff=0.04 >= 0.02 -> takeoff detected!
+    for ep in (800, 1000):
+        tracker.update(
+            epoch=ep,
+            eval_rec={"mean_tok_xent_bits": LOG2_20 - 0.02, "bits_per_non_emb_param": 0.04, "fraction_of_H_gibbs": 0.004},
+            paradigm="mlm_15",
+            global_step=ep * 25,
+            steps_per_epoch=25,
+            max_epochs=4000,
+        )
+    assert tracker.takeoff_detected is True
+    assert tracker.e_takeoff == 1000
 
 
 def test_spot_worker_single_gpu_skips_ddp_preferred_unless_allowed(tmp_path: Path) -> None:

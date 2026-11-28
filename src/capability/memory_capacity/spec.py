@@ -42,6 +42,12 @@ EVAL_EPOCHS: tuple[int, ...] = (
     6000,
     8000,
     10000,
+    12000,
+    16000,
+    20000,
+    25000,
+    30000,
+    40000,
 )
 EXPOSURE_CHECKPOINTS: tuple[int, ...] = EVAL_EPOCHS
 CAPACITY_MULTIPLIERS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
@@ -790,13 +796,24 @@ def build_stage1_wsd_calibration_runs(
     model_seed: int = 20261128,
     min_steps_per_epoch: int = 16,
 ) -> list[RunSpec]:
-    """Build the 70-run Stage-1 WSD adaptive-stopping calibration grid in LPT priority order.
+    """Build the 76-run Stage-1 WSD adaptive-stopping calibration grid in milestone priority order.
 
-    Priority ordering:
-      - Single-GPU workers claim fast 0.5m pilots (oa_uniform & mlm_15) first, then remaining
-        single-GPU runs in descending LPT (estimated_tokens * n_params_non_embedding).
-      - DDP workers claim 150m AR first (descending LPT), then 35m and remaining DDP runs in
-        descending LPT (estimated_tokens * n_params_non_embedding) to prevent tail stragglers.
+    Includes the 70 base WSD calibration runs across (ar, mlm_15, oa_uniform) and 6 asymptotic
+    0.5m probes (mlm_15 to 25k epochs, oa_uniform to 40k epochs at r in {0.25, 1.0, 2.0}).
+
+    Priority ordering (optimized for 24-GPU Spot concurrency without 12h+ tail blocking):
+      - DDP (`ddp_preferred=True`):
+        (0) 150m AR r=(0.5, 1.0, 2.0)
+        (1) 35m AR r=(1.0, 2.0)
+        (2) 8m mlm_15 r=(2.0, 4.0) & 8m oa_uniform r=(1.0, 2.0)
+        (3) 35m mlm_15 r=(0.5, 1.0, 2.0) & 35m oa_uniform r=(0.5, 1.0, 2.0)
+        (4) remaining r=(0.25, 4.0, 8.0) DDP runs (descending LPT)
+      - Single-GPU (`ddp_preferred=False`):
+        (0) 0.5m initial pilots (mlm_15 & oa_uniform, <=10k epochs)
+        (1) 6 asymptotic 0.5m probes (wsd_asymp_*, 25k/40k epochs)
+        (2) 0.5m AR + 2m {ar, mlm_15, oa_uniform} r=(0.5, 1.0, 2.0)
+            + 8m {ar, mlm_15} r=(0.5, 1.0) & 8m oa_uniform r=0.5
+        (3) remaining r=(0.25, 4.0, 8.0, 16.0) single-GPU runs (descending LPT)
     """
     grid: list[tuple[str, str, tuple[float, ...], int, float | None]] = [
         # (paradigm, scale_id, multipliers, max_epochs, ddp_min_mult; None -> never DDP, 0.0 -> always DDP)
@@ -845,21 +862,75 @@ def build_stage1_wsd_calibration_runs(
                 )
             )
 
+    asymp_probes: tuple[tuple[str, tuple[float, ...], int], ...] = (
+        ("mlm_15", (0.25, 1.0, 2.0), 25000),
+        ("oa_uniform", (0.25, 1.0, 2.0), 40000),
+    )
+    for paradigm, mults, max_epochs in asymp_probes:
+        for mult in mults:
+            run_id = f"wsd_asymp_{paradigm}_0p5m_r{slugify_token(f'{mult:.2f}')}"
+            runs.append(
+                _make_run_spec(
+                    run_id=run_id,
+                    track="stage1_wsd",
+                    paradigm=paradigm,
+                    scale_id="0.5m",
+                    multiplier=mult,
+                    max_epochs=max_epochs,
+                    weight_decay=0.0,
+                    precision="bf16",
+                    seed=model_seed,
+                    data_seed=data_seed,
+                    save_checkpoint=False,
+                    ddp_preferred=False,
+                    lr_schedule="wsd",
+                    min_lr_ratio=0.05,
+                    min_steps_per_epoch=min_steps_per_epoch,
+                    adaptive_early_stop=True,
+                    delete_transient_ckpt_on_complete=True,
+                )
+            )
+
     def _compute_cost(r: RunSpec) -> int:
         return int(r.estimated_tokens) * int(SCALE_SPECS[r.scale_id].exact_non_embedding_params)
 
-    def _priority_key(r: RunSpec) -> tuple[int, int, str]:
-        # Tier 0: Fast 0.5m pilots (oa_uniform & mlm_15) -> immediate pilot curves on 1-GPU slots
-        if (not r.ddp_preferred) and r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15"):
-            return (0, -_compute_cost(r), r.run_id)
-        # Tier 1: 150m AR DDP priority -> start heaviest flagship AR rung immediately on DDP nodes
-        if r.ddp_preferred and r.scale_id == "150m" and r.paradigm == "ar":
-            return (1, -_compute_cost(r), r.run_id)
-        # Tier 2: Remaining DDP runs (35m, 8m/2m high-r) in strict descending LPT order
+    def _in_mults(r: RunSpec, mults: tuple[float, ...]) -> bool:
+        return any(abs(r.multiplier - m) < 1e-9 for m in mults)
+
+    def _priority_key(r: RunSpec) -> tuple[int, int, int, str]:
+        cost = _compute_cost(r)
         if r.ddp_preferred:
-            return (2, -_compute_cost(r), r.run_id)
-        # Tier 3: Remaining single-GPU runs in strict descending LPT order
-        return (3, -_compute_cost(r), r.run_id)
+            if r.scale_id == "150m" and r.paradigm == "ar" and _in_mults(r, (0.5, 1.0, 2.0)):
+                return (1, 0, cost, r.run_id)
+            if r.scale_id == "35m" and r.paradigm == "ar" and _in_mults(r, (1.0, 2.0)):
+                return (1, 1, cost, r.run_id)
+            if (
+                (r.scale_id == "8m" and r.paradigm == "mlm_15" and _in_mults(r, (2.0, 4.0)))
+                or (r.scale_id == "8m" and r.paradigm == "oa_uniform" and _in_mults(r, (1.0, 2.0)))
+            ):
+                return (1, 2, cost, r.run_id)
+            if (
+                r.scale_id == "35m"
+                and r.paradigm in ("mlm_15", "oa_uniform")
+                and _in_mults(r, (0.5, 1.0, 2.0))
+            ):
+                return (1, 3, cost, r.run_id)
+            return (1, 4, -cost, r.run_id)
+
+        # Single-GPU milestone priority
+        is_asymp = r.run_id.startswith("wsd_asymp_")
+        if (not is_asymp) and r.scale_id == "0.5m" and r.paradigm in ("oa_uniform", "mlm_15"):
+            return (0, 0, -cost, r.run_id)
+        if is_asymp:
+            return (0, 1, cost, r.run_id)
+        if (
+            (r.scale_id == "0.5m" and r.paradigm == "ar")
+            or (r.scale_id == "2m" and _in_mults(r, (0.5, 1.0, 2.0)))
+            or (r.scale_id == "8m" and r.paradigm in ("ar", "mlm_15") and _in_mults(r, (0.5, 1.0)))
+            or (r.scale_id == "8m" and r.paradigm == "oa_uniform" and _in_mults(r, (0.5,)))
+        ):
+            return (0, 2, cost, r.run_id)
+        return (0, 3, -cost, r.run_id)
 
     runs.sort(key=_priority_key)
 
