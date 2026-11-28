@@ -1,6 +1,14 @@
 """Stage-2 Right-Hand-Side Controlled Sampling & Three-Tier Bit Inversion package."""
 from __future__ import annotations
 
+from .analysis import (
+    ANALYSIS_SCHEMA,
+    analyze_stage2_run,
+    interpolate_stage1_c_eff,
+    load_stage1_capacity_lookup,
+    load_stage2_run_receipts,
+    summarize_supply_demand_campaign,
+)
 from .corpus import (
     BUNDLE_SCHEMA,
     AnnotatedSequence,
@@ -85,6 +93,7 @@ from .training import (
 __all__ = [
     "AA20",
     "AA_TO_ID",
+    "ANALYSIS_SCHEMA",
     "ActiveLease",
     "AnnotatedSequence",
     "BOS_TOKEN_ID",
@@ -116,6 +125,7 @@ __all__ = [
     "TransformerBlock",
     "VOCAB_AA",
     "VariableLengthProteinTransformer",
+    "analyze_stage2_run",
     "apply_apc",
     "apply_rotary_pos_emb",
     "assert_no_forbidden_infra_strings",
@@ -141,8 +151,11 @@ __all__ = [
     "evaluate_three_tier_bits",
     "evaluate_unseen_fold_contacts",
     "execute_stage2_run",
+    "interpolate_stage1_c_eff",
     "is_run_completed",
     "load_packed_split_npz",
+    "load_stage1_capacity_lookup",
+    "load_stage2_run_receipts",
     "precompute_rope_cos_sin",
     "prepare_ar_batch",
     "prepare_mlm15_batch",
@@ -150,5 +163,6 @@ __all__ = [
     "prepare_objective_batch",
     "save_packed_split_npz",
     "slugify_token",
+    "summarize_supply_demand_campaign",
     "verify_fold_disjointness",
 ]
