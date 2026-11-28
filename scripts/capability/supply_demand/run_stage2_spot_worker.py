@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+import torch
+import torch.distributed as dist
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -20,9 +24,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.capability.supply_demand.corpus import Stage2Bundle  # noqa: E402
 from src.capability.supply_demand.spec import (  # noqa: E402
-    OBJECTIVES,
+    ALL_OBJECTIVES,
+    OPTIMIZERS,
     SCALE_SPECS,
     Stage2RunSpec,
+    canonicalize_objective,
     choose_milestone_epochs,
     slugify_token,
 )
@@ -31,6 +37,7 @@ from src.capability.supply_demand.training import (  # noqa: E402
     SharedLeaseManager,
     execute_stage2_run,
     is_run_completed,
+    setup_distributed,
 )
 
 
@@ -46,10 +53,14 @@ def parse_args() -> argparse.Namespace:
         "If omitted, builds the grid from --arms, --objectives, --scales.",
     )
     p.add_argument("--arms", type=str, default="", help="Comma-separated arm IDs (default: all bundle arms).")
-    p.add_argument("--objectives", type=str, default="ar,mlm_15,oa_uniform")
+    p.add_argument("--objectives", type=str, default="ar,mlm_15,mdm")
     p.add_argument("--scales", type=str, default="0.5m,2m,8m,35m")
     p.add_argument("--max-epochs", type=int, default=80)
     p.add_argument("--lr-schedule", type=str, default="wsd", choices=["wsd", "cosine"])
+    p.add_argument("--optimizer", type=str, default="adamw", choices=list(OPTIMIZERS))
+    p.add_argument("--muon-lr", type=float, default=0.02)
+    p.add_argument("--muon-lr-scale", type=float, default=None)
+    p.add_argument("--gradient-checkpointing", action="store_true", default=None)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--precision", type=str, default="bf16", choices=["bf16", "fp32_strict"])
     p.add_argument("--batch-size", type=int, default=128)
@@ -62,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-runs", type=int, default=0, help="Stop after completing N runs (0 = drain queue).")
     p.add_argument("--no-downstream-milestones", action="store_true")
     p.add_argument("--no-contacts-milestones", action="store_true")
+    p.add_argument("--no-temp-calibration", action="store_true")
     return p.parse_args()
 
 
@@ -76,11 +88,11 @@ def _build_run_queue(args: argparse.Namespace, bundle: Stage2Bundle) -> list[Sta
         if args.arms.strip()
         else list(bundle.arm_ids)
     )
-    objectives = [o.strip() for o in args.objectives.split(",") if o.strip()]
+    objectives = [canonicalize_objective(o.strip()) for o in args.objectives.split(",") if o.strip()]
     scales = [s.strip() for s in args.scales.split(",") if s.strip()]
 
     for obj in objectives:
-        if obj not in OBJECTIVES:
+        if obj not in ALL_OBJECTIVES:
             raise ValueError(f"Unknown objective {obj!r}")
     for sc in scales:
         if sc not in SCALE_SPECS:
@@ -91,9 +103,10 @@ def _build_run_queue(args: argparse.Namespace, bundle: Stage2Bundle) -> list[Sta
     for scale_id in scales:
         for obj in objectives:
             for arm_id in arms:
+                opt_suffix = f"_{args.optimizer}" if args.optimizer != "adamw" else ""
                 run_id = (
                     f"stage2_{slugify_token(arm_id)}_{slugify_token(obj)}"
-                    f"_{slugify_token(scale_id)}_e{int(args.max_epochs)}"
+                    f"_{slugify_token(scale_id)}{opt_suffix}_e{int(args.max_epochs)}"
                 )
                 queue.append(
                     Stage2RunSpec(
@@ -112,6 +125,11 @@ def _build_run_queue(args: argparse.Namespace, bundle: Stage2Bundle) -> list[Sta
                         checkpoint_interval_sec=float(args.checkpoint_interval_sec),
                         eval_downstream_at_milestones=not args.no_downstream_milestones,
                         eval_contacts_at_milestones=not args.no_contacts_milestones,
+                        eval_temperature_calibration=not args.no_temp_calibration,
+                        optimizer=args.optimizer,
+                        muon_lr=float(args.muon_lr),
+                        muon_lr_scale=args.muon_lr_scale,
+                        gradient_checkpointing=args.gradient_checkpointing,
                     )
                 )
     return queue
@@ -119,65 +137,89 @@ def _build_run_queue(args: argparse.Namespace, bundle: Stage2Bundle) -> list[Sta
 
 def main() -> None:
     args = parse_args()
+    is_ddp_env = int(os.environ.get("WORLD_SIZE", "1")) > 1
+    ctx = setup_distributed(device=None if is_ddp_env else args.device)
     bundle = Stage2Bundle(args.bundle_dir)
     out_dir = args.out_dir.resolve()
     runs_dir = out_dir / "runs"
     leases_dir = out_dir / "leases"
-    runs_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.rank == 0:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.is_distributed:
+        dist.barrier()
 
-    lease_mgr = SharedLeaseManager(leases_dir, stale_after_sec=float(args.stale_lease_sec))
+    lease_mgr = SharedLeaseManager(leases_dir, stale_after_sec=float(args.stale_lease_sec)) if ctx.rank == 0 else None
     queue = _build_run_queue(args, bundle)
 
     completed_by_me = 0
-    for spec in queue:
-        if args.max_runs > 0 and completed_by_me >= args.max_runs:
-            break
-        if is_run_completed(runs_dir, spec.run_id):
-            continue
+    try:
+        for spec in queue:
+            if args.max_runs > 0 and completed_by_me >= args.max_runs:
+                break
 
-        lease = lease_mgr.try_claim(spec.run_id)
-        if lease is None:
-            continue
+            lease = None
+            should_run = False
+            if ctx.rank == 0:
+                if not is_run_completed(runs_dir, spec.run_id):
+                    assert lease_mgr is not None
+                    lease = lease_mgr.try_claim(spec.run_id)
+                    should_run = lease is not None
+            if ctx.is_distributed:
+                flag = torch.tensor([1 if should_run else 0], dtype=torch.int64, device=ctx.device)
+                dist.broadcast(flag, src=0)
+                should_run = bool(flag.item() > 0)
+            if not should_run:
+                continue
 
-        print(
-            f"[stage2-worker] Claimed {spec.run_id} "
-            f"(arm={spec.arm_id}, obj={spec.objective}, scale={spec.scale_id})",
-            flush=True,
-        )
-        try:
-            res: dict[str, Any] = execute_stage2_run(
-                spec,
-                bundle,
-                out_dir,
-                device=args.device,
-                use_compile=bool(args.use_compile),
-                resume=True,
-                lease_manager=lease_mgr,
-                active_lease=lease,
-                install_signal_handlers=True,
-            )
-        finally:
-            lease_mgr.release(lease)
+            if ctx.rank == 0:
+                print(
+                    f"[stage2-worker] Claimed {spec.run_id} "
+                    f"(arm={spec.arm_id}, obj={spec.objective}, scale={spec.scale_id}, "
+                    f"world_size={ctx.world_size})",
+                    flush=True,
+                )
+            try:
+                res: dict[str, Any] = execute_stage2_run(
+                    spec,
+                    bundle,
+                    out_dir,
+                    device=ctx.device,
+                    use_compile=bool(args.use_compile),
+                    resume=True,
+                    lease_manager=lease_mgr,
+                    active_lease=lease,
+                    install_signal_handlers=True,
+                )
+            finally:
+                if ctx.rank == 0 and lease_mgr is not None and lease is not None:
+                    lease_mgr.release(lease)
 
-        if res.get("status") == "preempted":
-            print(
-                f"[stage2-worker] Preempted cleanly on {spec.run_id} at "
-                f"epoch={res.get('epoch_done')} step_in_epoch={res.get('step_in_epoch')}; exiting {PREEMPT_EXIT_CODE}",
-                flush=True,
-            )
-            sys.exit(PREEMPT_EXIT_CODE)
+            if res.get("status") == "preempted":
+                if ctx.rank == 0:
+                    print(
+                        f"[stage2-worker] Preempted cleanly on {spec.run_id} at "
+                        f"epoch={res.get('epoch_done')} step_in_epoch={res.get('step_in_epoch')}; exiting {PREEMPT_EXIT_CODE}",
+                        flush=True,
+                    )
+                sys.exit(PREEMPT_EXIT_CODE)
 
-        completed_by_me += 1
-        final_eq4 = (res.get("final_eval") or {}).get("three_tier_bits", {}).get("native", {})
-        print(
-            f"[stage2-worker] Completed {spec.run_id}: "
-            f"dh_univ={final_eq4.get('delta_h_univ')}, "
-            f"dh_spec={final_eq4.get('delta_h_spec')}, "
-            f"dh_res={final_eq4.get('delta_h_res')}",
-            flush=True,
-        )
+            completed_by_me += 1
+            if ctx.rank == 0:
+                final_eq4 = (res.get("final_eval") or {}).get("three_tier_bits", {}).get("native", {})
+                print(
+                    f"[stage2-worker] Completed {spec.run_id}: "
+                    f"dh_univ={final_eq4.get('delta_h_univ')}, "
+                    f"dh_spec={final_eq4.get('delta_h_spec')}, "
+                    f"dh_res={final_eq4.get('delta_h_res')}, "
+                    f"Delta_cal={final_eq4.get('Delta_cal')}",
+                    flush=True,
+                )
 
-    print(f"[stage2-worker] Queue pass complete (finished {completed_by_me} runs).", flush=True)
+        if ctx.rank == 0:
+            print(f"[stage2-worker] Queue pass complete (finished {completed_by_me} runs).", flush=True)
+    finally:
+        if ctx.is_distributed and dist.is_initialized():
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":

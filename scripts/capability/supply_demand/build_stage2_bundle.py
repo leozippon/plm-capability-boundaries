@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to cache extracted UniRef50-CATH TSV.gz for future rebuilds.",
     )
-    p.add_argument("--target-unique-tokens", type=int, default=5_000_000)
+    p.add_argument("--target-unique-tokens", "--target-tokens", dest="target_unique_tokens", type=int, default=5_000_000)
     p.add_argument("--arm-families", type=str, default="64,256,1024,4096")
     p.add_argument(
         "--allow-family-cap",

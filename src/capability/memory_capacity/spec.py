@@ -53,7 +53,60 @@ EXPOSURE_CHECKPOINTS: tuple[int, ...] = EVAL_EPOCHS
 CAPACITY_MULTIPLIERS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
 PARADIGMS: tuple[str, ...] = ("ar", "mlm_15", "oa_uniform")
-LEGACY_PARADIGM_ALIASES: dict[str, str] = {"mlm": "oa_uniform"}
+ALL_PARADIGMS: tuple[str, ...] = ("ar", "mlm_15", "mlm_30", "mlm_50", "oa_uniform", "mdm_cosine")
+FIXED_MASK_PARADIGM_RATES: dict[str, float] = {
+    "mlm_15": 0.15,
+    "mlm_30": 0.30,
+    "mlm_50": 0.50,
+}
+LEGACY_PARADIGM_ALIASES: dict[str, str] = {
+    "mlm": "oa_uniform",
+    "mdm": "oa_uniform",
+    "mdm_uniform": "oa_uniform",
+    "oa_cosine": "mdm_cosine",
+}
+PARADIGM_DISPLAY_NAMES: dict[str, str] = {
+    "ar": "AR",
+    "mlm_15": "MLM-15%",
+    "mlm_30": "MLM-30%",
+    "mlm_50": "MLM-50%",
+    "oa_uniform": "MDM",
+    "mdm_cosine": "MDM-Cosine",
+}
+OPTIMIZERS: tuple[str, ...] = ("adamw", "muon")
+
+
+@dataclass(frozen=True)
+class VocabModeSpec:
+    """Vocabulary-size ablation specification preserving exact ground-truth AA bit entropy."""
+
+    mode_id: str
+    vocab_size: int
+    kmer_size: int
+    default_seq_len: int
+    aa_equivalent_len: int
+
+    @property
+    def special_token_id(self) -> int:
+        return int(self.vocab_size)
+
+    @property
+    def input_vocab_size(self) -> int:
+        return int(self.vocab_size) + 1
+
+    @property
+    def bits_per_token(self) -> float:
+        return math.log2(float(self.vocab_size))
+
+
+VOCAB_MODES: dict[str, VocabModeSpec] = {
+    "aa20": VocabModeSpec("aa20", vocab_size=20, kmer_size=1, default_seq_len=256, aa_equivalent_len=256),
+    "murphy10": VocabModeSpec("murphy10", vocab_size=10, kmer_size=1, default_seq_len=256, aa_equivalent_len=256),
+    "dipeptide400": VocabModeSpec("dipeptide400", vocab_size=400, kmer_size=2, default_seq_len=128, aa_equivalent_len=256),
+    "tripeptide8000": VocabModeSpec("tripeptide8000", vocab_size=8000, kmer_size=3, default_seq_len=85, aa_equivalent_len=255),
+}
+VOCAB_MODE_ORDER: tuple[str, ...] = ("aa20", "murphy10", "dipeptide400", "tripeptide8000")
+
 LR_SCHEDULES: tuple[str, ...] = ("wsd", "cosine")
 CAMPAIGN_TRACKS: tuple[str, ...] = (
     "primary",
@@ -61,6 +114,9 @@ CAMPAIGN_TRACKS: tuple[str, ...] = (
     "ablation_wd",
     "ablation_fp32",
     "ablation_lr_horizon",
+    "ablation_muon",
+    "ablation_vocab",
+    "ablation_mask_rate",
 )
 PRECISIONS: tuple[str, ...] = ("bf16", "fp32_strict")
 
@@ -71,20 +127,45 @@ FORBIDDEN_INFRA_RE = re.compile(
 
 
 def canonicalize_paradigm(paradigm: str) -> str:
-    """Canonicalize paradigm identifier, aliasing legacy 'mlm' -> 'oa_uniform'."""
+    """Canonicalize paradigm identifier, aliasing 'mdm'/'mlm' -> 'oa_uniform' without breaking RunSpec hashes."""
     raw = str(paradigm).strip().lower()
     canon = LEGACY_PARADIGM_ALIASES.get(raw, raw)
-    if canon not in PARADIGMS:
+    if canon not in ALL_PARADIGMS:
         raise ValueError(
-            f"Unsupported paradigm {paradigm!r}; expected {PARADIGMS} "
-            f"(or legacy alias {tuple(LEGACY_PARADIGM_ALIASES)})"
+            f"Unsupported paradigm {paradigm!r}; expected {ALL_PARADIGMS} "
+            f"(or aliases {tuple(LEGACY_PARADIGM_ALIASES)})"
         )
     return canon
 
 
+def paradigm_display_name(paradigm: str) -> str:
+    """Return canonical unified-theory display label ('AR', 'MLM-15%', 'MDM', etc.)."""
+    canon = canonicalize_paradigm(paradigm)
+    return PARADIGM_DISPLAY_NAMES.get(canon, canon.upper())
+
+
+def is_fixed_mask_paradigm(paradigm: str) -> bool:
+    """Return True for fixed-rate masked objectives ('mlm_15', 'mlm_30', 'mlm_50')."""
+    return canonicalize_paradigm(paradigm) in FIXED_MASK_PARADIGM_RATES
+
+
+def default_mask_rate_for_paradigm(paradigm: str) -> float:
+    """Return default fixed mask rate for a paradigm (0.15 for mlm_15, 0.30 for mlm_30, 0.50 for mlm_50)."""
+    canon = canonicalize_paradigm(paradigm)
+    return float(FIXED_MASK_PARADIGM_RATES.get(canon, MLM_15_MASK_RATE))
+
+
+def get_vocab_mode_spec(vocab_mode: str = "aa20") -> VocabModeSpec:
+    """Look up a validated VocabModeSpec by name."""
+    key = str(vocab_mode).strip().lower()
+    if key not in VOCAB_MODES:
+        raise ValueError(f"Unsupported vocab_mode {vocab_mode!r}; expected {tuple(VOCAB_MODES)}")
+    return VOCAB_MODES[key]
+
+
 def is_mlm_paradigm(paradigm: str) -> bool:
-    """Return True for bidirectional masked objectives ('mlm_15', 'oa_uniform', legacy 'mlm')."""
-    return canonicalize_paradigm(paradigm) in ("mlm_15", "oa_uniform")
+    """Return True for bidirectional masked objectives (MLM-15/30/50%, MDM, MDM-Cosine)."""
+    return canonicalize_paradigm(paradigm) != "ar"
 
 
 def mlm_fixed_mask_count(
@@ -196,6 +277,7 @@ class ScaleSpec:
 
 
 SCALE_ORDER: tuple[str, ...] = ("0.5m", "2m", "8m", "35m", "150m")
+EXTENDED_SCALE_ORDER: tuple[str, ...] = ("0.5m", "2m", "8m", "35m", "150m", "650m")
 
 SCALE_SPECS: dict[str, ScaleSpec] = {
     "0.5m": ScaleSpec("0.5m", 500_000, 3, 128, 4, 256, 2.0e-3, 512),
@@ -203,6 +285,8 @@ SCALE_SPECS: dict[str, ScaleSpec] = {
     "8m": ScaleSpec("8m", 8_000_000, 6, 320, 5, 960, 1.2e-3, 1024),
     "35m": ScaleSpec("35m", 35_000_000, 11, 512, 8, 1408, 8.0e-4, 512),
     "150m": ScaleSpec("150m", 150_000_000, 21, 768, 12, 2048, 6.0e-4, 512),
+    # ESM-2 650M matched geometry: 33L, d=1280, 20H (head_dim=64), d_ff=3456 -> 654,303,104 non-emb params
+    "650m": ScaleSpec("650m", 650_000_000, 33, 1280, 20, 3456, 3.0e-4, 256),
 }
 
 
@@ -362,7 +446,21 @@ def choose_global_batch_size(
 
 
 HIGH_VRAM_THRESHOLD_BYTES: int = 110 * (1024 ** 3)
+MID_VRAM_THRESHOLD_BYTES: int = 56 * (1024 ** 3)
 LOW_VRAM_THRESHOLD_BYTES: int = 32 * (1024 ** 3)
+
+
+def should_enable_gradient_checkpointing(
+    scale_id: str,
+    total_vram_bytes: int | None,
+    requested: bool | None = None,
+) -> bool:
+    """Resolve activation checkpointing; auto-enabled for 650m on <110 GiB GPUs unless overridden."""
+    if requested is not None:
+        return bool(requested)
+    if scale_id == "650m" and total_vram_bytes is not None and total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+        return True
+    return False
 
 
 def vram_safe_micro_batch_cap(
@@ -374,6 +472,14 @@ def vram_safe_micro_batch_cap(
     cap = max(1, int(default_cap))
     if total_vram_bytes is None or total_vram_bytes <= 0:
         return cap
+    if scale_id == "650m":
+        if total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
+            return min(cap, 4)
+        if total_vram_bytes < MID_VRAM_THRESHOLD_BYTES:
+            return min(cap, 16)
+        if total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+            return min(cap, 32)
+        return min(cap, 64)
     if scale_id == "150m":
         if total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
             return min(cap, 64)
@@ -409,6 +515,11 @@ class RunSpec:
     adaptive_early_stop: bool = False
     mask_rate: float = MLM_15_MASK_RATE
     delete_transient_ckpt_on_complete: bool = False
+    optimizer: str = "adamw"
+    muon_lr: float = 0.02
+    muon_lr_scale: float | None = None
+    vocab_mode: str = "aa20"
+    gradient_checkpointing: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -442,18 +553,42 @@ class RunSpec:
             raise ValueError(f"min_lr_ratio must be in [0, 1], got {self.min_lr_ratio!r}")
         if int(self.min_steps_per_epoch) < 1:
             raise ValueError(f"min_steps_per_epoch must be >= 1, got {self.min_steps_per_epoch}")
-        if not (0.0 < float(self.mask_rate) <= 1.0) or not math.isfinite(float(self.mask_rate)):
+
+        # Auto-align default mask_rate for mlm_30 / mlm_50 if caller left the default 0.15
+        eff_mask_rate = float(self.mask_rate)
+        if canon_paradigm in FIXED_MASK_PARADIGM_RATES and abs(eff_mask_rate - MLM_15_MASK_RATE) < 1e-12:
+            eff_mask_rate = FIXED_MASK_PARADIGM_RATES[canon_paradigm]
+            object.__setattr__(self, "mask_rate", eff_mask_rate)
+        if not (0.0 < eff_mask_rate <= 1.0) or not math.isfinite(eff_mask_rate):
             raise ValueError(f"mask_rate must be in (0, 1], got {self.mask_rate!r}")
+
+        opt_norm = str(self.optimizer).strip().lower()
+        if opt_norm not in OPTIMIZERS:
+            raise ValueError(f"Unsupported optimizer {self.optimizer!r}; expected {OPTIMIZERS}")
+        object.__setattr__(self, "optimizer", opt_norm)
+        if float(self.muon_lr) <= 0.0 or not math.isfinite(float(self.muon_lr)):
+            raise ValueError(f"muon_lr must be positive finite, got {self.muon_lr!r}")
+        if self.muon_lr_scale is not None and (
+            float(self.muon_lr_scale) <= 0.0 or not math.isfinite(float(self.muon_lr_scale))
+        ):
+            raise ValueError(f"muon_lr_scale must be positive finite, got {self.muon_lr_scale!r}")
+
+        vm_spec = get_vocab_mode_spec(self.vocab_mode)
+        object.__setattr__(self, "vocab_mode", vm_spec.mode_id)
 
         normalized_eval = tuple(sorted({int(e) for e in self.eval_epochs if 1 <= int(e) <= self.max_epochs}))
         object.__setattr__(self, "eval_epochs", normalized_eval)
 
-        expected_tokens = int(self.n_sequences) * SEQ_LEN * int(self.max_epochs)
+        expected_tokens = int(self.n_sequences) * vm_spec.default_seq_len * int(self.max_epochs)
         if self.estimated_tokens <= 0:
             object.__setattr__(self, "estimated_tokens", expected_tokens)
 
     def compatibility_payload(self) -> dict[str, Any]:
-        """Immutable training-identity fields that must match when resuming a checkpoint."""
+        """Immutable training-identity fields that must match when resuming a checkpoint.
+
+        Non-default extensions (optimizer='muon', vocab_mode!='aa20') are added only when active
+        so existing AdamW/aa20 saved checkpoints retain bit-identical spec_hash() digests.
+        """
         payload: dict[str, Any] = {
             "paradigm": self.paradigm,
             "scale_id": self.scale_id,
@@ -469,6 +604,13 @@ class RunSpec:
         }
         if self.lr_schedule == "cosine":
             payload["max_epochs"] = int(self.max_epochs)
+        if self.optimizer != "adamw":
+            payload["optimizer"] = self.optimizer
+            payload["muon_lr"] = float(self.muon_lr)
+            if self.muon_lr_scale is not None:
+                payload["muon_lr_scale"] = float(self.muon_lr_scale)
+        if self.vocab_mode != "aa20":
+            payload["vocab_mode"] = self.vocab_mode
         return payload
 
     def spec_hash(self) -> str:
@@ -476,8 +618,12 @@ class RunSpec:
         encoded = json.dumps(self.compatibility_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    @property
+    def paradigm_display(self) -> str:
+        return paradigm_display_name(self.paradigm)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "run_id": self.run_id,
             "track": self.track,
             "paradigm": self.paradigm,
@@ -499,12 +645,19 @@ class RunSpec:
             "adaptive_early_stop": bool(self.adaptive_early_stop),
             "mask_rate": float(self.mask_rate),
             "delete_transient_ckpt_on_complete": bool(self.delete_transient_ckpt_on_complete),
+            "optimizer": self.optimizer,
+            "muon_lr": float(self.muon_lr),
+            "muon_lr_scale": None if self.muon_lr_scale is None else float(self.muon_lr_scale),
+            "vocab_mode": self.vocab_mode,
+            "gradient_checkpointing": self.gradient_checkpointing,
         }
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RunSpec:
         # Legacy Batch-1 run specs omitted lr_schedule and used cosine decay.
         lr_schedule = str(data.get("lr_schedule", "cosine"))
+        raw_gc = data.get("gradient_checkpointing", None)
         return cls(
             run_id=str(data["run_id"]),
             track=str(data["track"]),
@@ -525,10 +678,17 @@ class RunSpec:
             min_lr_ratio=float(data.get("min_lr_ratio", 0.05)),
             min_steps_per_epoch=int(data.get("min_steps_per_epoch", 16)),
             adaptive_early_stop=bool(data.get("adaptive_early_stop", False)),
-            mask_rate=float(data.get("mask_rate", MLM_15_MASK_RATE)),
+            mask_rate=float(data.get("mask_rate", default_mask_rate_for_paradigm(str(data["paradigm"])))),
             delete_transient_ckpt_on_complete=bool(
                 data.get("delete_transient_ckpt_on_complete", False)
             ),
+            optimizer=str(data.get("optimizer", "adamw")),
+            muon_lr=float(data.get("muon_lr", 0.02)),
+            muon_lr_scale=(
+                None if data.get("muon_lr_scale") is None else float(data["muon_lr_scale"])
+            ),
+            vocab_mode=str(data.get("vocab_mode", "aa20")),
+            gradient_checkpointing=None if raw_gc is None else bool(raw_gc),
         )
 
 

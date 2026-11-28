@@ -7,9 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from .spec import SEQ_LEN, VOCAB_AA
+from .spec import SEQ_LEN, VOCAB_AA, get_vocab_mode_spec
 
 DEFAULT_DATA_CHUNK_SIZE: int = 65_536
+
+# Canonical Murphy 10-letter reduced amino-acid alphabet grouping (reference for murphy10 mode)
+MURPHY10_GROUPS: tuple[str, ...] = ("A", "C", "DENQ", "FWY", "G", "H", "ILMV", "KR", "P", "ST")
 
 
 def dataset_cache_filename(
@@ -242,3 +245,88 @@ def generate_iid_aa_dataset(
 
 
 generate_iid_sequences = generate_iid_aa_dataset
+
+
+def pack_aa_sequences_to_vocab_mode(
+    aa_sequences: np.ndarray,
+    vocab_mode: str,
+) -> np.ndarray:
+    """Pack canonical 20-AA (N, L_aa) uint8 sequences into non-overlapping k-mer tokens.
+
+    For ``dipeptide400`` (k=2, V=400, L_tok = L_aa // 2) and ``tripeptide8000`` (k=3, V=8000,
+    L_tok = L_aa // 3), packing is an exact bijection over L_tok * k amino acids, so total
+    ground-truth sequence entropy in bits is strictly conserved:
+        L_tok * log2(20^k) == (k * L_tok) * log2(20).
+    """
+    vm = get_vocab_mode_spec(vocab_mode)
+    if aa_sequences.ndim != 2:
+        raise ValueError(f"Expected 2D array (N, L_aa), got shape={aa_sequences.shape}")
+    if vm.mode_id == "aa20":
+        return np.ascontiguousarray(aa_sequences, dtype=np.uint8)
+    if vm.mode_id == "murphy10":
+        return np.ascontiguousarray(aa_sequences % 10, dtype=np.uint8)
+
+    n_seq, l_aa = aa_sequences.shape
+    k = vm.kmer_size
+    if l_aa < k:
+        raise ValueError(f"Sequence length {l_aa} < kmer_size {k} for vocab_mode={vocab_mode!r}")
+    l_tok = l_aa // k
+    trimmed = aa_sequences[:, : l_tok * k].reshape(n_seq, l_tok, k).astype(np.int32, copy=False)
+    packed = np.zeros((n_seq, l_tok), dtype=np.int32)
+    for pos in range(k):
+        packed = packed * VOCAB_AA + trimmed[:, :, pos]
+    return np.ascontiguousarray(packed, dtype=np.int32)
+
+
+def generate_vocab_mode_dataset(
+    n_sequences: int,
+    *,
+    vocab_mode: str = "aa20",
+    seq_len: int | None = None,
+    data_seed: int = 20261127,
+    data_cache_dir: Path | str | None = None,
+    verify_unique: bool = True,
+    chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+) -> np.ndarray:
+    """Generate deterministic i.i.d. uniform sequences for any supported vocab_mode.
+
+    - ``aa20``: (N, L) uint8 in {0..19}, default L=256.
+    - ``murphy10``: (N, L) uint8 in {0..9}, default L=256 (exact H_0 = L * log2(10)).
+    - ``dipeptide400``: generates (N, 2*L) uniform 20-AA sequences and packs non-overlapping
+      2-mers into (N, L) int32 in {0..399} (default L=128 from 256 AA -> exact bit identity!).
+    - ``tripeptide8000``: generates (N, 3*L) uniform 20-AA sequences and packs non-overlapping
+      3-mers into (N, L) int32 in {0..7999} (default L=85 from 255 AA -> exact bit identity!).
+    """
+    vm = get_vocab_mode_spec(vocab_mode)
+    eff_seq_len = int(seq_len) if seq_len is not None else vm.default_seq_len
+    if vm.mode_id == "aa20":
+        return generate_iid_aa_dataset(
+            n_sequences,
+            seq_len=eff_seq_len,
+            vocab_size=VOCAB_AA,
+            data_seed=data_seed,
+            data_cache_dir=data_cache_dir,
+            verify_unique=verify_unique,
+            chunk_size=chunk_size,
+        )
+    if vm.mode_id == "murphy10":
+        return generate_iid_aa_dataset(
+            n_sequences,
+            seq_len=eff_seq_len,
+            vocab_size=vm.vocab_size,
+            data_seed=data_seed,
+            data_cache_dir=data_cache_dir,
+            verify_unique=verify_unique,
+            chunk_size=chunk_size,
+        )
+    aa_len = eff_seq_len * vm.kmer_size
+    aa_seqs = generate_iid_aa_dataset(
+        n_sequences,
+        seq_len=aa_len,
+        vocab_size=VOCAB_AA,
+        data_seed=data_seed,
+        data_cache_dir=data_cache_dir,
+        verify_unique=verify_unique,
+        chunk_size=chunk_size,
+    )
+    return pack_aa_sequences_to_vocab_mode(aa_seqs, vm.mode_id)

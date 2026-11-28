@@ -31,10 +31,12 @@ from src.capability.memory_theory.io_utils import load_json_file, write_json_wit
 from src.capability.unified.master_summary import FORBIDDEN_INFRA_RE
 
 from .spec import (
+    EXTENDED_SCALE_ORDER,
     LOG2_20,
     SCALE_ORDER,
     assert_no_forbidden_infra_strings,
     canonicalize_paradigm,
+    paradigm_display_name,
 )
 
 SUMMARY_SCHEMA = "plm_parametric_capacity_summary_v1"
@@ -57,9 +59,9 @@ NLP_REFERENCE_CONSTANTS_BITS_PER_PARAM: dict[str, dict[str, Any]] = {
 
 
 def _scale_sort_key(scale_id: str) -> tuple[int, str]:
-    if scale_id in SCALE_ORDER:
-        return (SCALE_ORDER.index(scale_id), scale_id)
-    return (len(SCALE_ORDER), scale_id)
+    if scale_id in EXTENDED_SCALE_ORDER:
+        return (EXTENDED_SCALE_ORDER.index(scale_id), scale_id)
+    return (len(EXTENDED_SCALE_ORDER), scale_id)
 
 
 def _mult_key(multiplier: float) -> str:
@@ -461,8 +463,10 @@ def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
 
     mean_tok_xent_emp = float(max_ge2_row["mean_tok_xent_bits"])
     mean_tok_xent_2x = float(at_2x_row["mean_tok_xent_bits"])
-    delta_bpt_emp = float(LOG2_20 - mean_tok_xent_emp)
-    delta_bpt_2x = float(LOG2_20 - mean_tok_xent_2x)
+    vocab_sz = int(ordered[0].get("vocab_size", 20) or 20)
+    log2_v = math.log2(float(max(2, vocab_sz)))
+    delta_bpt_emp = float(log2_v - mean_tok_xent_emp)
+    delta_bpt_2x = float(log2_v - mean_tok_xent_2x)
 
     # Dual Slepian-Wolf / symmetric-slot pseudo capacity metrics (populated for mlm_15)
     has_sw = all(r.get("sw_memorized_bits") is not None for r in sat_ge2)
@@ -494,7 +498,7 @@ def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
             "H_data_bits": float(r["H_data_bits"]),
             "H_gibbs_max_bits": float(r["H_gibbs_max_bits"]),
             "mean_tok_xent_bits": float(r["mean_tok_xent_bits"]),
-            "delta_bpt_vs_null": float(LOG2_20 - float(r["mean_tok_xent_bits"])),
+            "delta_bpt_vs_null": float(log2_v - float(r["mean_tok_xent_bits"])),
             "memorized_bits": float(r["memorized_bits"]),
             "memorized_bits_se": float(r["memorized_bits_se"]),
             "bits_per_non_emb_param": float(r["bits_per_non_emb_param"]),
@@ -1400,7 +1404,28 @@ def _build_c_max_calibration_and_exposure_laws(
             ),
         }
 
+        p_display = paradigm_display_name(paradigm)
+        e_mem_canonical = (
+            float(pooled_delayed_emp["e_crit_epochs"])
+            if (pooled_delayed_emp is not None and pooled_delayed_emp.get("e_crit_epochs") is not None)
+            else pooled_e_crit_c_eff_0p02
+        )
+        c_inf_canonical = (
+            float(pooled_delayed_emp["c_inf_bits_per_param"])
+            if pooled_delayed_emp is not None
+            else (
+                float(pooled_hill_emp["c_inf_bits_per_param"])
+                if pooled_hill_emp is not None
+                else None
+            )
+        )
         exposure_discount_curves[paradigm] = {
+            "paradigm": paradigm,
+            "paradigm_display": p_display,
+            "E_gen": None,
+            "E_mem": e_mem_canonical,
+            "W_window": None,
+            "Delta_cal": 0.0,
             "anchor_epoch": anchor_epoch,
             "anchor_scale_ids": anchor_scales,
             "pooled_by_exposure": pooled_anchor_traj,
@@ -1628,6 +1653,20 @@ def _build_c_max_calibration_and_exposure_laws(
         }
 
         c_max_calibration["by_paradigm"][paradigm] = {
+            "paradigm": paradigm,
+            "paradigm_display": p_display,
+            "E_gen": None,
+            "E_mem": e_mem_canonical,
+            "W_window": None,
+            "Delta_cal": 0.0,
+            "canonical_notation": {
+                "paradigm_display": p_display,
+                "c_inf": c_inf_canonical,
+                "E_gen": None,
+                "E_mem": e_mem_canonical,
+                "W_window": None,
+                "Delta_cal": 0.0,
+            },
             "anchor_epoch": anchor_epoch,
             "is_canonical_e400_anchor": anchor_epoch == 400,
             "asymptotic_and_metric_summary": asymptotic_summary,

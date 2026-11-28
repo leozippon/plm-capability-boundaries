@@ -40,9 +40,12 @@ from .spec import (
     LN2,
     LOG2_20,
     MASK_TOKEN_ID,
-    OBJECTIVES,
     PAD_TOKEN_ID,
     VOCAB_AA,
+    canonicalize_objective,
+    default_mask_rate_for_objective,
+    is_fixed_mask_objective,
+    objective_display_name,
 )
 
 NUM_EVAL_STRATA: int = 16
@@ -57,34 +60,66 @@ def compute_temperature_calibrated_bits(
     targets: torch.Tensor,
     valid_mask: torch.Tensor | None = None,
     *,
+    weights: torch.Tensor | None = None,
     log_tau_bounds: tuple[float, float] = (-4.0, 6.0),
     n_iter: int = 32,
+    chunk_size: int = 262_144,
 ) -> dict[str, float]:
-    """Compute raw vs scalar-temperature-calibrated cross-entropy min_{tau>0} H(p, q_tau) in bits/tok.
+    """Compute raw vs scalar-temperature-calibrated cross-entropy min_{T>0} H(theta, T) in bits/tok.
 
-    Separates true representation/ranking error from logit-norm temperature miscalibration:
-    scaling logits z -> alpha * z inflates raw_bits_per_tok while leaving calibrated_bits_per_tok invariant.
+    Implements Eq. (3b):
+        H_unseen_fold(theta) = min_{T > 0} H_unseen_fold(theta, T) + Delta_cal(theta).
+    Scaling logits z -> alpha * z inflates raw_bits_per_tok while leaving calibrated_bits_per_tok invariant.
+    Evaluates cross-entropy in memory-bounded chunks with float64 accumulation so full
+    unseen-fold token buffers (e.g. 3M+ fp16 logits) calibrate without truncation bias.
     """
     if valid_mask is not None:
         flat_mask = valid_mask.reshape(-1).bool()
-        flat_logits = logits.reshape(-1, logits.shape[-1])[flat_mask].float()
-        flat_targets = targets.reshape(-1)[flat_mask].long()
+        flat_logits = logits.reshape(-1, logits.shape[-1])[flat_mask]
+        flat_targets = targets.reshape(-1)[flat_mask]
+        flat_weights = weights.reshape(-1)[flat_mask].float() if weights is not None else None
     else:
-        flat_logits = logits.reshape(-1, logits.shape[-1]).float()
-        flat_targets = targets.reshape(-1).long()
+        flat_logits = logits.reshape(-1, logits.shape[-1])
+        flat_targets = targets.reshape(-1)
+        flat_weights = weights.reshape(-1).float() if weights is not None else None
 
-    if flat_targets.numel() == 0:
+    n_total = int(flat_targets.numel())
+    if n_total == 0:
         return {
             "raw_bits_per_tok": float("nan"),
             "calibrated_bits_per_tok": float("nan"),
             "optimal_temperature": float("nan"),
             "calibration_excess_bits": float("nan"),
+            "Delta_cal": float("nan"),
         }
+
+    w_sum = (
+        float(flat_weights.to(dtype=torch.float64).sum().item())
+        if flat_weights is not None
+        else float(n_total)
+    )
+    if w_sum <= 0.0:
+        flat_weights = None
+        w_sum = float(n_total)
+
+    step = max(1, int(chunk_size))
 
     def _bits_at_log_tau(log_tau: float) -> float:
         inv_tau = math.exp(-float(log_tau))
-        nll = F.cross_entropy(flat_logits * inv_tau, flat_targets, reduction="mean")
-        return float(nll.item() / LN2)
+        total_nll = 0.0
+        for s in range(0, n_total, step):
+            e = min(n_total, s + step)
+            lg = flat_logits[s:e].float() * inv_tau
+            tg = flat_targets[s:e].long()
+            if flat_weights is None:
+                total_nll += float(
+                    F.cross_entropy(lg, tg, reduction="sum").to(dtype=torch.float64).item()
+                )
+            else:
+                nll_vec = F.cross_entropy(lg, tg, reduction="none").to(dtype=torch.float64)
+                w_vec = flat_weights[s:e].to(dtype=torch.float64)
+                total_nll += float((nll_vec * w_vec).sum().item())
+        return float((total_nll / w_sum) / LN2)
 
     raw_bits = _bits_at_log_tau(0.0)
 
@@ -107,11 +142,13 @@ def compute_temperature_calibrated_bits(
     best_log_tau = 0.5 * (a + b)
     cal_bits = min(raw_bits, _bits_at_log_tau(best_log_tau))
     opt_tau = 1.0 if cal_bits == raw_bits else math.exp(best_log_tau)
+    delta_cal = float(max(0.0, raw_bits - cal_bits))
     return {
         "raw_bits_per_tok": float(raw_bits),
         "calibrated_bits_per_tok": float(cal_bits),
         "optimal_temperature": float(opt_tau),
-        "calibration_excess_bits": float(max(0.0, raw_bits - cal_bits)),
+        "calibration_excess_bits": delta_cal,
+        "Delta_cal": delta_cal,
     }
 
 
@@ -220,15 +257,19 @@ def evaluate_split_native(
     precision: str = "bf16",
     n_draws: int = NUM_EVAL_STRATA,
     eval_seed: int = 20261129,
+    mask_rate: float | None = None,
+    eval_temperature_calibration: bool = False,
+    cal_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate native per-residue cross-entropy (bits/res) on a variable-length split.
 
     - ``ar``: exact causal NLL over every real AA position.
-    - ``oa_uniform``: deterministic 16-stratum per-sequence OA-ARDM NELBO.
-    - ``mlm_15``: deterministic 16-draw 15%-mask CE.
+    - ``oa_uniform`` (MDM) / ``mdm_cosine``: deterministic 16-stratum per-sequence OA-ARDM NELBO.
+    - ``mlm_15`` / ``mlm_30`` / ``mlm_50``: deterministic 16-draw fixed-rate CE.
+    When ``eval_temperature_calibration=True``, also computes exact Eq. (3b) scalar
+    temperature calibration ``H_cal = min_{T>0} H(theta, T)`` and ``Delta_cal``.
     """
-    if objective not in OBJECTIVES:
-        raise ValueError(f"Unsupported objective {objective!r}")
+    canon_obj = canonicalize_objective(objective)
     if store.n_sequences == 0:
         raise ValueError("Cannot evaluate empty PackedSequenceStore")
 
@@ -249,6 +290,41 @@ def evaluate_split_native(
     total_eval_tokens = 0.0
     stratum_sums = np.zeros(int(n_draws), dtype=np.float64)
 
+    cal_logits_chunks: list[torch.Tensor] = []
+    cal_targets_chunks: list[torch.Tensor] = []
+    cal_weights_chunks: list[torch.Tensor] = []
+    cal_tokens_collected = 0
+    eff_mask_rate = float(mask_rate) if mask_rate is not None else default_mask_rate_for_objective(canon_obj)
+
+    def _maybe_collect_cal(
+        batch_logits: torch.Tensor,
+        batch_targets: torch.Tensor,
+        batch_mask: torch.Tensor,
+        per_pos_weights: torch.Tensor,
+    ) -> None:
+        nonlocal cal_tokens_collected
+        if not eval_temperature_calibration:
+            return
+        if cal_max_tokens is not None and cal_tokens_collected >= int(cal_max_tokens):
+            return
+        sel_logits = batch_logits[batch_mask].detach().to(device="cpu", dtype=torch.float16)
+        sel_targets = batch_targets[batch_mask].detach().to(device="cpu", dtype=torch.uint8)
+        sel_weights = per_pos_weights[batch_mask].detach().to(device="cpu", dtype=torch.float32)
+        n_new = int(sel_targets.numel())
+        if n_new == 0:
+            return
+        if cal_max_tokens is not None:
+            rem = int(cal_max_tokens) - cal_tokens_collected
+            if n_new > rem:
+                sel_logits = sel_logits[:rem]
+                sel_targets = sel_targets[:rem]
+                sel_weights = sel_weights[:rem]
+                n_new = rem
+        cal_logits_chunks.append(sel_logits)
+        cal_targets_chunks.append(sel_targets)
+        cal_weights_chunks.append(sel_weights)
+        cal_tokens_collected += n_new
+
     try:
         for start in range(0, n_seq, max(1, int(batch_size))):
             batch_global_np = order_idx[start : start + int(batch_size)]
@@ -258,7 +334,7 @@ def evaluate_split_native(
             pos = torch.arange(max_len, device=device, dtype=torch.long).unsqueeze(0)
             valid = pos < lengths.unsqueeze(1)
 
-            if objective == "ar":
+            if canon_obj == "ar":
                 prep = prepare_ar_batch(tokens, lengths)
                 with autocast_ctx:
                     logits = model(prep.input_ids, prep.attention_mask, right_padded=True)
@@ -282,7 +358,15 @@ def evaluate_split_native(
                 total_correct += corr
                 total_eval_tokens += float(lengths.sum().item())
 
-            elif objective == "oa_uniform":
+                if eval_temperature_calibration:
+                    _maybe_collect_cal(
+                        logits,
+                        safe_t,
+                        prep.loss_mask,
+                        torch.ones_like(safe_t, dtype=torch.float32),
+                    )
+
+            elif canon_obj in ("oa_uniform", "mdm_cosine"):
                 h_draws = torch.empty((bsz, int(n_draws)), dtype=torch.float64, device=device)
                 for s in range(int(n_draws)):
                     off = torch.remainder(global_idx_t + 7 * s, int(n_draws))
@@ -321,14 +405,24 @@ def evaluate_split_native(
                     total_correct += float(((preds == safe_targets) & mask).sum().item())
                     total_eval_tokens += float(mask.sum().item())
 
+                    if eval_temperature_calibration:
+                        # Exact residue-weighted NELBO weight per masked site: L_i / (m_i * n_draws)
+                        w_row = (lengths.to(dtype=torch.float32) / (m_mask.to(dtype=torch.float32) * float(n_draws)))
+                        _maybe_collect_cal(
+                            logits,
+                            safe_targets,
+                            mask,
+                            w_row.unsqueeze(1).expand_as(safe_targets),
+                        )
+
                 seq_h = h_draws.mean(dim=-1)  # exact unbiased OA-ARDM per-residue NELBO for each seq
                 total_weighted_bits += float((seq_h * lengths.to(dtype=torch.float64)).sum().item())
                 total_residues += int(lengths.sum().item())
                 seq_mean_bits_sum += float(seq_h.sum().item())
 
-            elif objective == "mlm_15":
+            elif is_fixed_mask_objective(canon_obj):
                 k_mask = torch.clamp(
-                    torch.round(lengths.to(dtype=torch.float32) * 0.15).to(dtype=torch.int64),
+                    torch.round(lengths.to(dtype=torch.float32) * eff_mask_rate).to(dtype=torch.int64),
                     min=1,
                 )
                 k_mask = torch.minimum(k_mask, lengths.to(dtype=torch.int64))
@@ -361,6 +455,15 @@ def evaluate_split_native(
                     total_correct += float(((preds == safe_targets) & mask).sum().item())
                     total_eval_tokens += float(mask.sum().item())
 
+                    if eval_temperature_calibration:
+                        w_row = (lengths.to(dtype=torch.float32) / (k_mask.to(dtype=torch.float32) * float(n_draws)))
+                        _maybe_collect_cal(
+                            logits,
+                            safe_targets,
+                            mask,
+                            w_row.unsqueeze(1).expand_as(safe_targets),
+                        )
+
                 seq_h = h_draws.mean(dim=-1)
                 total_weighted_bits += float((seq_h * lengths.to(dtype=torch.float64)).sum().item())
                 total_residues += int(lengths.sum().item())
@@ -370,7 +473,8 @@ def evaluate_split_native(
             model.train()
 
     out: dict[str, Any] = {
-        "objective": objective,
+        "objective": canon_obj,
+        "paradigm_display": objective_display_name(canon_obj),
         "n_sequences": int(n_seq),
         "total_residues": int(total_residues),
         "bits_per_res": float(total_weighted_bits / float(max(1, total_residues))),
@@ -378,8 +482,19 @@ def evaluate_split_native(
         "token_accuracy": float(total_correct / float(max(1.0, total_eval_tokens))),
         "eval_wall_sec": float(time.perf_counter() - t0),
     }
-    if objective in ("oa_uniform", "mlm_15"):
+    if canon_obj != "ar":
         out["draw_bits_per_res"] = [float(x / float(n_seq)) for x in stratum_sums]
+    if eval_temperature_calibration and cal_logits_chunks:
+        all_logits = torch.cat(cal_logits_chunks, dim=0)
+        all_targets = torch.cat(cal_targets_chunks, dim=0)
+        all_weights = torch.cat(cal_weights_chunks, dim=0)
+        cal_res = compute_temperature_calibrated_bits(
+            all_logits,
+            all_targets,
+            weights=all_weights,
+        )
+        cal_res["n_tokens_calibrated"] = int(all_targets.numel())
+        out["temperature_calibration"] = cal_res
     return out
 
 
@@ -523,8 +638,11 @@ def evaluate_three_tier_bits(
     n_draws: int = NUM_EVAL_STRATA,
     loo_probes: int = DEFAULT_LOO_PROBES,
     eval_seed: int = 20261129,
+    mask_rate: float | None = None,
+    eval_temperature_calibration: bool = True,
 ) -> dict[str, Any]:
-    """Evaluate Eq. (4) three-tier bit conservation on both native and matched LOO readouts."""
+    """Evaluate Eq. (3a)-(3b) three-tier bit conservation and temperature calibration."""
+    canon_obj = canonicalize_objective(objective)
     t0 = time.perf_counter()
     splits = {
         "train": train_sub_store,
@@ -541,13 +659,15 @@ def evaluate_three_tier_bits(
         native_res[name] = evaluate_split_native(
             model,
             store,
-            objective=objective,
+            objective=canon_obj,
             batch_size=batch_size,
             precision=precision,
             n_draws=n_draws,
             eval_seed=eval_seed + idx * 101,
+            mask_rate=mask_rate,
+            eval_temperature_calibration=(eval_temperature_calibration and name == "unseen_fold"),
         )
-        if objective == "ar":
+        if canon_obj == "ar":
             # Avoid running AR forward pass twice; native causal == conditional LOO for AR
             loo_res[name] = {
                 "mode": "ar_causal",
@@ -562,7 +682,7 @@ def evaluate_three_tier_bits(
             loo_res[name] = evaluate_split_loo(
                 model,
                 store,
-                objective=objective,
+                objective=canon_obj,
                 batch_size=batch_size,
                 precision=precision,
                 n_probes=loo_probes,
@@ -574,6 +694,12 @@ def evaluate_three_tier_bits(
         h_unseen_homolog=native_res["unseen_homolog"]["bits_per_res"],
         h_unseen_fold=native_res["unseen_fold"]["bits_per_res"],
     )
+    temp_cal = native_res["unseen_fold"].get("temperature_calibration")
+    if isinstance(temp_cal, Mapping):
+        native_eq4["H_unseen_fold_cal"] = float(temp_cal["calibrated_bits_per_tok"])
+        native_eq4["Delta_cal"] = float(temp_cal["Delta_cal"])
+        native_eq4["optimal_temperature_unseen_fold"] = float(temp_cal["optimal_temperature"])
+
     native_eq4_seq_mean = compute_three_tier_decomposition(
         h_train=native_res["train"]["seq_mean_bits_per_res"],
         h_unseen_homolog=native_res["unseen_homolog"]["seq_mean_bits_per_res"],
@@ -586,10 +712,12 @@ def evaluate_three_tier_bits(
     )
 
     return {
-        "objective": objective,
+        "objective": canon_obj,
+        "paradigm_display": objective_display_name(canon_obj),
         "native": native_eq4,
         "native_seq_mean": native_eq4_seq_mean,
         "loo": loo_eq4,
+        "temperature_calibration": temp_cal,
         "splits_native": native_res,
         "splits_loo": loo_res,
         "eval_wall_sec": float(time.perf_counter() - t0),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import math
 import os
 import random
@@ -22,7 +23,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..core.io import sha256_file
 from ..memory_theory.io_utils import load_json_file, write_json_with_sha256
-from .data import generate_iid_aa_dataset
+from .data import generate_iid_aa_dataset, generate_vocab_mode_dataset
 from .evaluation import (
     DEFAULT_EVAL_MAX_SEQUENCES_MLM,
     DEFAULT_LOO_MAX_SEQUENCES_MLM,
@@ -34,6 +35,7 @@ from .evaluation import (
     evaluate_run_checkpoint,
 )
 from .model import UniformVocabTransformer, count_model_parameters
+from .optimizers import build_named_optimizer, set_optimizer_lr
 from .spec import (
     C_GRID_PRIOR_BITS_PER_PARAM,
     LN2,
@@ -47,9 +49,13 @@ from .spec import (
     canonicalize_paradigm,
     choose_global_batch_size,
     dataset_entropy_bits,
+    get_vocab_mode_spec,
     gibbs_memorizable_bits,
+    is_fixed_mask_paradigm,
     mlm_fixed_mask_count,
     null_ordered_entropy_bits,
+    paradigm_display_name,
+    should_enable_gradient_checkpointing,
     slugify_token,
     vram_safe_micro_batch_cap,
 )
@@ -295,7 +301,7 @@ class AdaptiveEarlyStopTracker:
         )
         hit_data_ceiling = (
             (tok_xent <= xent_ceiling)
-            if canon_paradigm == "mlm_15"
+            if is_fixed_mask_paradigm(canon_paradigm)
             else (frac_gibbs >= self.config.data_ceiling_frac_gibbs or tok_xent <= xent_ceiling)
         )
         if hit_data_ceiling:
@@ -376,7 +382,11 @@ def setup_distributed(device: torch.device | str | None = None) -> DistributedCo
             raise RuntimeError("Distributed training with WORLD_SIZE > 1 requires CUDA")
         torch.cuda.set_device(local_rank)
         dev = torch.device("cuda", local_rank)
-        dist.init_process_group(backend="nccl", device_id=dev)
+        dist.init_process_group(
+            backend="nccl",
+            device_id=dev,
+            timeout=datetime.timedelta(minutes=60),
+        )
         return DistributedContext(
             rank=rank,
             local_rank=local_rank,
@@ -472,29 +482,19 @@ def build_optimizer(
     peak_lr: float,
     weight_decay: float,
     device: torch.device,
-) -> torch.optim.AdamW:
-    """Create fused AdamW with weight_decay restricted strictly to >=2D weight matrices."""
-    decay_params: list[nn.Parameter] = []
-    no_decay_params: list[nn.Parameter] = []
-    for param in model.parameters():
-        if not param.requires_grad:
-            continue
-        if param.ndim >= 2:
-            decay_params.append(param)
-        else:
-            no_decay_params.append(param)
-
-    param_groups = [
-        {"params": decay_params, "weight_decay": float(weight_decay)},
-        {"params": no_decay_params, "weight_decay": 0.0},
-    ]
-    use_fused = device.type == "cuda"
-    return torch.optim.AdamW(
-        param_groups,
-        lr=float(peak_lr),
-        betas=(0.9, 0.95),
-        eps=1e-8,
-        fused=use_fused,
+    optimizer_name: str = "adamw",
+    muon_lr: float = 0.02,
+    muon_lr_scale: float | None = None,
+) -> torch.optim.Optimizer:
+    """Create fused AdamW or hybrid Muon (Newton-Schulz 5) + AdamW optimizer."""
+    return build_named_optimizer(
+        model,
+        optimizer_name=optimizer_name,
+        peak_lr=peak_lr,
+        weight_decay=weight_decay,
+        device=device,
+        muon_lr=muon_lr,
+        muon_lr_scale=muon_lr_scale,
     )
 
 
@@ -505,7 +505,7 @@ def sample_mlm_stratified_batch(
     pos_arange: torch.Tensor,
     special_token_id: int = SPECIAL_TOKEN_ID,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Stratified OA-ARDM / MDLM batch corruption returning (masked_input, targets, mask, n_mask)."""
+    """Stratified MDM / OA-ARDM batch corruption returning (masked_input, targets, mask, n_mask)."""
     bsz, seq_len = batch_seqs.shape
     device = batch_seqs.device
     targets = batch_seqs.to(dtype=torch.long)
@@ -514,6 +514,33 @@ def sample_mlm_stratified_batch(
     jitter = torch.rand(bsz, device=device, generator=generator, dtype=torch.float32)
     u = (perm + jitter) / float(bsz)
     n_mask = torch.clamp((u * float(seq_len)).long() + 1, 1, seq_len)
+
+    noise = torch.rand((bsz, seq_len), device=device, generator=generator, dtype=torch.float32)
+    order = torch.argsort(noise, dim=-1)
+    mask = torch.zeros((bsz, seq_len), dtype=torch.bool, device=device)
+    mask.scatter_(1, order, pos_arange.unsqueeze(0) < n_mask.unsqueeze(1))
+
+    masked_input = torch.where(mask, int(special_token_id), targets)
+    return masked_input, targets, mask, n_mask
+
+
+def sample_mdm_cosine_batch(
+    batch_seqs: torch.Tensor,
+    *,
+    generator: torch.Generator,
+    pos_arange: torch.Tensor,
+    special_token_id: int = SPECIAL_TOKEN_ID,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Stratified cosine-warped MDM corruption: m/L = 1 - cos(pi/2 * u), u ~ U(0, 1)."""
+    bsz, seq_len = batch_seqs.shape
+    device = batch_seqs.device
+    targets = batch_seqs.to(dtype=torch.long)
+
+    perm = torch.randperm(bsz, device=device, generator=generator, dtype=torch.long).float()
+    jitter = torch.rand(bsz, device=device, generator=generator, dtype=torch.float32)
+    u = (perm + jitter) / float(bsz)
+    rate = 1.0 - torch.cos(0.5 * math.pi * u)
+    n_mask = torch.clamp(torch.floor(rate * float(seq_len)).long() + 1, 1, seq_len)
 
     noise = torch.rand((bsz, seq_len), device=device, generator=generator, dtype=torch.float32)
     order = torch.argsort(noise, dim=-1)
@@ -753,6 +780,7 @@ def _build_run_payload(
     scale_dict: dict[str, Any],
     param_counts: dict[str, int],
     seq_len: int,
+    vocab_size: int = VOCAB_AA,
     h_null_bits: float,
     h_data_bits: float,
     h_gibbs_bits: float,
@@ -774,6 +802,9 @@ def _build_run_payload(
         and early_stop.cooldown_trigger_reason not in (None, "max_epochs_horizon")
         and int(epoch_done) < int(run_spec.max_epochs)
     )
+    vm_spec = get_vocab_mode_spec(run_spec.vocab_mode)
+    n_tot = int(param_counts["n_params_total"])
+    n_emb = int(param_counts["n_params_embedding"])
     return {
         "schema": RUN_RECEIPT_SCHEMA,
         "status": "complete" if is_complete else "in_progress",
@@ -781,14 +812,20 @@ def _build_run_payload(
         "run_spec_hash": run_spec.spec_hash(),
         "track": run_spec.track,
         "paradigm": run_spec.paradigm,
+        "paradigm_display": paradigm_display_name(run_spec.paradigm),
         "scale_id": run_spec.scale_id,
         "multiplier": float(run_spec.multiplier),
         "n_sequences": int(run_spec.n_sequences),
         "seq_len": int(seq_len),
-        "vocab_size": VOCAB_AA,
+        "vocab_size": int(vocab_size),
+        "vocab_mode": vm_spec.mode_id,
+        "kmer_size": int(vm_spec.kmer_size),
+        "aa_equivalent_seq_len": int(seq_len) * int(vm_spec.kmer_size),
+        "optimizer": run_spec.optimizer,
         "n_params_non_embedding": int(param_counts["n_params_non_embedding"]),
-        "n_params_embedding": int(param_counts["n_params_embedding"]),
-        "n_params_total": int(param_counts["n_params_total"]),
+        "n_params_embedding": n_emb,
+        "n_params_total": n_tot,
+        "embedding_param_fraction": float(n_emb) / float(max(1, n_tot)),
         "weight_decay": float(run_spec.weight_decay),
         "precision": run_spec.precision,
         "lr_schedule": run_spec.lr_schedule,
@@ -856,7 +893,7 @@ def execute_run(
     resume_from: Path | str | None = None,
     skip_completed: bool | None = None,
     run_init_eval: bool = True,
-    seq_len: int = SEQ_LEN,
+    seq_len: int | None = None,
     batch_size_override: int | None = None,
     eval_max_sequences_mlm: int = DEFAULT_EVAL_MAX_SEQUENCES_MLM,
     loo_max_sequences_mlm: int = DEFAULT_LOO_MAX_SEQUENCES_MLM,
@@ -867,9 +904,16 @@ def execute_run(
     cross_eval_epochs: Sequence[int] | None = None,
     delete_transient_ckpt_on_complete: bool | None = None,
     handle_signals: bool = True,
+    gradient_checkpointing: bool | None = None,
 ) -> dict[str, Any]:
-    """Execute one AR, MLM-15%, or OA-Uniform parametric memory-capacity run end-to-end."""
+    """Execute one AR, MLM-15/30/50%, MDM, or MDM-Cosine parametric memory-capacity run end-to-end."""
     ctx = setup_distributed(device=device)
+    vm_spec = get_vocab_mode_spec(run_spec.vocab_mode)
+    eff_seq_len = int(seq_len) if seq_len is not None else int(vm_spec.default_seq_len)
+    eff_vocab_size = int(vm_spec.vocab_size)
+    eff_input_vocab_size = int(vm_spec.input_vocab_size)
+    eff_special_token_id = int(vm_spec.special_token_id)
+    data_torch_dtype = torch.uint8 if eff_vocab_size <= 255 else torch.int32
     out_root = Path(out_dir)
     runs_dir = out_root / "runs"
     ckpt_root = Path(checkpoint_dir) if checkpoint_dir is not None else (out_root / "checkpoints")
@@ -924,7 +968,17 @@ def execute_run(
     min_lr = float(run_spec.min_lr_ratio) * peak_lr
     warmup_steps = compute_warmup_steps(total_steps)
     eval_batch_size = min(max(micro_batch_size, min(scale_spec.max_batch_size, 512)), eval_cap)
-    fixed_mask_k = mlm_fixed_mask_count(seq_len=seq_len, mask_rate=run_spec.mask_rate)
+    fixed_mask_k = mlm_fixed_mask_count(seq_len=eff_seq_len, mask_rate=run_spec.mask_rate)
+    req_grad_ckpt = (
+        gradient_checkpointing
+        if gradient_checkpointing is not None
+        else run_spec.gradient_checkpointing
+    )
+    use_grad_ckpt = should_enable_gradient_checkpointing(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        requested=req_grad_ckpt,
+    )
 
     es_cfg = (
         adaptive_stop_config
@@ -973,34 +1027,34 @@ def execute_run(
             signals_installed = False
 
     try:
-        # Stage deterministic uint8 dataset onto GPU memory with zero CPU-GPU DataLoader overhead
+        # Stage deterministic dataset onto GPU memory with zero CPU-GPU DataLoader overhead
         if ctx.is_distributed and ctx.device.type == "cuda":
             if ctx.rank == 0:
-                data_np = generate_iid_aa_dataset(
+                data_np = generate_vocab_mode_dataset(
                     run_spec.n_sequences,
-                    seq_len=seq_len,
-                    vocab_size=VOCAB_AA,
+                    vocab_mode=run_spec.vocab_mode,
+                    seq_len=eff_seq_len,
                     data_seed=run_spec.data_seed,
                     data_cache_dir=data_cache_dir,
                 )
-                data_gpu = torch.from_numpy(data_np).to(device=ctx.device, dtype=torch.uint8)
+                data_gpu = torch.from_numpy(data_np).to(device=ctx.device, dtype=data_torch_dtype)
                 del data_np
             else:
                 data_gpu = torch.empty(
-                    (run_spec.n_sequences, seq_len),
-                    dtype=torch.uint8,
+                    (run_spec.n_sequences, eff_seq_len),
+                    dtype=data_torch_dtype,
                     device=ctx.device,
                 )
             dist.broadcast(data_gpu, src=0)
         else:
-            data_np = generate_iid_aa_dataset(
+            data_np = generate_vocab_mode_dataset(
                 run_spec.n_sequences,
-                seq_len=seq_len,
-                vocab_size=VOCAB_AA,
+                vocab_mode=run_spec.vocab_mode,
+                seq_len=eff_seq_len,
                 data_seed=run_spec.data_seed,
                 data_cache_dir=data_cache_dir,
             )
-            data_gpu = torch.from_numpy(data_np).to(device=ctx.device, dtype=torch.uint8)
+            data_gpu = torch.from_numpy(data_np).to(device=ctx.device, dtype=data_torch_dtype)
             del data_np
 
         torch.manual_seed(run_spec.seed)
@@ -1010,7 +1064,10 @@ def execute_run(
         raw_model = UniformVocabTransformer(
             scale_spec,
             run_spec.paradigm,
-            seq_len=seq_len,
+            seq_len=eff_seq_len,
+            input_vocab_size=eff_input_vocab_size,
+            output_vocab_size=eff_vocab_size,
+            gradient_checkpointing=use_grad_ckpt,
         ).to(ctx.device)
         param_counts = count_model_parameters(raw_model, scale_spec)
         optimizer = build_optimizer(
@@ -1018,6 +1075,9 @@ def execute_run(
             peak_lr=peak_lr,
             weight_decay=run_spec.weight_decay,
             device=ctx.device,
+            optimizer_name=run_spec.optimizer,
+            muon_lr=run_spec.muon_lr,
+            muon_lr_scale=run_spec.muon_lr_scale,
         )
 
         resume_epoch = 1
@@ -1112,6 +1172,8 @@ def execute_run(
                 mask_rate=run_spec.mask_rate,
                 mask_count=fixed_mask_k,
                 mlm_fixed_num_draws=mlm_fixed_num_draws,
+                vocab_size=eff_vocab_size,
+                special_token_id=eff_special_token_id,
             )
             init_metrics["epoch"] = 0
             init_metrics["step"] = 0
@@ -1124,11 +1186,11 @@ def execute_run(
         pad_needed = padded_epoch_items - run_spec.n_sequences
         bos_col = torch.full(
             (micro_batch_size, 1),
-            SPECIAL_TOKEN_ID,
+            eff_special_token_id,
             dtype=torch.long,
             device=ctx.device,
         )
-        pos_arange = torch.arange(seq_len, device=ctx.device, dtype=torch.int64)
+        pos_arange = torch.arange(eff_seq_len, device=ctx.device, dtype=torch.int64)
         autocast_ctx: Any = (
             torch.amp.autocast("cuda", dtype=torch.bfloat16)
             if use_autocast
@@ -1136,13 +1198,13 @@ def execute_run(
         )
 
         h_null_bits = null_ordered_entropy_bits(
-            run_spec.n_sequences, seq_len=seq_len, vocab_size=VOCAB_AA
+            run_spec.n_sequences, seq_len=eff_seq_len, vocab_size=eff_vocab_size
         )
         h_data_bits = dataset_entropy_bits(
-            run_spec.n_sequences, seq_len=seq_len, vocab_size=VOCAB_AA
+            run_spec.n_sequences, seq_len=eff_seq_len, vocab_size=eff_vocab_size
         )
         h_gibbs_bits = gibbs_memorizable_bits(
-            run_spec.n_sequences, seq_len=seq_len, vocab_size=VOCAB_AA
+            run_spec.n_sequences, seq_len=eff_seq_len, vocab_size=eff_vocab_size
         )
         target_grid_bits = (
             float(run_spec.multiplier)
@@ -1164,6 +1226,12 @@ def execute_run(
             "min_lr": float(min_lr),
             "min_lr_ratio": float(run_spec.min_lr_ratio),
             "lr_schedule": run_spec.lr_schedule,
+            "optimizer": run_spec.optimizer,
+            "muon_lr": float(run_spec.muon_lr) if run_spec.optimizer == "muon" else None,
+            "muon_lr_scale": run_spec.muon_lr_scale if run_spec.optimizer == "muon" else None,
+            "vocab_mode": vm_spec.mode_id,
+            "vocab_size": int(eff_vocab_size),
+            "gradient_checkpointing": bool(use_grad_ckpt),
             "weight_decay": float(run_spec.weight_decay),
             "precision": run_spec.precision,
             "use_compile": bool(use_compile),
@@ -1323,27 +1391,33 @@ def execute_run(
                         warmup_steps=warmup_steps,
                         min_lr_ratio=run_spec.min_lr_ratio,
                     )
-                for group in optimizer.param_groups:
-                    group["lr"] = last_lr
+                set_optimizer_lr(optimizer, last_lr, peak_lr=peak_lr)
 
                 step_indices = perm_steps[step_in_epoch, ctx.rank :: ctx.world_size]
                 batch_u8 = data_gpu.index_select(0, step_indices)
 
                 optimizer.zero_grad(set_to_none=True)
 
-                if run_spec.paradigm == "mlm_15":
+                if is_fixed_mask_paradigm(run_spec.paradigm):
                     masked_input, targets, mask, n_mask = sample_mlm_fixed_rate_batch(
                         batch_u8,
                         mask_count=fixed_mask_k,
                         generator=mask_gen,
-                        special_token_id=SPECIAL_TOKEN_ID,
+                        special_token_id=eff_special_token_id,
+                    )
+                elif run_spec.paradigm == "mdm_cosine":
+                    masked_input, targets, mask, n_mask = sample_mdm_cosine_batch(
+                        batch_u8,
+                        generator=mask_gen,
+                        pos_arange=pos_arange,
+                        special_token_id=eff_special_token_id,
                     )
                 elif run_spec.paradigm != "ar":
                     masked_input, targets, mask, n_mask = sample_mlm_stratified_batch(
                         batch_u8,
                         generator=mask_gen,
                         pos_arange=pos_arange,
-                        special_token_id=SPECIAL_TOKEN_ID,
+                        special_token_id=eff_special_token_id,
                     )
 
                 step_loss = torch.zeros((), dtype=torch.float64, device=ctx.device)
@@ -1364,7 +1438,7 @@ def execute_run(
                             with autocast_ctx:
                                 logits = train_model(c_input)
                             chunk_loss = compute_ar_batch_loss(
-                                logits, c_targets, vocab_size=VOCAB_AA
+                                logits, c_targets, vocab_size=eff_vocab_size
                             )
                         else:
                             with autocast_ctx:
@@ -1463,6 +1537,8 @@ def execute_run(
                     mask_rate=run_spec.mask_rate,
                     mask_count=fixed_mask_k,
                     mlm_fixed_num_draws=mlm_fixed_num_draws,
+                    vocab_size=eff_vocab_size,
+                    special_token_id=eff_special_token_id,
                 )
 
                 # Two-phase adaptive early-stopping update (rank 0 authoritative in DDP, broadcast to all)
@@ -1475,7 +1551,7 @@ def execute_run(
                             global_step=global_step,
                             steps_per_epoch=steps_per_epoch,
                             max_epochs=run_spec.max_epochs,
-                            vocab_size=VOCAB_AA,
+                            vocab_size=eff_vocab_size,
                         )
                     if ctx.is_distributed:
                         sync_state: list[Any] = [early_stop.to_dict() if ctx.rank == 0 else None]
@@ -1494,7 +1570,7 @@ def execute_run(
                 is_done = epoch >= target_stop_epoch
                 run_cross_diag = is_done or (epoch in cross_eval_epoch_set)
 
-                if run_cross_diag and run_spec.paradigm in ("mlm_15", "oa_uniform"):
+                if run_cross_diag and run_spec.paradigm != "ar":
                     mlm_loo_diag = evaluate_mlm_loo_diagnostic(
                         eval_model,
                         data_gpu,
@@ -1504,10 +1580,12 @@ def execute_run(
                         max_sequences_loo=loo_max_sequences_mlm,
                         probes_per_sequence=loo_probes_per_seq,
                         loo_seed=run_spec.data_seed + 31,
+                        vocab_size=eff_vocab_size,
+                        special_token_id=eff_special_token_id,
                     )
                     eval_rec.update(mlm_loo_diag)
 
-                    if run_spec.paradigm == "mlm_15":
+                    if is_fixed_mask_paradigm(run_spec.paradigm):
                         mlm_oa_16pt_diag = evaluate_mlm_joint_bits_16pt(
                             eval_model,
                             data_gpu,
@@ -1517,9 +1595,11 @@ def execute_run(
                             precision=run_spec.precision,
                             eval_max_sequences_mlm=eval_max_sequences_mlm,
                             eval_seed=run_spec.data_seed + 17,
+                            vocab_size=eff_vocab_size,
+                            special_token_id=eff_special_token_id,
                         )
                         eval_rec["mlm_oa_16pt_diagnostic"] = mlm_oa_16pt_diag
-                    elif run_spec.paradigm == "oa_uniform":
+                    elif run_spec.paradigm in ("oa_uniform", "mdm_cosine"):
                         mlm_fixed_15pct_diag = evaluate_mlm_fixed_rate_bits(
                             eval_model,
                             data_gpu,
@@ -1532,6 +1612,8 @@ def execute_run(
                             precision=run_spec.precision,
                             eval_max_sequences_mlm=eval_max_sequences_mlm,
                             eval_seed=run_spec.data_seed + 47,
+                            vocab_size=eff_vocab_size,
+                            special_token_id=eff_special_token_id,
                         )
                         eval_rec["mlm_fixed_15pct_diagnostic"] = mlm_fixed_15pct_diag
 
@@ -1539,7 +1621,7 @@ def execute_run(
                 eval_rec["epoch"] = int(epoch)
                 eval_rec["step"] = int(global_step)
                 eval_rec["global_step"] = int(global_step)
-                eval_rec["tokens_seen"] = int(epoch) * int(run_spec.n_sequences) * int(seq_len)
+                eval_rec["tokens_seen"] = int(epoch) * int(run_spec.n_sequences) * int(eff_seq_len)
                 eval_rec["lr"] = float(last_lr)
                 eval_rec["elapsed_sec"] = float(elapsed_wall)
                 eval_rec["train_loss_nats"] = float(mean_train_loss_nats)
@@ -1553,7 +1635,8 @@ def execute_run(
                         run_spec=run_spec,
                         scale_dict=scale_dict,
                         param_counts=param_counts,
-                        seq_len=seq_len,
+                        seq_len=eff_seq_len,
+                        vocab_size=eff_vocab_size,
                         h_null_bits=h_null_bits,
                         h_data_bits=h_data_bits,
                         h_gibbs_bits=h_gibbs_bits,
@@ -1637,7 +1720,8 @@ def execute_run(
             run_spec=run_spec,
             scale_dict=scale_dict,
             param_counts=param_counts,
-            seq_len=seq_len,
+            seq_len=eff_seq_len,
+            vocab_size=eff_vocab_size,
             h_null_bits=h_null_bits,
             h_data_bits=h_data_bits,
             h_gibbs_bits=h_gibbs_bits,
