@@ -50,6 +50,7 @@ from src.capability.memory_capacity import (
     null_ordered_entropy_bits,
     sample_mlm_fixed_rate_batch,
     train_memory_capacity_run,
+    vram_safe_micro_batch_cap,
 )
 from src.capability.memory_capacity.analysis import (
     estimate_ecrit_nonparametric,
@@ -1014,3 +1015,111 @@ def test_stage1_wsd_calibration_manifest_grid_and_lpt_priority(tmp_path: Path) -
     assert "Wrote 70 Stage-1 WSD runs" in proc.stdout
     loaded = load_run_manifest(out_manifest)
     assert [r.run_id for r in loaded] == [r.run_id for r in runs]
+
+
+def test_spot_worker_single_gpu_skips_ddp_preferred_unless_allowed(tmp_path: Path) -> None:
+    single_spec = RunSpec(
+        run_id="spot_single_only_0p5m",
+        track="primary",
+        paradigm="ar",
+        scale_id="0.5m",
+        multiplier=0.25,
+        n_sequences=8,
+        max_epochs=1,
+        eval_epochs=(1,),
+        weight_decay=0.0,
+        precision="fp32_strict",
+        seed=20261128,
+        data_seed=20261127,
+        save_checkpoint=False,
+        ddp_preferred=False,
+        lr_schedule="wsd",
+    )
+    ddp_spec = RunSpec(
+        **{
+            **single_spec.to_dict(),
+            "run_id": "spot_ddp_pref_0p5m",
+            "ddp_preferred": True,
+        }
+    )
+    manifest_path = tmp_path / "manifest_ddp_guard.json"
+    manifest_path.write_text(
+        json.dumps({"runs": [ddp_spec.to_dict(), single_spec.to_dict()]}, indent=2),
+        encoding="utf-8",
+    )
+
+    for mode in ("single_gpu", "auto"):
+        out_dir = tmp_path / f"out_{mode}_guard"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SPOT_WORKER_SCRIPT),
+                "--manifest",
+                str(manifest_path),
+                "--out-dir",
+                str(out_dir),
+                "--gpus",
+                "cpu",
+                "--mode",
+                mode,
+                "--no-compile",
+                "--fail-fast",
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        assert f"[COMPLETE single_gpu] run={single_spec.run_id}" in proc.stdout
+        assert ddp_spec.run_id not in proc.stdout
+        assert (out_dir / "runs" / f"{single_spec.run_id}.json").is_file()
+        assert not (out_dir / "runs" / f"{ddp_spec.run_id}.json").exists()
+
+    out_allowed = tmp_path / "out_allowed"
+    proc_allowed = subprocess.run(
+        [
+            sys.executable,
+            str(SPOT_WORKER_SCRIPT),
+            "--manifest",
+            str(manifest_path),
+            "--out-dir",
+            str(out_allowed),
+            "--gpus",
+            "cpu",
+            "--mode",
+            "single_gpu",
+            "--allow-ddp-on-single-gpu",
+            "--no-compile",
+            "--fail-fast",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert f"[COMPLETE single_gpu] run={ddp_spec.run_id}" in proc_allowed.stdout
+    assert f"[COMPLETE single_gpu] run={single_spec.run_id}" in proc_allowed.stdout
+    assert (out_allowed / "runs" / f"{ddp_spec.run_id}.json").is_file()
+    assert (out_allowed / "runs" / f"{single_spec.run_id}.json").is_file()
+
+
+def test_vram_safe_micro_batch_cap_preserves_small_scales_and_caps_150m() -> None:
+    gib = 1024 ** 3
+    h100_bytes = int(79.18 * gib)
+    l20_bytes = int(45.0 * gib)
+    h200_bytes = int(143.0 * gib)
+    gpu24_bytes = int(24.0 * gib)
+
+    for scale_id in ("0.5m", "2m", "8m", "35m"):
+        max_bs = SCALE_SPECS[scale_id].max_batch_size
+        assert vram_safe_micro_batch_cap(scale_id, h100_bytes, max_bs) == max_bs
+        assert vram_safe_micro_batch_cap(scale_id, l20_bytes, max_bs) == max_bs
+
+    assert vram_safe_micro_batch_cap("150m", h100_bytes, 512) == 128
+    assert vram_safe_micro_batch_cap("150m", l20_bytes, 512) == 128
+    assert vram_safe_micro_batch_cap("150m", h200_bytes, 512) == 512
+    assert vram_safe_micro_batch_cap("150m", gpu24_bytes, 512) == 64
+    assert vram_safe_micro_batch_cap("35m", gpu24_bytes, 512) == 256
+    assert vram_safe_micro_batch_cap("150m", None, 512) == 512

@@ -355,6 +355,29 @@ def choose_global_batch_size(
     return world_size * micro_batch
 
 
+HIGH_VRAM_THRESHOLD_BYTES: int = 110 * (1024 ** 3)
+LOW_VRAM_THRESHOLD_BYTES: int = 32 * (1024 ** 3)
+
+
+def vram_safe_micro_batch_cap(
+    scale_id: str,
+    total_vram_bytes: int | None,
+    default_cap: int,
+) -> int:
+    """Return a VRAM-safe per-GPU micro-step batch cap without altering 0.5m-35m on 80 GB GPUs."""
+    cap = max(1, int(default_cap))
+    if total_vram_bytes is None or total_vram_bytes <= 0:
+        return cap
+    if scale_id == "150m":
+        if total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
+            return min(cap, 64)
+        if total_vram_bytes < HIGH_VRAM_THRESHOLD_BYTES:
+            return min(cap, 128)
+    elif scale_id == "35m" and total_vram_bytes < LOW_VRAM_THRESHOLD_BYTES:
+        return min(cap, 256)
+    return cap
+
+
 @dataclass(frozen=True)
 class RunSpec:
     """Complete immutable specification of one parametric memory-capacity training run."""

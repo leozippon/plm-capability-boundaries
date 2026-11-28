@@ -62,6 +62,7 @@ from .spec import (
     null_ordered_entropy_bits,
     slugify_token,
     solve_sequence_count_for_entropy,
+    vram_safe_micro_batch_cap,
 )
 
 _LAZY_SUBMODULES: dict[str, str] = {
@@ -221,4 +222,5 @@ __all__ = [
     "train_memory_capacity_run",
     "verify_and_deduplicate_sequences",
     "verify_checkpoint_compatibility",
+    "vram_safe_micro_batch_cap",
 ]

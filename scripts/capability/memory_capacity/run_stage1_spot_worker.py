@@ -198,7 +198,7 @@ def _run_spot_pool(args: argparse.Namespace) -> int:
 
     single_predicate = (
         (lambda s: s.run_id not in failed_run_ids)
-        if (args.allow_ddp_on_single_gpu or not multi_gpu)
+        if args.allow_ddp_on_single_gpu
         else (lambda s: (not s.ddp_preferred) and (s.run_id not in failed_run_ids))
     )
     ddp_predicate = (

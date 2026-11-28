@@ -51,6 +51,7 @@ from .spec import (
     mlm_fixed_mask_count,
     null_ordered_entropy_bits,
     slugify_token,
+    vram_safe_micro_batch_cap,
 )
 
 RUN_RECEIPT_SCHEMA = "plm_parametric_capacity_run_v1"
@@ -893,12 +894,29 @@ def execute_run(
         )
 
     micro_batch_size = global_batch_size // ctx.world_size
+    total_vram_bytes = (
+        int(torch.cuda.get_device_properties(ctx.device).total_memory)
+        if ctx.device.type == "cuda"
+        else None
+    )
+    micro_step_cap = vram_safe_micro_batch_cap(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        default_cap=micro_batch_size,
+    )
+    eval_cap = vram_safe_micro_batch_cap(
+        scale_spec.scale_id,
+        total_vram_bytes,
+        default_cap=min(scale_spec.max_batch_size, 512),
+    )
+    micro_step_batch_size = min(micro_batch_size, micro_step_cap)
+    grad_accum_steps = (micro_batch_size + micro_step_cap - 1) // micro_step_cap
     steps_per_epoch = math.ceil(float(run_spec.n_sequences) / float(global_batch_size))
     total_steps = steps_per_epoch * run_spec.max_epochs
     peak_lr = compute_peak_lr(scale_spec.base_lr, global_batch_size)
     min_lr = float(run_spec.min_lr_ratio) * peak_lr
     warmup_steps = compute_warmup_steps(total_steps)
-    eval_batch_size = max(micro_batch_size, min(scale_spec.max_batch_size, 512))
+    eval_batch_size = min(max(micro_batch_size, min(scale_spec.max_batch_size, 512)), eval_cap)
     fixed_mask_k = mlm_fixed_mask_count(seq_len=seq_len, mask_rate=run_spec.mask_rate)
 
     es_cfg = (
@@ -1129,6 +1147,9 @@ def execute_run(
             "world_size": int(ctx.world_size),
             "global_batch_size": int(global_batch_size),
             "micro_batch_size": int(micro_batch_size),
+            "micro_step_batch_size": int(micro_step_batch_size),
+            "grad_accum_steps": int(grad_accum_steps),
+            "eval_batch_size": int(eval_batch_size),
             "steps_per_epoch": int(steps_per_epoch),
             "total_steps": int(total_steps),
             "warmup_steps": int(warmup_steps),
@@ -1303,43 +1324,66 @@ def execute_run(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                if run_spec.paradigm == "ar":
-                    targets = batch_u8.to(dtype=torch.long)
-                    input_ids = torch.cat((bos_col, targets[:, :-1]), dim=1)
-                    with autocast_ctx:
-                        logits = train_model(input_ids)
-                    loss = compute_ar_batch_loss(logits, targets, vocab_size=VOCAB_AA)
-                elif run_spec.paradigm == "mlm_15":
+                if run_spec.paradigm == "mlm_15":
                     masked_input, targets, mask, n_mask = sample_mlm_fixed_rate_batch(
                         batch_u8,
                         mask_count=fixed_mask_k,
                         generator=mask_gen,
                         special_token_id=SPECIAL_TOKEN_ID,
                     )
-                    with autocast_ctx:
-                        logits = train_model(masked_input)
-                    loss = compute_mlm_batch_loss(logits, targets, mask, n_mask)
-                else:
+                elif run_spec.paradigm != "ar":
                     masked_input, targets, mask, n_mask = sample_mlm_stratified_batch(
                         batch_u8,
                         generator=mask_gen,
                         pos_arange=pos_arange,
                         special_token_id=SPECIAL_TOKEN_ID,
                     )
-                    with autocast_ctx:
-                        logits = train_model(masked_input)
-                    loss = compute_mlm_batch_loss(logits, targets, mask, n_mask)
 
-                if not bool(torch.isfinite(loss).item()):
-                    raise FloatingPointError(
-                        f"Non-finite training loss at epoch={epoch} step={global_step}: {loss.item()}"
+                step_loss = torch.zeros((), dtype=torch.float64, device=ctx.device)
+                for chunk_idx in range(grad_accum_steps):
+                    c_start = chunk_idx * micro_step_cap
+                    c_end = min(micro_batch_size, c_start + micro_step_cap)
+                    c_len = c_end - c_start
+                    c_weight = float(c_len) / float(micro_batch_size)
+                    sync_ctx: Any = (
+                        train_model.no_sync()
+                        if (ctx.is_distributed and chunk_idx < grad_accum_steps - 1)
+                        else contextlib.nullcontext()
                     )
+                    with sync_ctx:
+                        if run_spec.paradigm == "ar":
+                            c_targets = batch_u8[c_start:c_end].to(dtype=torch.long)
+                            c_input = torch.cat((bos_col[:c_len], c_targets[:, :-1]), dim=1)
+                            with autocast_ctx:
+                                logits = train_model(c_input)
+                            chunk_loss = compute_ar_batch_loss(
+                                logits, c_targets, vocab_size=VOCAB_AA
+                            )
+                        else:
+                            with autocast_ctx:
+                                logits = train_model(masked_input[c_start:c_end])
+                            chunk_loss = compute_mlm_batch_loss(
+                                logits,
+                                targets[c_start:c_end],
+                                mask[c_start:c_end],
+                                n_mask[c_start:c_end],
+                            )
 
-                loss.backward()
+                        if not bool(torch.isfinite(chunk_loss).item()):
+                            raise FloatingPointError(
+                                f"Non-finite training loss at epoch={epoch} step={global_step}: {chunk_loss.item()}"
+                            )
+
+                        scaled_loss = chunk_loss * c_weight if grad_accum_steps > 1 else chunk_loss
+                        scaled_loss.backward()
+
+                    step_loss += chunk_loss.detach().to(torch.float64) * c_weight
+                    del logits, chunk_loss, scaled_loss
+
                 torch.nn.utils.clip_grad_norm_(raw_model.parameters(), max_norm=1.0)
                 optimizer.step()
 
-                epoch_loss_sum += loss.detach().to(torch.float64)
+                epoch_loss_sum += step_loss
 
                 # Spot-safe SIGTERM/SIGINT preemption & periodic time-based checkpoint check.
                 # Under DDP, sync cadence MUST be strictly rank-invariant (never conditioned on

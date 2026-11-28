@@ -21,6 +21,7 @@ from .spec import (
     gibbs_memorizable_bits,
     mlm_fixed_mask_count,
     null_ordered_entropy_bits,
+    vram_safe_micro_batch_cap,
 )
 
 DEFAULT_EVAL_MAX_SEQUENCES_MLM: int = 65_536
@@ -145,6 +146,25 @@ def _eval_autocast_context(device: torch.device, precision: str) -> Any:
     return contextlib.nullcontext()
 
 
+def _resolve_eval_batch_size(
+    model: nn.Module,
+    requested_batch_size: int,
+    device: torch.device,
+) -> int:
+    req = max(1, int(requested_batch_size))
+    if device.type != "cuda":
+        return req
+    unwrapped = model
+    while hasattr(unwrapped, "module") or hasattr(unwrapped, "_orig_mod"):
+        unwrapped = getattr(unwrapped, "module", getattr(unwrapped, "_orig_mod", unwrapped))
+    spec = getattr(unwrapped, "spec", None)
+    scale_id = getattr(spec, "scale_id", None)
+    if not isinstance(scale_id, str):
+        return req
+    total_vram_bytes = int(torch.cuda.get_device_properties(device).total_memory)
+    return vram_safe_micro_batch_cap(scale_id, total_vram_bytes, req)
+
+
 def summarize_memorization_metrics(
     *,
     paradigm: str,
@@ -240,7 +260,8 @@ def evaluate_ar_joint_bits(
 
         local_indices = torch.arange(rank, n_total, world_size, device=device, dtype=torch.int64)
         n_local = int(local_indices.numel())
-        eff_batch = max(1, min(int(batch_size), max(1, (n_total + world_size - 1) // world_size)))
+        safe_batch = _resolve_eval_batch_size(model, batch_size, device)
+        eff_batch = max(1, min(safe_batch, max(1, (n_total + world_size - 1) // world_size)))
 
         sum_seq_bits = torch.zeros((), dtype=torch.float64, device=device)
         sum_sq_seq_bits = torch.zeros((), dtype=torch.float64, device=device)
@@ -361,9 +382,10 @@ def evaluate_mlm_joint_bits_16pt(
             rank, n_eval_target, world_size, device=device, dtype=torch.int64
         )
         n_local = int(local_indices.numel())
+        safe_batch = _resolve_eval_batch_size(model, batch_size, device)
         eff_batch = max(
             1,
-            min(int(batch_size), max(1, (n_eval_target + world_size - 1) // world_size)),
+            min(safe_batch, max(1, (n_eval_target + world_size - 1) // world_size)),
         )
 
         sum_seq_bits = torch.zeros((), dtype=torch.float64, device=device)
@@ -576,9 +598,10 @@ def evaluate_mlm_fixed_rate_bits(
             rank, n_eval_target, world_size, device=device, dtype=torch.int64
         )
         n_local = int(local_indices.numel())
+        safe_batch = _resolve_eval_batch_size(model, batch_size, device)
         eff_batch = max(
             1,
-            min(int(batch_size), max(1, (n_eval_target + world_size - 1) // world_size)),
+            min(safe_batch, max(1, (n_eval_target + world_size - 1) // world_size)),
         )
 
         sum_h_bar = torch.zeros((), dtype=torch.float64, device=device)
@@ -787,7 +810,8 @@ def evaluate_mlm_loo_diagnostic(
 
         local_indices = torch.arange(rank, n_loo, world_size, device=device, dtype=torch.int64)
         n_local = int(local_indices.numel())
-        eff_batch = max(1, min(int(batch_size), max(1, (n_loo + world_size - 1) // world_size)))
+        safe_batch = _resolve_eval_batch_size(model, batch_size, device)
+        eff_batch = max(1, min(safe_batch, max(1, (n_loo + world_size - 1) // world_size)))
 
         sum_tok_bits = torch.zeros((), dtype=torch.float64, device=device)
         sum_correct = torch.zeros((), dtype=torch.float64, device=device)
