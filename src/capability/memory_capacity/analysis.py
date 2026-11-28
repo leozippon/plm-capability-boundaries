@@ -333,11 +333,17 @@ def fit_delayed_hill_exposure_curve(
     c_eff_values: Sequence[float] | np.ndarray,
     *,
     min_signal_bpp: float = 0.02,
+    min_alpha: float = 0.6,
+    max_c_inf_ratio: float = 1.35,
+    max_c_inf_physical: float = 3.8,
 ) -> dict[str, Any] | None:
     """Fit delayed-Hill write dynamics:
     c_eff(e) = c_inf * ((e - e_crit)^alpha / ((e - e_crit)^alpha + tau^alpha)) for e > e_crit,
     else 0, where e_50 = e_crit + tau and e_90 = e_crit + tau * 9^(1/alpha).
     Returns None when the trajectory never reaches ``min_signal_bpp`` (pre-takeoff noise).
+    Bounds ``alpha >= min_alpha`` and ``c_inf <= min(max_c_inf_physical, y_max * max_c_inf_ratio)``
+    (unless ``y_max`` already exceeds ``max_c_inf_physical``) to prevent unphysical runaway
+    extrapolation from terminal WSD cooldown jumps.
     """
     e_arr = np.asarray(exposures, dtype=np.float64)
     y_arr = np.asarray(c_eff_values, dtype=np.float64)
@@ -361,10 +367,11 @@ def fit_delayed_hill_exposure_curve(
         return out
 
     e_max = float(np.max(e_arr))
-    c_upper = max(20.0, y_max * 5.0)
+    phys_cap = max(float(max_c_inf_physical), y_max * 1.05)
+    c_upper = min(phys_cap, max(y_max * float(max_c_inf_ratio), y_max + 0.05))
     e_crit_upper = max(1e-6, e_max * 0.95)
     tau_upper = max(5000.0, e_max * 10.0)
-    c_init = float(np.clip(y_max * 1.05, 1e-5, c_upper * 0.8))
+    c_init = float(np.clip(y_max * 1.05, 1e-5, c_upper * 0.95))
 
     emp_ecrit = estimate_ecrit_nonparametric(e_arr, y_arr, 0.05 * y_max)
     emp_e50 = estimate_ecrit_nonparametric(e_arr, y_arr, 0.50 * y_max)
@@ -379,10 +386,11 @@ def fit_delayed_hill_exposure_curve(
         base_ec = emp_ecrit if emp_ecrit is not None else 0.0
         tau_candidates.append(max(1.0, emp_e50 - base_ec))
 
+    alpha_lb = float(min_alpha)
     best_res = None
     for ec_init in ecrit_candidates:
         for tau_init in tau_candidates:
-            for alpha_init in (0.8, 1.5, 3.0):
+            for alpha_init in (max(0.8, alpha_lb + 0.05), 1.5, 3.0):
                 x0 = np.array(
                     [
                         c_init,
@@ -396,7 +404,7 @@ def fit_delayed_hill_exposure_curve(
                     fun=lambda th: _pred(float(th[0]), float(th[1]), float(th[2]), float(th[3])) - y_arr,
                     x0=x0,
                     bounds=(
-                        np.array([1e-6, 0.0, 1e-3, 0.2], dtype=np.float64),
+                        np.array([1e-6, 0.0, 1e-3, alpha_lb], dtype=np.float64),
                         np.array([c_upper, e_crit_upper, tau_upper, 12.0], dtype=np.float64),
                     ),
                     method="trf",
@@ -1592,10 +1600,24 @@ def _build_c_max_calibration_and_exposure_laws(
                 entry_s["pseudo_bits_per_non_emb_param"] = max_cell.get("pseudo_bits_per_non_emb_param")
             max_obs_by_scale[s] = entry_s
 
+        pooled_delayed_const_lr = (
+            fit_delayed_hill_exposure_curve(anchor_epochs_list[:-1], anchor_cemp_list[:-1])
+            if (pooled_has_takeoff and len(anchor_epochs_list) >= 5)
+            else pooled_delayed_emp
+        )
+        c_max_post_cooldown_bpp = (
+            max((v["c_eff_empirical_bpp"] for v in max_obs_by_scale.values()), default=None)
+        )
         asymptotic_summary: dict[str, Any] = {
             "metric_semantics": metric_semantics_map.get(paradigm, paradigm),
             "anchor_epoch": int(anchor_epoch),
             "max_observed_epoch": max((v["max_observed_epoch"] for v in max_obs_by_scale.values()), default=None),
+            "c_max_post_cooldown_bpp": c_max_post_cooldown_bpp,
+            "c_inf_constant_lr_bpp": (
+                float(pooled_delayed_const_lr["c_inf_bits_per_param"])
+                if pooled_delayed_const_lr is not None
+                else None
+            ),
             "delayed_hill_c_inf_pooled_bpp": (
                 float(pooled_delayed_emp["c_inf_bits_per_param"])
                 if pooled_delayed_emp is not None
