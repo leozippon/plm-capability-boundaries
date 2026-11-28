@@ -89,25 +89,47 @@ def render_markdown_report(summary: dict[str, Any], out_path: Path, digest: str)
     lines.extend(
         [
             "",
-            "## 2. Exposure-Discount Law `c_eff(e)` (Hill Fit)",
+            "## 2. Exposure-Discount Law `c_eff(e)` (Delayed-Hill & Nonparametric `e_crit`)",
             "",
-            "| Paradigm | `c_inf` (bits/param) | `e_50` (epochs) | `e_90` (epochs) | Hill `alpha` | `R^2` |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Paradigm | `c_inf` (bits/param) | `e_crit` (delayed-Hill) | `e_crit` (`dbpt=0.05`) | `e_crit` (`5% c_inf`) | `e_50` (epochs) | `e_90` (epochs) | Hill `alpha` | `R^2` |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     exp_curves = summary.get("exposure_discount_curves", {})
     for paradigm in sorted(exp_curves.keys()):
-        hill = exp_curves[paradigm].get("pooled_hill_fit_empirical") or exp_curves[paradigm].get(
-            "pooled_hill_fit_at_2x"
+        pexp = exp_curves[paradigm]
+        dhill = pexp.get("pooled_delayed_hill_fit_empirical") or pexp.get(
+            "pooled_delayed_hill_fit_at_2x"
         )
-        if hill:
+        hill = pexp.get("pooled_hill_fit_empirical") or pexp.get("pooled_hill_fit_at_2x")
+        ec_np = pexp.get("pooled_e_crit_nonparametric") or {}
+        fit = dhill or hill
+        ec_dh = (
+            f"{float(dhill['e_crit_epochs']):.2f}"
+            if dhill and dhill.get("e_crit_epochs") is not None
+            else "n/a"
+        )
+        ec_dbpt = (
+            f"{float(ec_np['e_crit_delta_bpt_0p05']):.2f}"
+            if ec_np.get("e_crit_delta_bpt_0p05") is not None
+            else "n/a"
+        )
+        ec_frac = (
+            f"{float(ec_np['e_crit_frac_c_inf_0p05']):.2f}"
+            if ec_np.get("e_crit_frac_c_inf_0p05") is not None
+            else "n/a"
+        )
+        if fit:
             lines.append(
-                f"| `{paradigm.upper()}` | {float(hill['c_inf_bits_per_param']):.3f} | "
-                f"{float(hill['e_50_epochs']):.2f} | {float(hill['e_90_epochs']):.1f} | "
-                f"{float(hill['alpha_hill']):.3f} | {float(hill['r2']):.4f} |"
+                f"| `{paradigm.upper()}` | {float(fit['c_inf_bits_per_param']):.3f} | "
+                f"{ec_dh} | {ec_dbpt} | {ec_frac} | "
+                f"{float(fit['e_50_epochs']):.2f} | {float(fit['e_90_epochs']):.1f} | "
+                f"{float(fit['alpha_hill']):.3f} | {float(fit['r2']):.4f} |"
             )
         else:
-            lines.append(f"| `{paradigm.upper()}` | n/a | n/a | n/a | n/a | n/a |")
+            lines.append(
+                f"| `{paradigm.upper()}` | n/a | n/a | {ec_dbpt} | {ec_frac} | n/a | n/a | n/a | n/a |"
+            )
 
     ar_mlm = summary.get("ar_vs_mlm_comparison", {})
     e400_sat = ar_mlm.get("asymptotic_e400_saturated_ge2x") or ar_mlm.get("overall_saturated_ge2x") or {}

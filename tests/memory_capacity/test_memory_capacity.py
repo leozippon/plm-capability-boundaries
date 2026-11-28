@@ -257,7 +257,7 @@ def test_end_to_end_tiny_training_and_analysis_roundtrip(tmp_path: Path) -> None
     assert summary_path.with_name(summary_path.name + ".sha256").is_file()
     assert summary["provenance"]["n_completed_runs"] == 6
     assert "0.5m" in summary["saturation_curves_by_scale_exposure"]["ar"]
-    assert "0.5m" in summary["saturation_curves_by_scale_exposure"]["mlm"]
+    assert "0.5m" in summary["saturation_curves_by_scale_exposure"]["oa_uniform"]
     assert summary["ar_vs_mlm_comparison"]["n_total_paired_cells"] == 6
 
 
@@ -301,7 +301,7 @@ def _make_synthetic_receipt(
         quad_profile = None
         loo_tok_xent = None
         loo_mem_bits = None
-        if paradigm == "mlm":
+        if paradigm in ("mlm", "oa_uniform"):
             rates = (np.arange(16, dtype=np.float64) + 0.5) / 16.0
             saved_mean = LOG2_20 - mean_tok_xent
             # More bits saved at low mask rate, approaching 0 saved as m -> 1
@@ -378,7 +378,11 @@ def test_synthetic_5scale_campaign_curve_fitting_and_ablations(tmp_path: Path) -
     e50_mlm_true = 18.0
 
     # Mirror spec.py's exact 5-scale campaign horizons (including 35m e=200@2x and 150m e=25@2x)
-    campaign_specs = build_campaign_runs(include_ablations=True)
+    campaign_specs = build_campaign_runs(
+        include_ablations=True,
+        paradigms=("ar", "oa_uniform"),
+        lr_schedule="cosine",
+    )
     for rspec in campaign_specs:
         c_true = c_ar_true if rspec.paradigm == "ar" else c_mlm_true
         e50_true = e50_ar_true if rspec.paradigm == "ar" else e50_mlm_true
@@ -428,7 +432,7 @@ def test_synthetic_5scale_campaign_curve_fitting_and_ablations(tmp_path: Path) -
 
     # 1. Direct e=400 calibration strictly uses 0.5m, 2m, 8m (excludes 35m which only has <=0.5x at e=400)
     ar_cal = summary["c_max_calibration"]["by_paradigm"]["ar"]
-    mlm_cal = summary["c_max_calibration"]["by_paradigm"]["mlm"]
+    mlm_cal = summary["c_max_calibration"]["by_paradigm"]["oa_uniform"]
     assert ar_cal["direct_anchor_unadjusted"]["non_embedding_params"]["scale_ids"] == [
         "0.5m",
         "2m",
@@ -461,9 +465,13 @@ def test_synthetic_5scale_campaign_curve_fitting_and_ablations(tmp_path: Path) -
 
     hill_ar = summary["exposure_discount_curves"]["ar"]["pooled_hill_fit_at_2x"]
     assert hill_ar is not None
-    assert len(summary["exposure_discount_curves"]["ar"]["pooled_by_exposure"]) == len(
-        EXPOSURE_CHECKPOINTS
-    )
+    expected_e_le400 = [e for e in EXPOSURE_CHECKPOINTS if e <= 400]
+    anchor_pooled = [
+        pt
+        for pt in summary["exposure_discount_curves"]["ar"]["pooled_by_exposure"]
+        if pt["n_anchor_scales_present"] > 0
+    ]
+    assert len(anchor_pooled) == len(expected_e_le400)
     assert hill_ar["e_50_epochs"] == pytest.approx(e50_ar_true, rel=0.15)
     assert hill_ar["r2"] > 0.995
 
@@ -535,7 +543,7 @@ def test_cli_dry_run_and_forbidden_infra_hygiene(tmp_path: Path) -> None:
         text=True,
         check=True,
     )
-    assert f"Phase 1 (1-GPU LPT):  {2 * len(CAPACITY_MULTIPLIERS) * 2} jobs" in res_1gpu.stdout
+    assert f"Phase 1 (1-GPU LPT):  {2 * len(CAPACITY_MULTIPLIERS) * 3} jobs" in res_1gpu.stdout
     assert "Phase 2 (DDP 1-GPU): 0 jobs" in res_1gpu.stdout
 
     # Infrastructure hygiene check: pod name or internal IP in receipt must raise ValueError

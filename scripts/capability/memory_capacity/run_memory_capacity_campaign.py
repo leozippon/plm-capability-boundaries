@@ -38,12 +38,19 @@ import torch  # noqa: E402
 from src.capability.core.io import sha256_file  # noqa: E402
 from src.capability.memory_capacity.analysis import summarize_memory_capacity_campaign  # noqa: E402
 from src.capability.memory_capacity.spec import (  # noqa: E402
+    LR_SCHEDULES,
+    PARADIGMS,
     SCALE_ORDER,
     RunSpec,
     assert_no_forbidden_infra_strings,
     build_campaign_runs,
+    canonicalize_paradigm,
 )
-from src.capability.memory_capacity.training import execute_run  # noqa: E402
+from src.capability.memory_capacity.training import (  # noqa: E402
+    DEFAULT_CHECKPOINT_INTERVAL_SEC,
+    PREEMPTION_EXIT_CODE,
+    execute_run,
+)
 from src.capability.memory_theory.io_utils import load_json_file, write_json_with_sha256  # noqa: E402
 from src.capability.unified.master_summary import FORBIDDEN_INFRA_RE  # noqa: E402
 
@@ -134,6 +141,17 @@ def _parse_tracks(raw: str) -> tuple[str, ...]:
     return items
 
 
+def _parse_paradigms(raw: str) -> tuple[str, ...]:
+    if raw.strip().lower() == "all":
+        return tuple(PARADIGMS)
+    items = tuple(
+        dict.fromkeys(canonicalize_paradigm(tok) for tok in raw.split(",") if tok.strip())
+    )
+    if not items:
+        raise ValueError("--paradigms produced an empty selection")
+    return items
+
+
 def _resolve_workers(gpus_arg: str | None) -> tuple[list[str], bool]:
     """Return (worker_slot_ids, use_cpu)."""
     if gpus_arg is not None:
@@ -174,8 +192,13 @@ def _tail_log(log_path: Path, max_lines: int = 40) -> str:
 
 
 def _run_single_worker(args: argparse.Namespace, skip_existing: bool) -> int:
+    selected_paradigms = _parse_paradigms(args.paradigms)
     all_runs = build_campaign_runs(
         include_ablations=True,
+        paradigms=selected_paradigms,
+        lr_schedule=args.lr_schedule,
+        adaptive_early_stop=args.adaptive_early_stop,
+        min_steps_per_epoch=args.min_steps_per_epoch,
         data_seed=args.data_seed,
         model_seed=args.model_seed,
     )
@@ -208,6 +231,7 @@ def _run_single_worker(args: argparse.Namespace, skip_existing: bool) -> int:
             device=device,
             use_compile=not args.no_compile,
             eval_max_sequences_mlm=args.eval_max_mlm,
+            checkpoint_interval_sec=args.checkpoint_interval_sec,
             resume=skip_existing,
             skip_completed=skip_existing,
         )
@@ -221,6 +245,14 @@ def _build_worker_common_flags(args: argparse.Namespace, skip_existing: bool) ->
     flags = [
         "--out-dir",
         str(args.out_dir),
+        "--paradigms",
+        str(args.paradigms),
+        "--lr-schedule",
+        str(args.lr_schedule),
+        "--min-steps-per-epoch",
+        str(args.min_steps_per_epoch),
+        "--checkpoint-interval-sec",
+        str(args.checkpoint_interval_sec),
         "--eval-max-mlm",
         str(args.eval_max_mlm),
         "--data-seed",
@@ -228,6 +260,8 @@ def _build_worker_common_flags(args: argparse.Namespace, skip_existing: bool) ->
         "--model-seed",
         str(args.model_seed),
     ]
+    if args.adaptive_early_stop:
+        flags.append("--adaptive-early-stop")
     if args.data_cache_dir is not None:
         flags.extend(["--data-cache-dir", str(args.data_cache_dir)])
     if args.no_compile:
@@ -240,10 +274,15 @@ def _build_worker_common_flags(args: argparse.Namespace, skip_existing: bool) ->
 def _run_orchestrator(args: argparse.Namespace, skip_existing: bool) -> int:
     selected_scales = _parse_scales(args.scales)
     selected_tracks = _parse_tracks(args.tracks)
+    selected_paradigms = _parse_paradigms(args.paradigms)
     include_ablations = any(t != "primary" for t in selected_tracks)
 
     campaign_runs = build_campaign_runs(
         include_ablations=include_ablations,
+        paradigms=selected_paradigms,
+        lr_schedule=args.lr_schedule,
+        adaptive_early_stop=args.adaptive_early_stop,
+        min_steps_per_epoch=args.min_steps_per_epoch,
         data_seed=args.data_seed,
         model_seed=args.model_seed,
     )
@@ -425,6 +464,14 @@ def _run_orchestrator(args: argparse.Namespace, skip_existing: bool) -> int:
                     log_fh.close()
                     del active_procs[slot]
                     elapsed = time.monotonic() - t0
+                    if rc == PREEMPTION_EXIT_CODE:
+                        print(
+                            f"{_utc_now()} [PREEMPTED] {spec.run_id} phase=1 elapsed={elapsed:.1f}s "
+                            f"(checkpoint flushed, re-queuing)",
+                            flush=True,
+                        )
+                        queue.appendleft(spec)
+                        continue
                     if rc != 0:
                         _terminate_active()
                         tail = _tail_log(log_path)
@@ -545,6 +592,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="all",
         help=f"Comma-separated subset of {','.join(VALID_TRACKS)} or 'all' (default: all)",
+    )
+    parser.add_argument(
+        "--paradigms",
+        type=str,
+        default="all",
+        help=f"Comma-separated subset of {','.join(PARADIGMS)} or 'all' (default: all; legacy 'mlm' aliases to 'oa_uniform')",
+    )
+    parser.add_argument(
+        "--lr-schedule",
+        choices=LR_SCHEDULES,
+        default="wsd",
+        help="Learning-rate schedule for generated runs (default: wsd)",
+    )
+    parser.add_argument(
+        "--adaptive-early-stop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable two-phase adaptive early stopping + WSD cooldown (default: False)",
+    )
+    parser.add_argument(
+        "--min-steps-per-epoch",
+        type=int,
+        default=16,
+        help="Minimum optimizer steps per epoch for tiny-dataset batch-size capping (default: 16)",
+    )
+    parser.add_argument(
+        "--checkpoint-interval-sec",
+        type=float,
+        default=DEFAULT_CHECKPOINT_INTERVAL_SEC,
+        help="Periodic Spot-safe checkpoint interval in seconds (default: 300)",
     )
     parser.add_argument(
         "--single-run-id",

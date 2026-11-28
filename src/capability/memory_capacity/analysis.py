@@ -34,6 +34,7 @@ from .spec import (
     LOG2_20,
     SCALE_ORDER,
     assert_no_forbidden_infra_strings,
+    canonicalize_paradigm,
 )
 
 SUMMARY_SCHEMA = "plm_parametric_capacity_summary_v1"
@@ -290,6 +291,142 @@ def fit_hill_exposure_curve(
     }
 
 
+def estimate_ecrit_nonparametric(
+    exposures: Sequence[float] | np.ndarray,
+    values: Sequence[float] | np.ndarray,
+    threshold: float,
+) -> float | None:
+    """Estimate first threshold crossing e_crit via log-linear interpolation in exposure space."""
+    e_arr = np.asarray(exposures, dtype=np.float64)
+    y_arr = np.asarray(values, dtype=np.float64)
+    if e_arr.size == 0 or e_arr.shape != y_arr.shape or not math.isfinite(float(threshold)):
+        return None
+    valid = np.isfinite(e_arr) & np.isfinite(y_arr) & (e_arr > 0.0)
+    if not np.any(valid):
+        return None
+    e_arr = e_arr[valid]
+    y_arr = y_arr[valid]
+    order = np.argsort(e_arr)
+    e_arr = e_arr[order]
+    y_arr = y_arr[order]
+
+    thresh = float(threshold)
+    above = np.nonzero(y_arr >= thresh)[0]
+    if above.size == 0:
+        return None
+    idx = int(above[0])
+    if idx == 0:
+        return float(e_arr[0])
+
+    e0, e1 = float(e_arr[idx - 1]), float(e_arr[idx])
+    y0, y1 = float(y_arr[idx - 1]), float(y_arr[idx])
+    if y1 <= y0 + 1e-15:
+        return float(e1)
+    frac = min(max((thresh - y0) / (y1 - y0), 0.0), 1.0)
+    log_e = math.log(e0) + frac * (math.log(e1) - math.log(e0))
+    return float(math.exp(log_e))
+
+
+def fit_delayed_hill_exposure_curve(
+    exposures: Sequence[float] | np.ndarray,
+    c_eff_values: Sequence[float] | np.ndarray,
+) -> dict[str, Any] | None:
+    """Fit delayed-Hill write dynamics:
+    c_eff(e) = c_inf * ((e - e_crit)^alpha / ((e - e_crit)^alpha + tau^alpha)) for e > e_crit,
+    else 0, where e_50 = e_crit + tau and e_90 = e_crit + tau * 9^(1/alpha).
+    """
+    e_arr = np.asarray(exposures, dtype=np.float64)
+    y_arr = np.asarray(c_eff_values, dtype=np.float64)
+    if e_arr.size < 4 or e_arr.shape != y_arr.shape:
+        return None
+    if np.any(e_arr <= 0.0) or not (np.all(np.isfinite(e_arr)) and np.all(np.isfinite(y_arr))):
+        return None
+    order = np.argsort(e_arr)
+    e_arr = e_arr[order]
+    y_arr = y_arr[order]
+    y_max = float(np.max(y_arr))
+    if y_max <= 0.0:
+        return None
+
+    def _pred(c_inf: float, e_crit: float, tau: float, alpha: float) -> np.ndarray:
+        shifted = e_arr - e_crit
+        out = np.zeros_like(e_arr, dtype=np.float64)
+        pos = shifted > 0.0
+        if np.any(pos):
+            out[pos] = c_inf * expit(alpha * (np.log(shifted[pos]) - math.log(max(tau, 1e-9))))
+        return out
+
+    e_max = float(np.max(e_arr))
+    c_upper = max(20.0, y_max * 5.0)
+    e_crit_upper = max(1e-6, e_max * 0.95)
+    tau_upper = max(5000.0, e_max * 10.0)
+    c_init = float(np.clip(y_max * 1.05, 1e-5, c_upper * 0.8))
+
+    emp_ecrit = estimate_ecrit_nonparametric(e_arr, y_arr, 0.05 * y_max)
+    emp_e50 = estimate_ecrit_nonparametric(e_arr, y_arr, 0.50 * y_max)
+
+    ecrit_candidates: list[float] = [0.0]
+    if emp_ecrit is not None and emp_ecrit > 0.0:
+        ecrit_candidates.extend([min(e_crit_upper * 0.9, emp_ecrit * 0.5), min(e_crit_upper * 0.9, emp_ecrit * 0.9)])
+    ecrit_candidates = sorted({round(v, 6) for v in ecrit_candidates})
+
+    tau_candidates: list[float] = [5.0, 30.0, 150.0]
+    if emp_e50 is not None:
+        base_ec = emp_ecrit if emp_ecrit is not None else 0.0
+        tau_candidates.append(max(1.0, emp_e50 - base_ec))
+
+    best_res = None
+    for ec_init in ecrit_candidates:
+        for tau_init in tau_candidates:
+            for alpha_init in (0.8, 1.5, 3.0):
+                x0 = np.array(
+                    [
+                        c_init,
+                        min(max(ec_init, 0.0), e_crit_upper * 0.99),
+                        min(max(tau_init, 1e-2), tau_upper * 0.5),
+                        alpha_init,
+                    ],
+                    dtype=np.float64,
+                )
+                res = least_squares(
+                    fun=lambda th: _pred(float(th[0]), float(th[1]), float(th[2]), float(th[3])) - y_arr,
+                    x0=x0,
+                    bounds=(
+                        np.array([1e-6, 0.0, 1e-3, 0.2], dtype=np.float64),
+                        np.array([c_upper, e_crit_upper, tau_upper, 12.0], dtype=np.float64),
+                    ),
+                    method="trf",
+                    max_nfev=3000,
+                )
+                if best_res is None or res.cost < best_res.cost:
+                    best_res = res
+
+    assert best_res is not None
+    c_inf = float(best_res.x[0])
+    e_crit = float(best_res.x[1])
+    tau = float(best_res.x[2])
+    alpha = float(best_res.x[3])
+    e_05 = float(e_crit + tau * ((1.0 / 19.0) ** (1.0 / alpha)))
+    e_50 = float(e_crit + tau)
+    e_90 = float(e_crit + tau * (9.0 ** (1.0 / alpha)))
+    e_95 = float(e_crit + tau * (19.0 ** (1.0 / alpha)))
+    y_pred = _pred(c_inf, e_crit, tau, alpha)
+    return {
+        "c_inf_bits_per_param": c_inf,
+        "e_crit_epochs": e_crit,
+        "tau_half_rise_epochs": tau,
+        "e_05_epochs": e_05,
+        "e_50_epochs": e_50,
+        "e_90_epochs": e_90,
+        "e_95_epochs": e_95,
+        "alpha_hill": alpha,
+        "r2": _safe_r2(y_arr, y_pred),
+        "rmse_bits_per_param": float(np.sqrt(np.mean((y_arr - y_pred) ** 2))),
+        "n_exposures": int(e_arr.size),
+        "converged": bool(best_res.success),
+    }
+
+
 def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize all multiplier observations at a fixed (paradigm, scale_id, epoch)."""
     ordered = sorted(obs_list, key=lambda r: float(r["multiplier"]))
@@ -301,13 +438,38 @@ def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
     sat_ge2 = ge2 if ge2 else (ge1 if ge1 else ordered)
     sat_ge1 = ge1 if ge1 else ordered
 
-    max_ge2_bits = float(max(float(r["memorized_bits"]) for r in sat_ge2))
+    max_ge2_row = max(sat_ge2, key=lambda r: float(r["memorized_bits"]))
+    max_ge2_bits = float(max_ge2_row["memorized_bits"])
     mean_ge2_bits = float(np.mean([float(r["memorized_bits"]) for r in sat_ge2]))
     plateau_max_ge1_bits = float(max(float(r["memorized_bits"]) for r in sat_ge1))
 
     at_2x_candidates = [r for r in ordered if abs(float(r["multiplier"]) - 2.0) <= 1e-6]
-    at_2x_bits = (
-        float(at_2x_candidates[0]["memorized_bits"]) if at_2x_candidates else max_ge2_bits
+    at_2x_row = at_2x_candidates[0] if at_2x_candidates else max_ge2_row
+    at_2x_bits = float(at_2x_row["memorized_bits"])
+
+    mean_tok_xent_emp = float(max_ge2_row["mean_tok_xent_bits"])
+    mean_tok_xent_2x = float(at_2x_row["mean_tok_xent_bits"])
+    delta_bpt_emp = float(LOG2_20 - mean_tok_xent_emp)
+    delta_bpt_2x = float(LOG2_20 - mean_tok_xent_2x)
+
+    # Dual Slepian-Wolf / symmetric-slot pseudo capacity metrics (populated for mlm_15)
+    has_sw = all(r.get("sw_memorized_bits") is not None for r in sat_ge2)
+    sw_max_ge2_bits = (
+        float(max(float(r["sw_memorized_bits"]) for r in sat_ge2)) if has_sw else None
+    )
+    sw_at_2x_bits = (
+        float(at_2x_row["sw_memorized_bits"])
+        if at_2x_row.get("sw_memorized_bits") is not None
+        else sw_max_ge2_bits
+    )
+    has_pseudo = all(r.get("pseudo_memorized_bits") is not None for r in sat_ge2)
+    pseudo_max_ge2_bits = (
+        float(max(float(r["pseudo_memorized_bits"]) for r in sat_ge2)) if has_pseudo else None
+    )
+    pseudo_at_2x_bits = (
+        float(at_2x_row["pseudo_memorized_bits"])
+        if at_2x_row.get("pseudo_memorized_bits") is not None
+        else pseudo_max_ge2_bits
     )
 
     c_eff_at_mult = {
@@ -319,10 +481,22 @@ def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
             "n_sequences": int(r["n_sequences"]),
             "H_data_bits": float(r["H_data_bits"]),
             "H_gibbs_max_bits": float(r["H_gibbs_max_bits"]),
+            "mean_tok_xent_bits": float(r["mean_tok_xent_bits"]),
+            "delta_bpt_vs_null": float(LOG2_20 - float(r["mean_tok_xent_bits"])),
             "memorized_bits": float(r["memorized_bits"]),
             "memorized_bits_se": float(r["memorized_bits_se"]),
             "bits_per_non_emb_param": float(r["bits_per_non_emb_param"]),
             "bits_per_total_param": float(r["bits_per_total_param"]),
+            "sw_bits_per_non_emb_param": (
+                float(r["sw_bits_per_non_emb_param"])
+                if r.get("sw_bits_per_non_emb_param") is not None
+                else None
+            ),
+            "pseudo_bits_per_non_emb_param": (
+                float(r["pseudo_bits_per_non_emb_param"])
+                if r.get("pseudo_bits_per_non_emb_param") is not None
+                else None
+            ),
             "fraction_of_H_data": float(r["fraction_of_H_data"]),
             "fraction_of_H_gibbs": float(r["fraction_of_H_gibbs"]),
         }
@@ -345,9 +519,27 @@ def _extract_cell_summary(obs_list: list[dict[str, Any]]) -> dict[str, Any]:
         "primary_estimator": "max_over_ge2x" if ge2 else "max_available_fallback",
         "has_ge2x_multiplier": bool(ge2),
         "has_exact_2x_multiplier": bool(at_2x_candidates),
+        "mean_tok_xent_bits_empirical": mean_tok_xent_emp,
+        "mean_tok_xent_bits_at_2x": mean_tok_xent_2x,
+        "delta_bpt_empirical": delta_bpt_emp,
+        "delta_bpt_at_2x": delta_bpt_2x,
         "plateau_empirical_bits": max_ge2_bits,
         "c_eff_empirical": max_ge2_bits / p_non_emb,
         "c_eff_total_empirical": max_ge2_bits / p_total,
+        "sw_memorized_empirical_bits": sw_max_ge2_bits,
+        "sw_bits_per_non_emb_param": (
+            sw_max_ge2_bits / p_non_emb if sw_max_ge2_bits is not None else None
+        ),
+        "sw_bits_per_non_emb_param_at_2x": (
+            sw_at_2x_bits / p_non_emb if sw_at_2x_bits is not None else None
+        ),
+        "pseudo_memorized_empirical_bits": pseudo_max_ge2_bits,
+        "pseudo_bits_per_non_emb_param": (
+            pseudo_max_ge2_bits / p_non_emb if pseudo_max_ge2_bits is not None else None
+        ),
+        "pseudo_bits_per_non_emb_param_at_2x": (
+            pseudo_at_2x_bits / p_non_emb if pseudo_at_2x_bits is not None else None
+        ),
         "max_over_ge2x_bits": max_ge2_bits,
         "c_eff_max_over_ge2x": max_ge2_bits / p_non_emb,
         "mean_over_ge2x_bits": mean_ge2_bits,
@@ -561,12 +753,16 @@ def _normalize_run_receipt(doc: dict[str, Any], source_label: str) -> dict[str, 
         )
 
     if "exposures" in doc and "H_data_bits" in doc:
-        return doc
+        norm = dict(doc)
+        if "paradigm" in norm:
+            norm["paradigm"] = canonicalize_paradigm(str(norm["paradigm"]))
+        return norm
 
     if "run_spec" in doc and "dataset_info" in doc:
         rs = doc["run_spec"]
         pc = doc["parameter_counts"]
         di = doc["dataset_info"]
+        canon_p = canonicalize_paradigm(str(rs["paradigm"]))
         raw_evals = doc.get("evaluations") or []
         norm_evals: list[dict[str, Any]] = []
         for ev in raw_evals:
@@ -599,6 +795,15 @@ def _normalize_run_receipt(doc: dict[str, Any], source_label: str) -> dict[str, 
                     "bits_per_total_param": float(
                         ev.get("memorized_bits_per_total_param", ev.get("bits_per_total_param"))
                     ),
+                    "sw_memorized_bits": ev.get("sw_memorized_bits"),
+                    "sw_memorized_bits_se": ev.get("sw_memorized_bits_se"),
+                    "sw_bits_per_non_emb_param": ev.get("sw_bits_per_non_emb_param"),
+                    "sw_bits_per_total_param": ev.get("sw_bits_per_total_param"),
+                    "pseudo_memorized_bits": ev.get("pseudo_memorized_bits"),
+                    "pseudo_memorized_bits_se": ev.get("pseudo_memorized_bits_se"),
+                    "pseudo_bits_per_non_emb_param": ev.get("pseudo_bits_per_non_emb_param"),
+                    "pseudo_bits_per_total_param": ev.get("pseudo_bits_per_total_param"),
+                    "mean_masked_token_xent_bits": ev.get("mean_masked_token_xent_bits"),
                     "fraction_of_H_data": float(
                         ev.get("fraction_of_H_dataset", ev.get("fraction_of_H_data", 0.0))
                     ),
@@ -608,12 +813,14 @@ def _normalize_run_receipt(doc: dict[str, Any], source_label: str) -> dict[str, 
                     ),
                     "mlm_loo_pseudo_tok_xent_bits": ev.get("mlm_loo_pseudo_tok_xent_bits"),
                     "mlm_loo_pseudo_memorized_bits": ev.get("mlm_loo_pseudo_memorized_bits"),
+                    "mlm_fixed_15pct_diagnostic": ev.get("mlm_fixed_15pct_diagnostic"),
+                    "mlm_oa_16pt_diagnostic": ev.get("mlm_oa_16pt_diagnostic"),
                 }
             )
         return {
             "run_id": str(rs["run_id"]),
             "track": str(rs["track"]),
-            "paradigm": str(rs["paradigm"]),
+            "paradigm": canon_p,
             "scale_id": str(rs["scale_id"]),
             "multiplier": float(rs["multiplier"]),
             "n_sequences": int(rs["n_sequences"]),
@@ -633,7 +840,10 @@ def _normalize_run_receipt(doc: dict[str, Any], source_label: str) -> dict[str, 
             "exposures": norm_evals,
         }
 
-    return doc
+    norm_fallback = dict(doc)
+    if "paradigm" in norm_fallback:
+        norm_fallback["paradigm"] = canonicalize_paradigm(str(norm_fallback["paradigm"]))
+    return norm_fallback
 
 
 def _load_completed_runs(runs_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -725,6 +935,15 @@ def _flatten_observations(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]
                     "memorized_bits_se": float(exp["memorized_bits_se"]),
                     "bits_per_non_emb_param": float(exp["bits_per_non_emb_param"]),
                     "bits_per_total_param": float(exp["bits_per_total_param"]),
+                    "sw_memorized_bits": exp.get("sw_memorized_bits"),
+                    "sw_memorized_bits_se": exp.get("sw_memorized_bits_se"),
+                    "sw_bits_per_non_emb_param": exp.get("sw_bits_per_non_emb_param"),
+                    "sw_bits_per_total_param": exp.get("sw_bits_per_total_param"),
+                    "pseudo_memorized_bits": exp.get("pseudo_memorized_bits"),
+                    "pseudo_memorized_bits_se": exp.get("pseudo_memorized_bits_se"),
+                    "pseudo_bits_per_non_emb_param": exp.get("pseudo_bits_per_non_emb_param"),
+                    "pseudo_bits_per_total_param": exp.get("pseudo_bits_per_total_param"),
+                    "mean_masked_token_xent_bits": exp.get("mean_masked_token_xent_bits"),
                     "fraction_of_H_data": float(exp["fraction_of_H_data"]),
                     "fraction_of_H_gibbs": float(exp["fraction_of_H_gibbs"]),
                     "mlm_quadrature_16pt_bits_per_tok": exp.get(
@@ -732,6 +951,8 @@ def _flatten_observations(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]
                     ),
                     "mlm_loo_pseudo_tok_xent_bits": exp.get("mlm_loo_pseudo_tok_xent_bits"),
                     "mlm_loo_pseudo_memorized_bits": exp.get("mlm_loo_pseudo_memorized_bits"),
+                    "mlm_fixed_15pct_diagnostic": exp.get("mlm_fixed_15pct_diagnostic"),
+                    "mlm_oa_16pt_diagnostic": exp.get("mlm_oa_16pt_diagnostic"),
                 }
             )
     return rows
@@ -882,6 +1103,10 @@ def _build_c_max_calibration_and_exposure_laws(
                         "c_eff_at_2x": c_2x,
                         "c_eff_empirical_ge2x": c_plat,
                         "c_eff_plateau_max_ge1x": c_max_ge1,
+                        "delta_bpt_empirical": float(cell["delta_bpt_empirical"]),
+                        "delta_bpt_at_2x": float(cell["delta_bpt_at_2x"]),
+                        "sw_bits_per_non_emb_param": cell.get("sw_bits_per_non_emb_param"),
+                        "pseudo_bits_per_non_emb_param": cell.get("pseudo_bits_per_non_emb_param"),
                         "discount_ratio_to_anchor_at_2x": eta_2x,
                         "discount_ratio_to_anchor_empirical": eta_plat,
                         "marginal_bits_per_param_per_doubling_at_2x": marg_2x,
@@ -890,20 +1115,63 @@ def _build_c_max_calibration_and_exposure_laws(
                 )
                 prev_e, prev_c_2x, prev_c_plat = e, c_2x, c_plat
 
-            hill_2x = fit_hill_exposure_curve(
-                [pt["epoch"] for pt in traj],
-                [pt["c_eff_at_2x"] for pt in traj],
+            traj_epochs = [pt["epoch"] for pt in traj]
+            traj_c_2x = [pt["c_eff_at_2x"] for pt in traj]
+            traj_c_emp = [pt["c_eff_empirical_ge2x"] for pt in traj]
+            traj_dbpt_emp = [pt["delta_bpt_empirical"] for pt in traj]
+            traj_dbpt_2x = [pt["delta_bpt_at_2x"] for pt in traj]
+
+            hill_2x = fit_hill_exposure_curve(traj_epochs, traj_c_2x)
+            hill_plat = fit_hill_exposure_curve(traj_epochs, traj_c_emp)
+            delayed_hill_2x = fit_delayed_hill_exposure_curve(traj_epochs, traj_c_2x)
+            delayed_hill_plat = fit_delayed_hill_exposure_curve(traj_epochs, traj_c_emp)
+
+            c_inf_emp = (
+                float(delayed_hill_plat["c_inf_bits_per_param"])
+                if delayed_hill_plat is not None
+                else (
+                    float(hill_plat["c_inf_bits_per_param"])
+                    if hill_plat is not None
+                    else (max(traj_c_emp) if traj_c_emp else 0.0)
+                )
             )
-            hill_plat = fit_hill_exposure_curve(
-                [pt["epoch"] for pt in traj],
-                [pt["c_eff_empirical_ge2x"] for pt in traj],
+            c_inf_2x = (
+                float(delayed_hill_2x["c_inf_bits_per_param"])
+                if delayed_hill_2x is not None
+                else (
+                    float(hill_2x["c_inf_bits_per_param"])
+                    if hill_2x is not None
+                    else (max(traj_c_2x) if traj_c_2x else 0.0)
+                )
             )
+            e_crit_np = {
+                "e_crit_delta_bpt_0p05": estimate_ecrit_nonparametric(
+                    traj_epochs, traj_dbpt_emp, 0.05
+                ),
+                "e_crit_delta_bpt_0p05_at_2x": estimate_ecrit_nonparametric(
+                    traj_epochs, traj_dbpt_2x, 0.05
+                ),
+                "e_crit_frac_c_inf_0p05": (
+                    estimate_ecrit_nonparametric(traj_epochs, traj_c_emp, 0.05 * c_inf_emp)
+                    if c_inf_emp > 0.0
+                    else None
+                ),
+                "e_crit_frac_c_inf_0p05_at_2x": (
+                    estimate_ecrit_nonparametric(traj_epochs, traj_c_2x, 0.05 * c_inf_2x)
+                    if c_inf_2x > 0.0
+                    else None
+                ),
+                "c_inf_reference_empirical": c_inf_emp if c_inf_emp > 0.0 else None,
+            }
             by_scale_exp[s] = {
                 "n_exposures": len(traj),
                 "has_anchor_epoch": anchor_cell is not None,
                 "trajectory": traj,
                 "hill_fit_at_2x": hill_2x,
                 "hill_fit_empirical": hill_plat,
+                "delayed_hill_fit_at_2x": delayed_hill_2x,
+                "delayed_hill_fit_empirical": delayed_hill_plat,
+                "e_crit_nonparametric": e_crit_np,
             }
 
         # 2. Pooled exposure-discount curve across anchor scales & across all available scales
@@ -971,10 +1239,27 @@ def _build_c_max_calibration_and_exposure_laws(
             cemp_all_vals = [
                 float(all_cells[(paradigm, s, e)]["c_eff_empirical"]) for s in all_avail_scales
             ]
+            dbpt_anchor_vals = [
+                float(all_cells[(paradigm, s, e)]["delta_bpt_empirical"]) for s in pool_scales
+            ]
+            dbpt_all_vals = [
+                float(all_cells[(paradigm, s, e)]["delta_bpt_empirical"]) for s in all_avail_scales
+            ]
+            sw_anchor_vals = [
+                float(all_cells[(paradigm, s, e)]["sw_bits_per_non_emb_param"])
+                for s in pool_scales
+                if all_cells[(paradigm, s, e)].get("sw_bits_per_non_emb_param") is not None
+            ]
+            pseudo_anchor_vals = [
+                float(all_cells[(paradigm, s, e)]["pseudo_bits_per_non_emb_param"])
+                for s in pool_scales
+                if all_cells[(paradigm, s, e)].get("pseudo_bits_per_non_emb_param") is not None
+            ]
 
             mean_2x = float(np.mean(c2x_anchor_vals)) if c2x_anchor_vals else float(np.mean(cemp_all_vals))
             mean_emp = float(np.mean(cemp_anchor_vals)) if cemp_anchor_vals else float(np.mean(cemp_all_vals))
             mean_pmax = float(np.mean(cmax_anchor_vals)) if cmax_anchor_vals else mean_emp
+            mean_dbpt = float(np.mean(dbpt_anchor_vals)) if dbpt_anchor_vals else float(np.mean(dbpt_all_vals))
 
             marg_2x_p: float | None = None
             marg_emp_p: float | None = None
@@ -993,6 +1278,13 @@ def _build_c_max_calibration_and_exposure_laws(
                     "c_eff_empirical_mean": mean_emp,
                     "c_eff_plateau_max_mean": mean_pmax,
                     "c_eff_all_scales_mean": float(np.mean(cemp_all_vals)),
+                    "delta_bpt_empirical_mean": mean_dbpt,
+                    "sw_bits_per_non_emb_param_mean": (
+                        float(np.mean(sw_anchor_vals)) if sw_anchor_vals else None
+                    ),
+                    "pseudo_bits_per_non_emb_param_mean": (
+                        float(np.mean(pseudo_anchor_vals)) if pseudo_anchor_vals else None
+                    ),
                     "c_eff_empirical_ci95": _bootstrap_mean_ci(
                         cemp_anchor_vals if cemp_anchor_vals else cemp_all_vals,
                         n_draws=bootstrap_draws,
@@ -1008,18 +1300,41 @@ def _build_c_max_calibration_and_exposure_laws(
                 prev_pe, prev_pc_2x, prev_pc_emp = e, mean_2x, mean_emp
 
         anchor_only_pts = [pt for pt in pooled_anchor_traj if pt["n_anchor_scales_present"] > 0]
-        pooled_hill_2x = fit_hill_exposure_curve(
-            [pt["epoch"] for pt in anchor_only_pts],
-            [pt["c_eff_at_2x_mean"] for pt in anchor_only_pts],
+        anchor_epochs_list = [pt["epoch"] for pt in anchor_only_pts]
+        anchor_c2x_list = [pt["c_eff_at_2x_mean"] for pt in anchor_only_pts]
+        anchor_cemp_list = [pt["c_eff_empirical_mean"] for pt in anchor_only_pts]
+        anchor_pmax_list = [pt["c_eff_plateau_max_mean"] for pt in anchor_only_pts]
+        anchor_dbpt_list = [pt["delta_bpt_empirical_mean"] for pt in anchor_only_pts]
+
+        pooled_hill_2x = fit_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
+        pooled_hill_emp = fit_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
+        pooled_hill_pmax = fit_hill_exposure_curve(anchor_epochs_list, anchor_pmax_list)
+        pooled_delayed_2x = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_c2x_list)
+        pooled_delayed_emp = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_cemp_list)
+        pooled_delayed_pmax = fit_delayed_hill_exposure_curve(anchor_epochs_list, anchor_pmax_list)
+
+        pooled_c_inf_ref = (
+            float(pooled_delayed_emp["c_inf_bits_per_param"])
+            if pooled_delayed_emp is not None
+            else (
+                float(pooled_hill_emp["c_inf_bits_per_param"])
+                if pooled_hill_emp is not None
+                else (max(anchor_cemp_list) if anchor_cemp_list else 0.0)
+            )
         )
-        pooled_hill_emp = fit_hill_exposure_curve(
-            [pt["epoch"] for pt in anchor_only_pts],
-            [pt["c_eff_empirical_mean"] for pt in anchor_only_pts],
-        )
-        pooled_hill_pmax = fit_hill_exposure_curve(
-            [pt["epoch"] for pt in anchor_only_pts],
-            [pt["c_eff_plateau_max_mean"] for pt in anchor_only_pts],
-        )
+        pooled_e_crit_np = {
+            "e_crit_delta_bpt_0p05": estimate_ecrit_nonparametric(
+                anchor_epochs_list, anchor_dbpt_list, 0.05
+            ),
+            "e_crit_frac_c_inf_0p05": (
+                estimate_ecrit_nonparametric(
+                    anchor_epochs_list, anchor_cemp_list, 0.05 * pooled_c_inf_ref
+                )
+                if pooled_c_inf_ref > 0.0
+                else None
+            ),
+            "c_inf_reference_empirical": pooled_c_inf_ref if pooled_c_inf_ref > 0.0 else None,
+        }
 
         exposure_discount_curves[paradigm] = {
             "anchor_epoch": anchor_epoch,
@@ -1028,6 +1343,10 @@ def _build_c_max_calibration_and_exposure_laws(
             "pooled_hill_fit_at_2x": pooled_hill_2x,
             "pooled_hill_fit_empirical": pooled_hill_emp,
             "pooled_hill_fit_plateau_max": pooled_hill_pmax,
+            "pooled_delayed_hill_fit_at_2x": pooled_delayed_2x,
+            "pooled_delayed_hill_fit_empirical": pooled_delayed_emp,
+            "pooled_delayed_hill_fit_plateau_max": pooled_delayed_pmax,
+            "pooled_e_crit_nonparametric": pooled_e_crit_np,
             "eta_scale_invariance": eta_invariance_by_epoch,
             "by_scale": by_scale_exp,
         }
@@ -1128,6 +1447,8 @@ def _build_c_max_calibration_and_exposure_laws(
                     "observed_bits_per_non_emb_param": m_raw / p_ne,
                     "anchored_bits_per_non_emb_param": m_adj / p_ne,
                     "anchored_bits_per_total_param": m_adj / p_tot,
+                    "sw_bits_per_non_emb_param": cell.get("sw_bits_per_non_emb_param"),
+                    "pseudo_bits_per_non_emb_param": cell.get("pseudo_bits_per_non_emb_param"),
                 }
             )
 
@@ -1145,6 +1466,37 @@ def _build_c_max_calibration_and_exposure_laws(
             bootstrap_draws=bootstrap_draws,
             seed=p_seed + 251,
         )
+
+        # Dual Slepian-Wolf vs symmetric-slot pseudo capacity calibration for mlm_15
+        mlm_15_dual_cal: dict[str, Any] | None = None
+        if anchor_scales and all(
+            all_cells[(paradigm, s, anchor_epoch)].get("sw_memorized_empirical_bits") is not None
+            for s in anchor_scales
+        ):
+            direct_sw_bits = [
+                float(all_cells[(paradigm, s, anchor_epoch)]["sw_memorized_empirical_bits"])
+                for s in anchor_scales
+            ]
+            direct_pseudo_bits = [
+                float(all_cells[(paradigm, s, anchor_epoch)]["pseudo_memorized_empirical_bits"])
+                for s in anchor_scales
+            ]
+            mlm_15_dual_cal = {
+                "sw_bits_per_non_emb_param": _fit_linear_capacity_scaling(
+                    anchor_scales,
+                    direct_non_emb_p,
+                    direct_sw_bits,
+                    bootstrap_draws=bootstrap_draws,
+                    seed=p_seed + 301,
+                ),
+                "pseudo_bits_per_non_emb_param": _fit_linear_capacity_scaling(
+                    anchor_scales,
+                    direct_non_emb_p,
+                    direct_pseudo_bits,
+                    bootstrap_draws=bootstrap_draws,
+                    seed=p_seed + 331,
+                ),
+            }
 
         primary_c_max_non_emb = (
             float(direct_non_emb_fit["zero_intercept_ratio"]["c_max"])
@@ -1176,6 +1528,7 @@ def _build_c_max_calibration_and_exposure_laws(
                 "total_params": anchored_tot_fit,
                 "per_scale_measurements": anchored_records,
             },
+            "mlm_15_dual_capacity": mlm_15_dual_cal,
             "nlp_reference_comparison": {
                 "non_embedding_direct": (
                     _nlp_comparison_for_cmax(primary_c_max_non_emb)
@@ -1200,18 +1553,21 @@ def _build_ar_vs_mlm_and_loo_audit(
     seed: int,
 ) -> dict[str, Any]:
     primary_ar: dict[tuple[str, float, int], dict[str, Any]] = {}
-    primary_mlm: dict[tuple[str, float, int], dict[str, Any]] = {}
+    primary_oa: dict[tuple[str, float, int], dict[str, Any]] = {}
+    primary_mlm15: dict[tuple[str, float, int], dict[str, Any]] = {}
     for row in all_obs:
         if row["track"] != "primary":
             continue
         key = (row["scale_id"], round(float(row["multiplier"]), 6), int(row["epoch"]))
         if row["paradigm"] == "ar":
             primary_ar[key] = row
-        elif row["paradigm"] == "mlm":
-            primary_mlm[key] = row
+        elif row["paradigm"] == "oa_uniform":
+            primary_oa[key] = row
+        elif row["paradigm"] == "mlm_15":
+            primary_mlm15[key] = row
 
     shared_keys = sorted(
-        set(primary_ar.keys()) & set(primary_mlm.keys()),
+        set(primary_ar.keys()) & set(primary_oa.keys()),
         key=lambda k: (_scale_sort_key(k[0]), k[1], k[2]),
     )
 
@@ -1224,7 +1580,7 @@ def _build_ar_vs_mlm_and_loo_audit(
 
     for sc, mult, ep in shared_keys:
         ar = primary_ar[(sc, mult, ep)]
-        mlm = primary_mlm[(sc, mult, ep)]
+        mlm = primary_oa[(sc, mult, ep)]
         m_ar = float(ar["memorized_bits"])
         m_mlm = float(mlm["memorized_bits"])
         c_ar = float(ar["bits_per_non_emb_param"])
@@ -1258,6 +1614,41 @@ def _build_ar_vs_mlm_and_loo_audit(
                 if ep == 400 and float(ar["multiplier"]) >= 2.0 - 1e-9:
                     quad_e400_bpt_rows.append(bpt)
                     quad_e400_ar_bpt.append(float(ar["mean_tok_xent_bits"]))
+
+    # Paired AR vs MLM-15% (reporting both exact Slepian-Wolf and symmetric slot pseudo bounds)
+    shared_15_keys = sorted(
+        set(primary_ar.keys()) & set(primary_mlm15.keys()),
+        key=lambda k: (_scale_sort_key(k[0]), k[1], k[2]),
+    )
+    paired_mlm15_cells: list[dict[str, Any]] = []
+    for sc, mult, ep in shared_15_keys:
+        ar = primary_ar[(sc, mult, ep)]
+        m15 = primary_mlm15[(sc, mult, ep)]
+        c_ar = float(ar["bits_per_non_emb_param"])
+        c_pseudo = float(
+            m15["pseudo_bits_per_non_emb_param"]
+            if m15.get("pseudo_bits_per_non_emb_param") is not None
+            else m15["bits_per_non_emb_param"]
+        )
+        c_sw = (
+            float(m15["sw_bits_per_non_emb_param"])
+            if m15.get("sw_bits_per_non_emb_param") is not None
+            else None
+        )
+        paired_mlm15_cells.append(
+            {
+                "scale_id": sc,
+                "multiplier": float(ar["multiplier"]),
+                "epoch": ep,
+                "n_sequences": int(ar["n_sequences"]),
+                "n_params_non_embedding": int(ar["n_params_non_embedding"]),
+                "ar_bits_per_non_emb_param": c_ar,
+                "mlm_15_sw_bits_per_non_emb_param": c_sw,
+                "mlm_15_pseudo_bits_per_non_emb_param": c_pseudo,
+                "ar_minus_mlm_15_pseudo_bpp": c_ar - c_pseudo,
+                "ar_minus_mlm_15_sw_bpp": (c_ar - c_sw) if c_sw is not None else None,
+            }
+        )
 
     def _summarize_subset(cells: Sequence[dict[str, Any]], sub_seed: int) -> dict[str, Any] | None:
         if not cells:
@@ -1357,10 +1748,10 @@ def _build_ar_vs_mlm_and_loo_audit(
             },
         }
 
-    # Leave-One-Out (LOO) pseudo-entropy inflation audit across all MLM runs
+    # Leave-One-Out (LOO) pseudo-entropy inflation audit across all MLM runs (oa_uniform & mlm_15)
     loo_records: list[dict[str, Any]] = []
     for row in all_obs:
-        if row["paradigm"] != "mlm":
+        if row["paradigm"] not in ("oa_uniform", "mlm_15"):
             continue
         loo_mem = row.get("mlm_loo_pseudo_memorized_bits")
         if loo_mem is None:
@@ -1372,6 +1763,7 @@ def _build_ar_vs_mlm_and_loo_audit(
         loo_records.append(
             {
                 "run_id": row["run_id"],
+                "paradigm": row["paradigm"],
                 "track": row["track"],
                 "scale_id": row["scale_id"],
                 "multiplier": float(row["multiplier"]),
@@ -1422,6 +1814,13 @@ def _build_ar_vs_mlm_and_loo_audit(
         for ep in sorted({r["epoch"] for r in primary_loo})
     }
 
+    loo_by_paradigm = {
+        par: _summarize_loo(
+            [r for r in loo_records if r["paradigm"] == par], seed + 750 + idx
+        )
+        for idx, par in enumerate(sorted({r["paradigm"] for r in loo_records}))
+    }
+
     return {
         "n_total_paired_cells": len(paired_cells),
         "overall_all_cells": _summarize_subset(paired_cells, seed + 401),
@@ -1434,12 +1833,31 @@ def _build_ar_vs_mlm_and_loo_audit(
         ),
         "by_exposure": by_exposure,
         "masking_rate_profile": masking_profile,
+        "ar_vs_mlm_15": {
+            "n_total_paired_cells": len(paired_mlm15_cells),
+            "paired_cells": paired_mlm15_cells,
+            "overall_ar_minus_pseudo_bpp": _bootstrap_mean_ci(
+                [c["ar_minus_mlm_15_pseudo_bpp"] for c in paired_mlm15_cells],
+                n_draws=bootstrap_draws,
+                seed=seed + 551,
+            ),
+            "overall_ar_minus_sw_bpp": _bootstrap_mean_ci(
+                [
+                    c["ar_minus_mlm_15_sw_bpp"]
+                    for c in paired_mlm15_cells
+                    if c["ar_minus_mlm_15_sw_bpp"] is not None
+                ],
+                n_draws=bootstrap_draws,
+                seed=seed + 557,
+            ),
+        },
         "loo_inflation_audit": {
             "all_mlm_observations": _summarize_loo(loo_records, seed + 601),
             "primary_mlm_observations": _summarize_loo(primary_loo, seed + 613),
             "primary_e400_saturated_ge2x": _summarize_loo(
                 primary_loo_e400_sat, seed + 631
             ),
+            "by_paradigm": loo_by_paradigm,
             "by_exposure": loo_by_epoch,
         },
         "paired_cells": paired_cells,

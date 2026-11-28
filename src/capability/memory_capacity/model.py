@@ -7,7 +7,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .spec import INPUT_VOCAB_SIZE, PARADIGMS, SCALE_SPECS, SEQ_LEN, VOCAB_AA, ScaleSpec
+from .spec import (
+    INPUT_VOCAB_SIZE,
+    SCALE_SPECS,
+    SEQ_LEN,
+    VOCAB_AA,
+    ScaleSpec,
+    canonicalize_paradigm,
+)
 
 
 class RMSNorm(nn.Module):
@@ -191,16 +198,15 @@ class UniformVocabTransformer(nn.Module):
             if spec not in SCALE_SPECS:
                 raise ValueError(f"Unknown scale_id {spec!r}; expected {tuple(SCALE_SPECS)}")
             spec = SCALE_SPECS[spec]
-        if paradigm not in PARADIGMS:
-            raise ValueError(f"Unsupported paradigm {paradigm!r}; expected {PARADIGMS}")
+        canon_paradigm = canonicalize_paradigm(paradigm)
 
         self.spec = spec
-        self.paradigm = paradigm
+        self.paradigm = canon_paradigm
         self.seq_len = int(seq_len)
         self.input_vocab_size = int(input_vocab_size)
         self.output_vocab_size = int(output_vocab_size)
         self.rope_base = float(rope_base)
-        self.is_causal = paradigm == "ar"
+        self.is_causal = canon_paradigm == "ar"
 
         self.tok_emb = nn.Embedding(self.input_vocab_size, spec.d_model)
         self.blocks = nn.ModuleList(

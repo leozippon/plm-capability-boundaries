@@ -80,7 +80,7 @@ def score_masks(model, data, masks, batch_size):
 
 def main() -> None:
     primary = next(r for r in build_campaign_runs(include_ablations=False)
-                   if r.scale_id == "0.5m" and r.paradigm == "mlm")
+                   if r.scale_id == "0.5m" and r.paradigm == "oa_uniform")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", choices=("oa", "dynamic", "repeated"), default="oa",
                         help="OA-ARDM, new exact 15%% masks each epoch, or freeze epoch-one masks")

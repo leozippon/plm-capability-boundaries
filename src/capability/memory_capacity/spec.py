@@ -1,9 +1,11 @@
 """Parametric memory-capacity specifications, scaling ladder, and campaign builder."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,10 +16,39 @@ INPUT_VOCAB_SIZE: int = 21
 LOG2_20: float = math.log2(20.0)
 LN2: float = math.log(2.0)
 C_GRID_PRIOR_BITS_PER_PARAM: float = 3.5
-EXPOSURE_CHECKPOINTS: tuple[int, ...] = (1, 2, 5, 10, 25, 50, 100, 200, 400)
+MLM_15_MASK_RATE: float = 0.15
+
+EVAL_EPOCHS: tuple[int, ...] = (
+    1,
+    2,
+    5,
+    10,
+    20,
+    35,
+    50,
+    75,
+    100,
+    150,
+    200,
+    300,
+    400,
+    600,
+    800,
+    1000,
+    1500,
+    2000,
+    3000,
+    4000,
+    6000,
+    8000,
+    10000,
+)
+EXPOSURE_CHECKPOINTS: tuple[int, ...] = EVAL_EPOCHS
 CAPACITY_MULTIPLIERS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
-PARADIGMS: tuple[str, ...] = ("ar", "mlm")
+PARADIGMS: tuple[str, ...] = ("ar", "mlm_15", "oa_uniform")
+LEGACY_PARADIGM_ALIASES: dict[str, str] = {"mlm": "oa_uniform"}
+LR_SCHEDULES: tuple[str, ...] = ("wsd", "cosine")
 CAMPAIGN_TRACKS: tuple[str, ...] = (
     "primary",
     "ablation_wd",
@@ -30,6 +61,35 @@ FORBIDDEN_INFRA_RE = re.compile(
     r"(?:\b(?:[a-z0-9_-]*master-\d+|[a-z0-9_-]*worker-\d+|worker-\d+\.k8s|node[-_]?\d*|10\.\d+\.\d+\.\d+)\b)",
     re.IGNORECASE,
 )
+
+
+def canonicalize_paradigm(paradigm: str) -> str:
+    """Canonicalize paradigm identifier, aliasing legacy 'mlm' -> 'oa_uniform'."""
+    raw = str(paradigm).strip().lower()
+    canon = LEGACY_PARADIGM_ALIASES.get(raw, raw)
+    if canon not in PARADIGMS:
+        raise ValueError(
+            f"Unsupported paradigm {paradigm!r}; expected {PARADIGMS} "
+            f"(or legacy alias {tuple(LEGACY_PARADIGM_ALIASES)})"
+        )
+    return canon
+
+
+def is_mlm_paradigm(paradigm: str) -> bool:
+    """Return True for bidirectional masked objectives ('mlm_15', 'oa_uniform', legacy 'mlm')."""
+    return canonicalize_paradigm(paradigm) in ("mlm_15", "oa_uniform")
+
+
+def mlm_fixed_mask_count(
+    seq_len: int = SEQ_LEN,
+    mask_rate: float = MLM_15_MASK_RATE,
+) -> int:
+    """Exact masked token count k = max(1, round(mask_rate * seq_len)), clamped to seq_len."""
+    if seq_len < 1:
+        raise ValueError(f"seq_len must be >= 1, got {seq_len}")
+    if not (0.0 < float(mask_rate) <= 1.0) or not math.isfinite(float(mask_rate)):
+        raise ValueError(f"mask_rate must be in (0, 1], got {mask_rate!r}")
+    return min(int(seq_len), max(1, int(round(float(mask_rate) * float(seq_len)))))
 
 
 def slugify_token(value: str | float | int) -> str:
@@ -233,15 +293,15 @@ def choose_global_batch_size(
     n_sequences: int,
     max_batch_size: int,
     world_size: int = 1,
+    *,
+    min_steps_per_epoch: int = 16,
 ) -> int:
-    """Choose global batch size given per-GPU max_batch_size and DDP world_size.
+    """Choose global batch size given per-GPU max_batch_size, world_size, and min_steps_per_epoch.
 
-    - world_size == 1: largest power-of-2 in [32, max_batch_size] with
-      batch_size <= max(32, n_sequences // 16), clamped to n_sequences.
-    - world_size > 1: per-rank micro_batch is largest power-of-2 in [32, max_batch_size]
-      such that world_size * micro_batch <= min(world_size * max_batch_size,
-      max(32 * world_size, n_sequences // 16)), falling back cleanly when
-      n_sequences < 32 * world_size.
+    Guarantees at least ``min_steps_per_epoch`` optimizer steps per epoch whenever
+    ``n_sequences >= world_size * min_steps_per_epoch`` by capping the power-of-2
+    micro-batch size so tiny datasets (e.g. 0.5m/2m at r=0.25, 0.5) receive ample
+    dynamic-mask optimization steps per epoch.
     """
     if n_sequences < 1:
         raise ValueError(f"n_sequences must be >= 1, got {n_sequences}")
@@ -253,14 +313,31 @@ def choose_global_batch_size(
         raise ValueError(
             f"n_sequences ({n_sequences}) must be >= world_size ({world_size})"
         )
+    if min_steps_per_epoch < 0:
+        raise ValueError(f"min_steps_per_epoch must be >= 0, got {min_steps_per_epoch}")
 
     if world_size == 1:
         hard_cap = min(max_batch_size, n_sequences)
+        if min_steps_per_epoch > 0:
+            step_cap = min(hard_cap, max(1, n_sequences // int(min_steps_per_epoch)))
+            pow2 = 1 << (step_cap.bit_length() - 1)
+            return min(max(1, pow2), hard_cap)
         if hard_cap >= 32:
             step_cap = min(hard_cap, max(32, n_sequences // 16))
             pow2 = 1 << (step_cap.bit_length() - 1)
             return min(max(32, pow2), hard_cap)
         return 1 << (hard_cap.bit_length() - 1)
+
+    if min_steps_per_epoch > 0:
+        global_cap = min(
+            world_size * max_batch_size,
+            max(world_size, n_sequences // int(min_steps_per_epoch)),
+            n_sequences,
+        )
+        micro_cap = max(1, min(max_batch_size, global_cap // world_size))
+        micro_pow2 = 1 << (micro_cap.bit_length() - 1)
+        micro_batch = min(max(1, micro_pow2), max_batch_size)
+        return world_size * micro_batch
 
     if n_sequences < 32 * world_size or max_batch_size < 32:
         micro_fallback = min(world_size * max_batch_size, n_sequences) // world_size
@@ -296,6 +373,12 @@ class RunSpec:
     save_checkpoint: bool
     ddp_preferred: bool
     estimated_tokens: int = 0
+    lr_schedule: str = "wsd"
+    min_lr_ratio: float = 0.05
+    min_steps_per_epoch: int = 16
+    adaptive_early_stop: bool = False
+    mask_rate: float = MLM_15_MASK_RATE
+    delete_transient_ckpt_on_complete: bool = False
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -303,8 +386,8 @@ class RunSpec:
         assert_no_forbidden_infra_strings(self.run_id, label="run_id")
         if not self.track:
             raise ValueError("track must be non-empty")
-        if self.paradigm not in PARADIGMS:
-            raise ValueError(f"Unsupported paradigm {self.paradigm!r}; expected {PARADIGMS}")
+        canon_paradigm = canonicalize_paradigm(self.paradigm)
+        object.__setattr__(self, "paradigm", canon_paradigm)
         if self.scale_id not in SCALE_SPECS:
             raise ValueError(
                 f"Unknown scale_id {self.scale_id!r}; expected {tuple(SCALE_SPECS)}"
@@ -321,6 +404,16 @@ class RunSpec:
             )
         if self.weight_decay < 0.0 or not math.isfinite(self.weight_decay):
             raise ValueError(f"Invalid weight_decay {self.weight_decay!r}")
+        if self.lr_schedule not in LR_SCHEDULES:
+            raise ValueError(
+                f"Unsupported lr_schedule {self.lr_schedule!r}; expected {LR_SCHEDULES}"
+            )
+        if not (0.0 <= float(self.min_lr_ratio) <= 1.0) or not math.isfinite(float(self.min_lr_ratio)):
+            raise ValueError(f"min_lr_ratio must be in [0, 1], got {self.min_lr_ratio!r}")
+        if int(self.min_steps_per_epoch) < 1:
+            raise ValueError(f"min_steps_per_epoch must be >= 1, got {self.min_steps_per_epoch}")
+        if not (0.0 < float(self.mask_rate) <= 1.0) or not math.isfinite(float(self.mask_rate)):
+            raise ValueError(f"mask_rate must be in (0, 1], got {self.mask_rate!r}")
 
         normalized_eval = tuple(sorted({int(e) for e in self.eval_epochs if 1 <= int(e) <= self.max_epochs}))
         object.__setattr__(self, "eval_epochs", normalized_eval)
@@ -328,6 +421,30 @@ class RunSpec:
         expected_tokens = int(self.n_sequences) * SEQ_LEN * int(self.max_epochs)
         if self.estimated_tokens <= 0:
             object.__setattr__(self, "estimated_tokens", expected_tokens)
+
+    def compatibility_payload(self) -> dict[str, Any]:
+        """Immutable training-identity fields that must match when resuming a checkpoint."""
+        payload: dict[str, Any] = {
+            "paradigm": self.paradigm,
+            "scale_id": self.scale_id,
+            "n_sequences": int(self.n_sequences),
+            "weight_decay": float(self.weight_decay),
+            "precision": self.precision,
+            "seed": int(self.seed),
+            "data_seed": int(self.data_seed),
+            "lr_schedule": self.lr_schedule,
+            "min_lr_ratio": float(self.min_lr_ratio),
+            "min_steps_per_epoch": int(self.min_steps_per_epoch),
+            "mask_rate": float(self.mask_rate),
+        }
+        if self.lr_schedule == "cosine":
+            payload["max_epochs"] = int(self.max_epochs)
+        return payload
+
+    def spec_hash(self) -> str:
+        """Deterministic SHA-256 digest of resume-compatibility fields."""
+        encoded = json.dumps(self.compatibility_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -346,14 +463,22 @@ class RunSpec:
             "save_checkpoint": bool(self.save_checkpoint),
             "ddp_preferred": bool(self.ddp_preferred),
             "estimated_tokens": int(self.estimated_tokens),
+            "lr_schedule": self.lr_schedule,
+            "min_lr_ratio": float(self.min_lr_ratio),
+            "min_steps_per_epoch": int(self.min_steps_per_epoch),
+            "adaptive_early_stop": bool(self.adaptive_early_stop),
+            "mask_rate": float(self.mask_rate),
+            "delete_transient_ckpt_on_complete": bool(self.delete_transient_ckpt_on_complete),
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RunSpec:
+        # Legacy Batch-1 run specs omitted lr_schedule and used cosine decay.
+        lr_schedule = str(data.get("lr_schedule", "cosine"))
         return cls(
             run_id=str(data["run_id"]),
             track=str(data["track"]),
-            paradigm=str(data["paradigm"]),
+            paradigm=canonicalize_paradigm(str(data["paradigm"])),
             scale_id=str(data["scale_id"]),
             multiplier=float(data["multiplier"]),
             n_sequences=int(data["n_sequences"]),
@@ -366,11 +491,19 @@ class RunSpec:
             save_checkpoint=bool(data["save_checkpoint"]),
             ddp_preferred=bool(data["ddp_preferred"]),
             estimated_tokens=int(data.get("estimated_tokens", 0)),
+            lr_schedule=lr_schedule,
+            min_lr_ratio=float(data.get("min_lr_ratio", 0.05)),
+            min_steps_per_epoch=int(data.get("min_steps_per_epoch", 16)),
+            adaptive_early_stop=bool(data.get("adaptive_early_stop", False)),
+            mask_rate=float(data.get("mask_rate", MLM_15_MASK_RATE)),
+            delete_transient_ckpt_on_complete=bool(
+                data.get("delete_transient_ckpt_on_complete", False)
+            ),
         )
 
 
 def _eval_schedule_for_horizon(max_epochs: int) -> tuple[int, ...]:
-    checkpoints = tuple(e for e in EXPOSURE_CHECKPOINTS if e <= max_epochs)
+    checkpoints = tuple(e for e in EVAL_EPOCHS if e <= max_epochs)
     if not checkpoints or checkpoints[-1] != max_epochs:
         checkpoints = tuple(sorted({*checkpoints, max_epochs}))
     return checkpoints
@@ -390,15 +523,22 @@ def _make_run_spec(
     data_seed: int,
     save_checkpoint: bool,
     ddp_preferred: bool,
+    lr_schedule: str = "wsd",
+    min_lr_ratio: float = 0.05,
+    min_steps_per_epoch: int = 16,
+    adaptive_early_stop: bool = False,
+    mask_rate: float = MLM_15_MASK_RATE,
+    delete_transient_ckpt_on_complete: bool = False,
 ) -> RunSpec:
     spec = SCALE_SPECS[scale_id]
+    canon_paradigm = canonicalize_paradigm(paradigm)
     target_bits = multiplier * C_GRID_PRIOR_BITS_PER_PARAM * spec.exact_non_embedding_params
     n_sequences = solve_sequence_count_for_entropy(target_bits)
     eval_epochs = _eval_schedule_for_horizon(max_epochs)
     return RunSpec(
         run_id=run_id,
         track=track,
-        paradigm=paradigm,
+        paradigm=canon_paradigm,
         scale_id=scale_id,
         multiplier=multiplier,
         n_sequences=n_sequences,
@@ -411,16 +551,27 @@ def _make_run_spec(
         save_checkpoint=save_checkpoint,
         ddp_preferred=ddp_preferred,
         estimated_tokens=n_sequences * SEQ_LEN * max_epochs,
+        lr_schedule=lr_schedule,
+        min_lr_ratio=min_lr_ratio,
+        min_steps_per_epoch=min_steps_per_epoch,
+        adaptive_early_stop=adaptive_early_stop,
+        mask_rate=mask_rate,
+        delete_transient_ckpt_on_complete=delete_transient_ckpt_on_complete,
     )
 
 
 def build_campaign_runs(
     *,
     include_ablations: bool = True,
+    paradigms: Sequence[str] = PARADIGMS,
+    lr_schedule: str = "wsd",
+    adaptive_early_stop: bool = False,
+    min_steps_per_epoch: int = 16,
     data_seed: int = 20261127,
     model_seed: int = 20261128,
 ) -> list[RunSpec]:
-    """Build the full Option A parametric memory-capacity campaign specification."""
+    """Build the parametric memory-capacity campaign specification across active paradigms."""
+    canon_paradigms = tuple(dict.fromkeys(canonicalize_paradigm(p) for p in paradigms))
     runs: list[RunSpec] = []
 
     primary_35m_epochs: dict[float, int] = {
@@ -442,7 +593,7 @@ def build_campaign_runs(
 
     # 1. Primary scaling & capacity-multiplier grid
     for scale_id in SCALE_ORDER:
-        for paradigm in PARADIGMS:
+        for paradigm in canon_paradigms:
             for mult in CAPACITY_MULTIPLIERS:
                 if scale_id in ("0.5m", "2m", "8m"):
                     max_epochs = 400
@@ -475,6 +626,9 @@ def build_campaign_runs(
                         data_seed=data_seed,
                         save_checkpoint=save_checkpoint,
                         ddp_preferred=ddp_preferred,
+                        lr_schedule=lr_schedule,
+                        min_steps_per_epoch=min_steps_per_epoch,
+                        adaptive_early_stop=adaptive_early_stop,
                     )
                 )
 
@@ -485,7 +639,7 @@ def build_campaign_runs(
             ("8m", (0.5, 1.0, 2.0, 4.0), 400),
         )
         for scale_id, mults, max_epochs in wd_grid:
-            for paradigm in PARADIGMS:
+            for paradigm in canon_paradigms:
                 for mult in mults:
                     run_id = (
                         f"ablation_wd_{paradigm}_{slugify_token(scale_id)}"
@@ -505,6 +659,9 @@ def build_campaign_runs(
                             data_seed=data_seed,
                             save_checkpoint=False,
                             ddp_preferred=False,
+                            lr_schedule=lr_schedule,
+                            min_steps_per_epoch=min_steps_per_epoch,
+                            adaptive_early_stop=adaptive_early_stop,
                         )
                     )
 
@@ -514,7 +671,7 @@ def build_campaign_runs(
             ("8m", (0.5, 1.0, 2.0), 100),
         )
         for scale_id, mults, max_epochs in fp32_grid:
-            for paradigm in PARADIGMS:
+            for paradigm in canon_paradigms:
                 for mult in mults:
                     run_id = (
                         f"ablation_fp32_{paradigm}_{slugify_token(scale_id)}"
@@ -534,11 +691,14 @@ def build_campaign_runs(
                             data_seed=data_seed,
                             save_checkpoint=False,
                             ddp_preferred=False,
+                            lr_schedule=lr_schedule,
+                            min_steps_per_epoch=min_steps_per_epoch,
+                            adaptive_early_stop=adaptive_early_stop,
                         )
                     )
 
-        # 2c. Dedicated cosine-horizon vs intermediate-snapshot ablation
-        for paradigm in PARADIGMS:
+        # 2c. Dedicated horizon vs intermediate-snapshot ablation
+        for paradigm in canon_paradigms:
             for mult in (1.0, 2.0):
                 for max_epochs in (10, 50):
                     run_id = (
@@ -559,6 +719,9 @@ def build_campaign_runs(
                             data_seed=data_seed,
                             save_checkpoint=False,
                             ddp_preferred=False,
+                            lr_schedule=lr_schedule,
+                            min_steps_per_epoch=min_steps_per_epoch,
+                            adaptive_early_stop=False,
                         )
                     )
 
@@ -575,6 +738,10 @@ def build_campaign_runs(
 def get_campaign_run_map(
     *,
     include_ablations: bool = True,
+    paradigms: Sequence[str] = PARADIGMS,
+    lr_schedule: str = "wsd",
+    adaptive_early_stop: bool = False,
+    min_steps_per_epoch: int = 16,
     data_seed: int = 20261127,
     model_seed: int = 20261128,
 ) -> dict[str, RunSpec]:
@@ -583,6 +750,10 @@ def get_campaign_run_map(
         r.run_id: r
         for r in build_campaign_runs(
             include_ablations=include_ablations,
+            paradigms=paradigms,
+            lr_schedule=lr_schedule,
+            adaptive_early_stop=adaptive_early_stop,
+            min_steps_per_epoch=min_steps_per_epoch,
             data_seed=data_seed,
             model_seed=model_seed,
         )
